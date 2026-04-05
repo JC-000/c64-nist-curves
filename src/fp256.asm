@@ -182,10 +182,19 @@ fp_mul:
 @nonzero_i:
         sta mul_cached_a        ; cache src1[i] for DMA row fetch
 
-        ; DMA the multiplication row for src1[i] from REU
-        jsr reu_fetch_mul_row
+        ; DMA the multiplication row for src1[i] from REU (inlined)
+        ; A already contains mul_cached_a from the sta above
+        asl                     ; A = multiplier * 2, carry = bit 7
+        sta reu_reu_hi
+        lda #0
+        adc #0                  ; bank = carry from shift
+        sta reu_reu_bank
+        lda #%10110001          ; execute + autoload + FETCH (REU->C64)
+        sta reu_command
 
         ; Self-mod: patch accumulation addresses to base = fp_wide + i
+        ; Patches both LSB and MSB of the 16-bit operand.
+        ; All four bodies of the unrolled inner loop use the same base.
         lda #<fp_wide
         clc
         adc fp_mul_i            ; A = low byte of (fp_wide + i)
@@ -193,12 +202,20 @@ fp_mul:
         sta @accum_st1+1
         sta @accum_ld1_b+1
         sta @accum_st1_b+1
+        sta @accum_ld1_c+1
+        sta @accum_st1_c+1
+        sta @accum_ld1_d+1
+        sta @accum_st1_d+1
         lda #>fp_wide
         adc #0                  ; handle page crossing
         sta @accum_ld1+2
         sta @accum_st1+2
         sta @accum_ld1_b+2
         sta @accum_st1_b+2
+        sta @accum_ld1_c+2
+        sta @accum_st1_c+2
+        sta @accum_ld1_d+2
+        sta @accum_st1_d+2
 
         ; For +1 accesses (high byte of product), base is fp_wide + i + 1
         lda #<(fp_wide+1)
@@ -208,46 +225,106 @@ fp_mul:
         sta @accum_st2+1
         sta @accum_ld2_b+1
         sta @accum_st2_b+1
+        sta @accum_ld2_c+1
+        sta @accum_st2_c+1
+        sta @accum_ld2_d+1
+        sta @accum_st2_d+1
         lda #>(fp_wide+1)
         adc #0
         sta @accum_ld2+2
         sta @accum_st2+2
         sta @accum_ld2_b+2
         sta @accum_st2_b+2
+        sta @accum_ld2_c+2
+        sta @accum_st2_c+2
+        sta @accum_ld2_d+2
+        sta @accum_st2_d+2
 
-        lda #0
-        sta fp_mul_j
+        ldx #0                  ; X = j, kept in register throughout
 
-        ; ===== UNROLLED 2x INNER LOOP =====
+        ; ===== UNROLLED 4x INNER LOOP =====
+        ; X register holds j; fp_wide,X base is self-mod patched to fp_wide+i.
 @mul_inner:
-        ; --- First copy: process src2[j] ---
-        ldx fp_mul_j
+        ; --- Body A: process src2[j] ---
         ldy mul_src2_buf,x      ; Y = src2[j]
         beq @next_j_first       ; skip if zero
-
-        ; REU table lookup: src1[i] * src2[j]
-        lda mul_dma_lo,y        ; lo byte of product
-        sta poly_prod_lo
-        lda mul_dma_hi,y        ; hi byte of product
-        sta poly_prod_hi
-
-        ; Add 16-bit product to fp_wide[i+j]
-        ldx fp_mul_j
-
         clc
 @accum_ld1:
         lda fp_wide,x           ; patched to fp_wide+i base
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @accum_st1:
         sta fp_wide,x
 @accum_ld2:
         lda fp_wide+1,x         ; patched to fp_wide+i+1 base
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @accum_st2:
         sta fp_wide+1,x
-        bcc @next_j_first
+        bcs @do_prop_a
+@next_j_first:
+        inx                     ; advance j
 
-        ; Propagate carry (rare path)
+        ; --- Body B: process src2[j+1] ---
+        ldy mul_src2_buf,x
+        beq @next_j_second
+        clc
+@accum_ld1_b:
+        lda fp_wide,x
+        adc mul_dma_lo,y
+@accum_st1_b:
+        sta fp_wide,x
+@accum_ld2_b:
+        lda fp_wide+1,x
+        adc mul_dma_hi,y
+@accum_st2_b:
+        sta fp_wide+1,x
+        bcs @do_prop_b
+@next_j_second:
+        inx
+
+        ; --- Body C: process src2[j+2] ---
+        ldy mul_src2_buf,x
+        beq @next_j_third
+        clc
+@accum_ld1_c:
+        lda fp_wide,x
+        adc mul_dma_lo,y
+@accum_st1_c:
+        sta fp_wide,x
+@accum_ld2_c:
+        lda fp_wide+1,x
+        adc mul_dma_hi,y
+@accum_st2_c:
+        sta fp_wide+1,x
+        bcs @do_prop_c
+@next_j_third:
+        inx
+
+        ; --- Body D: process src2[j+3] ---
+        ldy mul_src2_buf,x
+        beq @next_j
+        clc
+@accum_ld1_d:
+        lda fp_wide,x
+        adc mul_dma_lo,y
+@accum_st1_d:
+        sta fp_wide,x
+@accum_ld2_d:
+        lda fp_wide+1,x
+        adc mul_dma_hi,y
+@accum_st2_d:
+        sta fp_wide+1,x
+        bcs @do_prop_d
+@next_j:
+        inx
+        cpx #32
+        bcc @mul_inner
+        jmp @skip_zero
+
+        ; --- Carry propagation blocks (rare path) ---
+        ; Each block stashes X=j, computes fp_wide index = i+j+2,
+        ; propagates carry, then restores X and jumps back inline.
+@do_prop_a:
+        stx fp_mul_j
         lda fp_mul_i
         clc
         adc fp_mul_j
@@ -256,45 +333,19 @@ fp_mul:
         tax
 @prop_carry_a:
         cpx #64
-        bcs @next_j_first
+        bcs @carry_done_a
         sec
         lda fp_wide,x
         adc #0
         sta fp_wide,x
         inx
         bcs @prop_carry_a
-
-@next_j_first:
-        inc fp_mul_j            ; advance j, no exit check yet
-
-        ; --- Second copy: process src2[j+1] ---
+@carry_done_a:
         ldx fp_mul_j
-        ldy mul_src2_buf,x      ; Y = src2[j]
-        beq @next_j             ; skip if zero
+        jmp @next_j_first
 
-        ; REU table lookup
-        lda mul_dma_lo,y
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        sta poly_prod_hi
-
-        ; Add 16-bit product to fp_wide[i+j]
-        ldx fp_mul_j
-
-        clc
-@accum_ld1_b:
-        lda fp_wide,x           ; patched to fp_wide+i base
-        adc poly_prod_lo
-@accum_st1_b:
-        sta fp_wide,x
-@accum_ld2_b:
-        lda fp_wide+1,x         ; patched to fp_wide+i+1 base
-        adc poly_prod_hi
-@accum_st2_b:
-        sta fp_wide+1,x
-        bcc @next_j
-
-        ; Propagate carry (rare path)
+@do_prop_b:
+        stx fp_mul_j
         lda fp_mul_i
         clc
         adc fp_mul_j
@@ -303,20 +354,58 @@ fp_mul:
         tax
 @prop_carry_b:
         cpx #64
-        bcs @next_j
+        bcs @carry_done_b
         sec
         lda fp_wide,x
         adc #0
         sta fp_wide,x
         inx
         bcs @prop_carry_b
+@carry_done_b:
+        ldx fp_mul_j
+        jmp @next_j_second
 
-@next_j:
-        inc fp_mul_j
-        lda fp_mul_j
-        cmp #32
-        bcs @skip_zero
-        jmp @mul_inner
+@do_prop_c:
+        stx fp_mul_j
+        lda fp_mul_i
+        clc
+        adc fp_mul_j
+        clc
+        adc #2
+        tax
+@prop_carry_c:
+        cpx #64
+        bcs @carry_done_c
+        sec
+        lda fp_wide,x
+        adc #0
+        sta fp_wide,x
+        inx
+        bcs @prop_carry_c
+@carry_done_c:
+        ldx fp_mul_j
+        jmp @next_j_third
+
+@do_prop_d:
+        stx fp_mul_j
+        lda fp_mul_i
+        clc
+        adc fp_mul_j
+        clc
+        adc #2
+        tax
+@prop_carry_d:
+        cpx #64
+        bcs @carry_done_d
+        sec
+        lda fp_wide,x
+        adc #0
+        sta fp_wide,x
+        inx
+        bcs @prop_carry_d
+@carry_done_d:
+        ldx fp_mul_j
+        jmp @next_j
 
 @skip_zero:
         inc fp_mul_i
@@ -365,107 +454,327 @@ fp_sqr:
 @sqr_nonzero_i:
         sta mul_cached_a        ; cache a[i]
 
-        ; DMA the multiplication row for a[i] from REU
-        jsr reu_fetch_mul_row
+        ; DMA the multiplication row for a[i] from REU (inlined)
+        ; A still contains a[i] from the sta above
+        asl                     ; A = multiplier * 2, carry = bit 7
+        sta reu_reu_hi
+        lda #0
+        adc #0                  ; bank = carry from shift
+        sta reu_reu_bank
+        lda #%10110001          ; execute + autoload + FETCH (REU->C64)
+        sta reu_command
 
         ; Self-mod: patch accumulation addresses to base = fp_wide + i
+        ; All four unrolled bodies share the same base.
         lda #<fp_wide
         clc
         adc fp_mul_i
         sta @sqr_accum_ld1+1
         sta @sqr_accum_st1+1
+        sta @sqr_accum_ld1_b+1
+        sta @sqr_accum_st1_b+1
+        sta @sqr_accum_ld1_c+1
+        sta @sqr_accum_st1_c+1
+        sta @sqr_accum_ld1_d+1
+        sta @sqr_accum_st1_d+1
         lda #>fp_wide
         adc #0
         sta @sqr_accum_ld1+2
         sta @sqr_accum_st1+2
+        sta @sqr_accum_ld1_b+2
+        sta @sqr_accum_st1_b+2
+        sta @sqr_accum_ld1_c+2
+        sta @sqr_accum_st1_c+2
+        sta @sqr_accum_ld1_d+2
+        sta @sqr_accum_st1_d+2
 
         lda #<(fp_wide+1)
         clc
         adc fp_mul_i
         sta @sqr_accum_ld2+1
         sta @sqr_accum_st2+1
+        sta @sqr_accum_ld2_b+1
+        sta @sqr_accum_st2_b+1
+        sta @sqr_accum_ld2_c+1
+        sta @sqr_accum_st2_c+1
+        sta @sqr_accum_ld2_d+1
+        sta @sqr_accum_st2_d+1
         lda #>(fp_wide+1)
         adc #0
         sta @sqr_accum_ld2+2
         sta @sqr_accum_st2+2
+        sta @sqr_accum_ld2_b+2
+        sta @sqr_accum_st2_b+2
+        sta @sqr_accum_ld2_c+2
+        sta @sqr_accum_st2_c+2
+        sta @sqr_accum_ld2_d+2
+        sta @sqr_accum_st2_d+2
 
-        ; j starts at i+1
-        lda fp_mul_i
-        clc
-        adc #1
-        sta fp_mul_j
+        ; X = j, starts at i+1, kept in register through all 4 bodies
+        ldx fp_mul_i
+        inx
 
+        ; ===== UNROLLED 4x INNER LOOP =====
+        ; Zero-padded mul_src2_buf[32..] lets us safely over-read past j=31
+        ; (the beq causes the body to skip harmlessly).
 @sqr_inner:
-        ldx fp_mul_j
-        ldy mul_src2_buf,x      ; Y = a[j]
-        bne @sqr_nonzero_j
-        jmp @sqr_next_j
-@sqr_nonzero_j:
-
-        ; REU table lookup: a[i] * a[j]
+        ; --- Body A: process j ---
+        ldy mul_src2_buf,x
+        beq @sqr_next_j_a
         lda mul_dma_lo,y
+        asl                     ; double lo (carry = bit 7 of lo)
         sta poly_prod_lo
         lda mul_dma_hi,y
+        rol                     ; double hi + carry (new carry = 17th bit)
         sta poly_prod_hi
-
-        ; Double the product (cross terms counted twice)
-        asl poly_prod_lo
-        rol poly_prod_hi
         lda #0
         adc #0
-        sta fp_sqr_extra        ; save 17th bit (0 or 1)
-
-        ; Single addition of doubled product to fp_wide[i+j]
-        ldx fp_mul_j
+        sta fp_sqr_extra        ; save 17th bit
 
         clc
 @sqr_accum_ld1:
-        lda fp_wide,x           ; patched to fp_wide+i base
+        lda fp_wide,x           ; patched fp_wide+i,X
         adc poly_prod_lo
 @sqr_accum_st1:
         sta fp_wide,x
 @sqr_accum_ld2:
-        lda fp_wide+1,x         ; patched to fp_wide+i+1 base
+        lda fp_wide+1,x         ; patched fp_wide+i+1,X
         adc poly_prod_hi
 @sqr_accum_st2:
         sta fp_wide+1,x
 
-        ; Capture accumulation carry and combine with shift carry
         lda #0
-        adc fp_sqr_extra        ; A = accum_carry + shift_carry (0, 1, or 2)
-        beq @sqr_next_j         ; both zero, skip
+        adc fp_sqr_extra        ; combined carry (0,1,2)
+        beq @sqr_nc_a
+        jmp @sqr_do_carry_a
+@sqr_nc_a:
+@sqr_next_j_a:
+        inx
+        cpx #32
+        bcc @sqr_body_b
+        jmp @sqr_loop_exit
+@sqr_body_b:
+        ; --- Body B ---
+        ldy mul_src2_buf,x
+        beq @sqr_next_j_b
+        lda mul_dma_lo,y
+        asl
+        sta poly_prod_lo
+        lda mul_dma_hi,y
+        rol
+        sta poly_prod_hi
+        lda #0
+        adc #0
+        sta fp_sqr_extra
 
-        ; Add combined carries to fp_wide[i+j+2]
-        ldx fp_mul_i
-        tay                     ; Y = combined carry value
-        txa
         clc
-        adc fp_mul_j
+@sqr_accum_ld1_b:
+        lda fp_wide,x
+        adc poly_prod_lo
+@sqr_accum_st1_b:
+        sta fp_wide,x
+@sqr_accum_ld2_b:
+        lda fp_wide+1,x
+        adc poly_prod_hi
+@sqr_accum_st2_b:
+        sta fp_wide+1,x
+
+        lda #0
+        adc fp_sqr_extra
+        beq @sqr_nc_b
+        jmp @sqr_do_carry_b
+@sqr_nc_b:
+@sqr_next_j_b:
+        inx
+        cpx #32
+        bcc @sqr_body_c
+        jmp @sqr_loop_exit
+@sqr_body_c:
+        ; --- Body C ---
+        ldy mul_src2_buf,x
+        beq @sqr_next_j_c
+        lda mul_dma_lo,y
+        asl
+        sta poly_prod_lo
+        lda mul_dma_hi,y
+        rol
+        sta poly_prod_hi
+        lda #0
+        adc #0
+        sta fp_sqr_extra
+
+        clc
+@sqr_accum_ld1_c:
+        lda fp_wide,x
+        adc poly_prod_lo
+@sqr_accum_st1_c:
+        sta fp_wide,x
+@sqr_accum_ld2_c:
+        lda fp_wide+1,x
+        adc poly_prod_hi
+@sqr_accum_st2_c:
+        sta fp_wide+1,x
+
+        lda #0
+        adc fp_sqr_extra
+        beq @sqr_nc_c
+        jmp @sqr_do_carry_c
+@sqr_nc_c:
+@sqr_next_j_c:
+        inx
+        cpx #32
+        bcc @sqr_body_d
+        jmp @sqr_loop_exit
+@sqr_body_d:
+        ; --- Body D ---
+        ldy mul_src2_buf,x
+        beq @sqr_next_j_d
+        lda mul_dma_lo,y
+        asl
+        sta poly_prod_lo
+        lda mul_dma_hi,y
+        rol
+        sta poly_prod_hi
+        lda #0
+        adc #0
+        sta fp_sqr_extra
+
+        clc
+@sqr_accum_ld1_d:
+        lda fp_wide,x
+        adc poly_prod_lo
+@sqr_accum_st1_d:
+        sta fp_wide,x
+@sqr_accum_ld2_d:
+        lda fp_wide+1,x
+        adc poly_prod_hi
+@sqr_accum_st2_d:
+        sta fp_wide+1,x
+
+        lda #0
+        adc fp_sqr_extra
+        beq @sqr_nc_d
+        jmp @sqr_do_carry_d
+@sqr_nc_d:
+@sqr_next_j_d:
+        inx
+        cpx #32
+        bcc @sqr_loop_continue
+        jmp @sqr_loop_exit
+@sqr_loop_continue:
+        jmp @sqr_inner
+
+        ; --- Carry propagation blocks (rare path) ---
+        ; Add combined carry (A=1 or 2) to fp_wide[i+j+2], propagate further
+@sqr_do_carry_a:
+        stx fp_mul_j
+        tay                     ; Y = carry value
+        txa                     ; A = j
+        clc
+        adc fp_mul_i
         clc
         adc #2
-        tax
-        tya                     ; A = combined carry value
+        tax                     ; X = i+j+2
+        tya
         clc
         adc fp_wide,x
         sta fp_wide,x
-        bcc @sqr_next_j
-        ; Propagate further carries
-@sqr_prop1:
+        bcc @sqr_carry_done_a
+@sqr_prop_a:
         inx
         cpx #64
-        bcs @sqr_next_j
+        bcs @sqr_carry_done_a
         sec
         lda fp_wide,x
         adc #0
         sta fp_wide,x
-        bcs @sqr_prop1
+        bcs @sqr_prop_a
+@sqr_carry_done_a:
+        ldx fp_mul_j
+        jmp @sqr_next_j_a
 
-@sqr_next_j:
-        inc fp_mul_j
-        lda fp_mul_j
-        cmp #32
-        bcs @sqr_skip_i
-        jmp @sqr_inner
+@sqr_do_carry_b:
+        stx fp_mul_j
+        tay
+        txa
+        clc
+        adc fp_mul_i
+        clc
+        adc #2
+        tax
+        tya
+        clc
+        adc fp_wide,x
+        sta fp_wide,x
+        bcc @sqr_carry_done_b
+@sqr_prop_b:
+        inx
+        cpx #64
+        bcs @sqr_carry_done_b
+        sec
+        lda fp_wide,x
+        adc #0
+        sta fp_wide,x
+        bcs @sqr_prop_b
+@sqr_carry_done_b:
+        ldx fp_mul_j
+        jmp @sqr_next_j_b
+
+@sqr_do_carry_c:
+        stx fp_mul_j
+        tay
+        txa
+        clc
+        adc fp_mul_i
+        clc
+        adc #2
+        tax
+        tya
+        clc
+        adc fp_wide,x
+        sta fp_wide,x
+        bcc @sqr_carry_done_c
+@sqr_prop_c:
+        inx
+        cpx #64
+        bcs @sqr_carry_done_c
+        sec
+        lda fp_wide,x
+        adc #0
+        sta fp_wide,x
+        bcs @sqr_prop_c
+@sqr_carry_done_c:
+        ldx fp_mul_j
+        jmp @sqr_next_j_c
+
+@sqr_do_carry_d:
+        stx fp_mul_j
+        tay
+        txa
+        clc
+        adc fp_mul_i
+        clc
+        adc #2
+        tax
+        tya
+        clc
+        adc fp_wide,x
+        sta fp_wide,x
+        bcc @sqr_carry_done_d
+@sqr_prop_d:
+        inx
+        cpx #64
+        bcs @sqr_carry_done_d
+        sec
+        lda fp_wide,x
+        adc #0
+        sta fp_wide,x
+        bcs @sqr_prop_d
+@sqr_carry_done_d:
+        ldx fp_mul_j
+        jmp @sqr_next_j_d
+
+@sqr_loop_exit:
 
 @sqr_skip_i:
         inc fp_mul_i
@@ -485,7 +794,14 @@ fp_sqr:
 
         ; DMA row for a[i] (may already be cached for i=30, but safe to re-fetch)
         sta mul_cached_a
-        jsr reu_fetch_mul_row
+        ; Inlined REU DMA fetch; A still contains a[i]
+        asl
+        sta reu_reu_hi
+        lda #0
+        adc #0
+        sta reu_reu_bank
+        lda #%10110001
+        sta reu_command
 
         ; Look up a[i]^2 from the DMA tables
         ldy mul_cached_a        ; Y = a[i]
