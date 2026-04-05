@@ -43,6 +43,10 @@ G_Y = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
 TWO_G_X = 0x7CF27B188D034F7E8A52380304B51AC3C08969E277F21B35A60B48FC47669978
 TWO_G_Y = 0x07775510DB8ED040293D9AC69F7430DBBA7DADE63CE982299E04B79D227873D1
 
+# Known 3*G coordinates (P-256)
+THREE_G_X = 0x5ECBE4D1A6330A44C8F7EF951D4BF165E6C6B721EFADA985FB41661BC6E7FD6C
+THREE_G_Y = 0x8734640C4998FF7E374B06CE1A64A2ECD82AB036384FB83D9A79B127A27D5032
+
 # RFC 6979 A.2.5 test private key (from assembly data, as integer)
 # Private key: sample signing key for message "sample" with SHA-256
 TEST_PRIVKEY = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
@@ -399,6 +403,43 @@ def test_scalar_mul_small(transport, labels):
     return passed, failed
 
 
+def test_scalar_mul_k3(transport, labels):
+    """Test: scalar multiplication with k=3 -> 3*G.
+
+    Exercises the windowed method with nibble value 3 (uses T[3] from precompute).
+    """
+    passed = failed = 0
+
+    SCALAR_BUF = 0x033C
+    k_bytes = int_to_be_bytes(3, 32)
+    write_bytes(transport, SCALAR_BUF, k_bytes)
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
+
+    print("  Calling ec_scalar_mul (k=3)...")
+    jsr(transport, labels["ec_scalar_mul"], timeout=3600.0)
+
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    if VERBOSE:
+        print(f"    Jacobian result: X={p3x:#066x}")
+        print(f"                     Y={p3y:#066x}")
+        print(f"                     Z={p3z:#066x}")
+
+    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
+
+    if ax == THREE_G_X and ay == THREE_G_Y:
+        passed += 1
+        print("  PASS: 3*G via scalar_mul matches expected coordinates")
+    else:
+        failed += 1
+        print("  FAIL: 3*G via scalar_mul does not match")
+        print(f"    expected X = {THREE_G_X:#066x}")
+        print(f"    got      X = {ax:#066x}")
+        print(f"    expected Y = {THREE_G_Y:#066x}")
+        print(f"    got      Y = {ay:#066x}")
+
+    return passed, failed
+
+
 def test_scalar_mul_full(transport, labels):
     """Test 3: Full scalar multiplication -- k*G for test private key.
 
@@ -473,6 +514,8 @@ def run_tests(transport, labels, run_full):
          lambda: test_add_infinity_plus_g(transport, labels)),
         ("Scalar mul (k=2, 2*G)", False,
          lambda: test_scalar_mul_small(transport, labels)),
+        ("Scalar mul (k=3, 3*G)", False,
+         lambda: test_scalar_mul_k3(transport, labels)),
         ("Scalar mul (full private key)", True,
          lambda: test_scalar_mul_full(transport, labels)),
     ]
