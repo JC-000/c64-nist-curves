@@ -51,6 +51,10 @@ start:
         ldy #>ready_msg
         jsr print_string
 
+        ; Signal test harness that initialization is complete
+        lda #$42
+        sta $02A7           ; sentinel location (unused area of C64 memory)
+
         ; Main idle loop - wait for test harness commands
 main_loop:
         jmp main_loop
@@ -291,6 +295,11 @@ reu_fetch_mul_row:
 !source "mod256.asm"
 !source "curve256.asm"
 !source "points256.asm"
+!source "inv256.asm"
+!source "fp384.asm"
+!source "mod384.asm"
+!source "curve384.asm"
+!source "points384.asm"
 
 ; =============================================================================
 ; Data section

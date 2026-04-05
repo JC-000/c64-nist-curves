@@ -66,3 +66,63 @@ mul_dma_hi:
 ; 33 bytes to hold intermediate sum with carry byte
 fp_red_tmp:
         !fill 33, 0
+
+; --- P-384 field arithmetic working buffers (48 bytes each) ---
+fp384_wide:
+        !fill 96, 0            ; 768-bit product from multiply
+fp384_tmp1:
+        !fill 48, 0
+fp384_tmp2:
+        !fill 48, 0
+fp384_tmp3:
+        !fill 48, 0
+fp384_tmp4:
+        !fill 48, 0
+
+; --- P-384 result registers ---
+fp384_r0:
+        !fill 48, 0
+fp384_r1:
+        !fill 48, 0
+fp384_r2:
+        !fill 48, 0
+fp384_r3:
+        !fill 48, 0
+
+; --- P-384 modular inverse working space ---
+fp384_inv_u:
+        !fill 48, 0
+fp384_inv_v:
+        !fill 48, 0
+fp384_inv_x1:
+        !fill 48, 0
+fp384_inv_x2:
+        !fill 48, 0
+
+; --- P-384 point storage (144 bytes: X=48 + Y=48 + Z=48 Jacobian) ---
+ec384_p1:
+        !fill 144, 0
+ec384_p2:
+        !fill 144, 0
+ec384_p3:
+        !fill 144, 0
+
+; --- P-384 point math temporaries ---
+ec384_t1: !fill 48, 0
+ec384_t2: !fill 48, 0
+ec384_t3: !fill 48, 0
+ec384_t4: !fill 48, 0
+ec384_t5: !fill 48, 0
+ec384_t6: !fill 48, 0
+
+; --- P-384 affine output ---
+ec384_affine_x: !fill 48, 0
+ec384_affine_y: !fill 48, 0
+
+; --- P-384 scalar multiply state ---
+ec384_sc_byte:  !byte 0
+ec384_sc_mask:  !byte 0
+
+; --- P-384 Solinas reduction scratch ---
+fp384_red_tmp:
+        !fill 49, 0
