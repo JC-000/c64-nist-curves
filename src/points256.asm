@@ -911,12 +911,13 @@ ec_point_add:
 .sm_reu_tmp:    !word 0
 .sm_nibble_val: !byte 0         ; current nibble value
 
-ec_scalar_mul:
-        ; =====================================================================
-        ; Phase 1: Precompute T[0..15] = i*G as affine, stash to REU bank 2
-        ; =====================================================================
-        ; T[0] is never fetched (nibble=0 -> skip add), so we skip it.
-        ;
+; =============================================================================
+; ec_precompute_256: Build T[0..15] = i*G as affine, stash to REU bank 2.
+; Called once at init. T[0] is never fetched (nibble=0 skips addition).
+; REU layout: bank 2 offset $0000, 16 slots * 64 bytes = 1024 bytes.
+; Also uses bank 2 offset $0800 for temporary Jacobian storage during build.
+; =============================================================================
+ec_precompute_256:
         ; T[1] = G (already affine). Store Gx,Gy directly.
         ldy #31
 .sm_t1x:
@@ -971,6 +972,9 @@ ec_scalar_mul:
         dey
         bpl .sm_lg2y
 
+        ; Set modular arithmetic to use P-256 prime
+        jsr ec_set_modp
+
         ; T[i] = T[i-1] + G for i = 2..15
         ; For each: fetch T[i-1] Jacobian -> ec_p1, add G -> ec_p3,
         ; convert ec_p3 to affine, stash affine to REU, stash Jacobian too.
@@ -1017,8 +1021,20 @@ ec_scalar_mul:
         cmp #16
         bne .sm_precomp
 
+        rts
+
+; =============================================================================
+; ec_scalar_mul: ec_p3 = k * G
+; k is a 32-byte scalar pointed to by (ec_scalar_ptr), BIG-ENDIAN byte order.
+; Uses 4-bit windowed method with precomputed table T[0..15] in REU bank 2.
+; Each T[i] = i*G stored as 64-byte AFFINE point (X,Y).
+; T[0] is never fetched (nibble=0 skips addition).
+; Result in ec_p3 (Jacobian).
+; REQUIRES: ec_precompute_256 must have been called first.
+; =============================================================================
+ec_scalar_mul:
         ; =====================================================================
-        ; Phase 2: Windowed scalar multiply - process 64 nibbles MSB first
+        ; Windowed scalar multiply - process 64 nibbles MSB first
         ; =====================================================================
 
         ; Find first nonzero nibble (skip leading zeros)

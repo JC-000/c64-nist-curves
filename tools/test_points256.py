@@ -618,39 +618,30 @@ def main():
 
         transport = inst.transport
 
-        # Wait for program to boot
-        grid = wait_for_text(transport, "READY.", timeout=180.0, verbose=False)
-        if grid is None:
-            print("FATAL: Program did not reach READY state")
-            print("  (sqtab_init + reu_mul_init may still be running)")
+        # Wait for C64 initialization to complete (sentinel byte at $02A7)
+        # Init includes sqtab, REU multiply tables, and precompute tables.
+        print("Waiting for init sentinel...")
+        start = time.time()
+        sentinel_ok = False
+        while time.time() - start < 600.0:
+            sentinel = read_bytes(transport, 0x02A7, 1)
+            if sentinel[0] == 0x42:
+                sentinel_ok = True
+                break
+            # Binary monitor pauses the CPU on each memory read; resume it.
+            try:
+                transport.resume()
+            except Exception:
+                pass
+            time.sleep(0.5)
+        if not sentinel_ok:
+            print("FATAL: init sentinel not set within timeout")
             mgr.release(inst)
             sys.exit(1)
-
-        print("VICE ready, program initialized.")
+        print(f"Init complete after {time.time()-start:.1f}s")
 
         # Safety: write JMP $0339 at $0339 so CPU loops harmlessly
         write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
-
-        # Re-initialize lookup tables via jsr().  The tables set up during
-        # the BASIC SYS startup can be corrupt due to VICE timing issues
-        # (binary monitor attach vs. program execution race).  Reinitializing
-        # via jsr() guarantees correct state.
-        print("Initializing quarter-square table (sqtab_init)...")
-        jsr(transport, labels["sqtab_init"], timeout=30.0)
-        print("Initializing REU multiply tables (reu_mul_init)...")
-        print("  (this takes ~2 minutes in warp mode)")
-        jsr(transport, labels["reu_mul_init"], timeout=300.0)
-        print("Tables initialized.")
-
-        # Write known-good curve data constants.  VICE startup can corrupt
-        # the PRG image due to a binary monitor attach race, so we
-        # overwrite data areas with known-correct values.  We do NOT
-        # overwrite code areas (ec_mulp etc.) because that proved to
-        # sometimes disrupt the binary monitor's jsr() mechanism.
-        print("Writing known-good curve constants to memory...")
-        write_field_elem(transport, labels["ec_gx256"], G_X)
-        write_field_elem(transport, labels["ec_gy256"], G_Y)
-        write_bytes(transport, labels["ec_p256"], int_to_le_bytes(P256))
 
         # Set fp_misc to point to ec_p256 for modular routines
         p256_addr = labels["ec_p256"]

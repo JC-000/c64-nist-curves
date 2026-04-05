@@ -739,11 +739,11 @@ ec_point_add_384:
 ; REU bank for precomputed table
 PRECOMP_REU_BANK = 2
 
-ec_scalar_mul_384:
-        ; =====================================================================
-        ; Step 1: Precompute T[0..15] as affine points into REU bank 2
-        ; =====================================================================
-
+; =============================================================================
+; ec_precompute_384: Build T[0..15] = i*G as affine, stash to REU bank 2.
+; Called once at init. REU layout: bank 2 offset $0400, 16 slots * 96 bytes.
+; =============================================================================
+ec_precompute_384:
         ; --- T[0] = point at infinity (96 zero bytes) ---
         ldy #95
         lda #0
@@ -796,6 +796,9 @@ ec_scalar_mul_384:
 
         ; ec384_p2 already has G affine from T[1] setup above.
         ; ec_point_add_384 reads P1=Jacobian, P2=affine(X,Y only).
+
+        ; Set modular arithmetic to use P-384 prime
+        jsr ec_set_modp_384
 
         ; --- T[i] = T[i-1] + G for i=2..15 ---
         ; ec384_p1 holds T[i-1] as Jacobian.
@@ -857,8 +860,17 @@ ec_scalar_mul_384:
         cmp #16
         bne .sm384w_precomp_loop
 
+        rts
+
+; =============================================================================
+; ec_scalar_mul_384: ec384_p3 = k * G
+; k is a 48-byte scalar pointed to by (ec_scalar_ptr), BIG-ENDIAN byte order.
+; Uses 4-bit windowed method with precomputed table in REU bank 2.
+; REQUIRES: ec_precompute_384 must have been called first.
+; =============================================================================
+ec_scalar_mul_384:
         ; =====================================================================
-        ; Step 2: Main loop - process 96 nibbles of k, MSB first
+        ; Main loop - process 96 nibbles of k, MSB first
         ; =====================================================================
 
         lda #0
@@ -1096,6 +1108,9 @@ ec_scalar_mul_384:
         sta reu_reu_lo
         lda reu_reu_hi
         adc zp_tmp2
+        ; Add $0400 base offset so P-384 table doesn't overlap P-256 table
+        clc
+        adc #$04
         sta reu_reu_hi
 
         lda #PRECOMP_REU_BANK

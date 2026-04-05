@@ -910,7 +910,7 @@ def main():
         transport = inst.transport
 
         # Wait for program to boot (it prints "READY." after init)
-        grid = wait_for_text(transport, "READY.", timeout=180.0, verbose=False)
+        grid = wait_for_text(transport, "READY.", timeout=600.0, verbose=False)
         if grid is None:
             print("FATAL: Program did not reach READY state")
             print("  (sqtab_init + reu_mul_init may still be running)")
