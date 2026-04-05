@@ -137,95 +137,92 @@ fp_mod_sub_384:
 ; P-384 prime: p = 2^384 - 2^128 - 2^96 + 2^32 - 1
 ; =============================================================================
 
+; Optimized accumulator model:
+;   A = low byte of running signed 16-bit sum
+;   Y = high byte of running signed 16-bit sum
+;   X = current output byte index (0..47), preserved across dispatch.
+;
+; Macros operate on A (lo) and Y (hi) directly, using branch+iny/dey for
+; carry propagation instead of round-tripping through memory.
+
 !macro sol384_add_byte .off {
         clc
-        lda sol384_sum_lo
         adc fp384_wide + .off
-        sta sol384_sum_lo
-        lda sol384_sum_hi
-        adc #0
-        sta sol384_sum_hi
+        bcc +
+        iny
++
 }
 
+; Add 2*fp384_wide[.off] - implemented as two chained add_byte's
 !macro sol384_add2_byte .off {
-        lda fp384_wide + .off
-        asl
-        php
         clc
-        adc sol384_sum_lo
-        sta sol384_sum_lo
-        lda sol384_sum_hi
-        adc #0
-        sta sol384_sum_hi
-        plp
-        bcc .skip
-        inc sol384_sum_hi
-.skip:
+        adc fp384_wide + .off
+        bcc +
+        iny
++       clc
+        adc fp384_wide + .off
+        bcc +
+        iny
++
 }
 
 !macro sol384_sub_byte .off {
         sec
-        lda sol384_sum_lo
         sbc fp384_wide + .off
-        sta sol384_sum_lo
-        lda sol384_sum_hi
-        sbc #0
-        sta sol384_sum_hi
+        bcs +
+        dey
++
 }
 
 fp_mod_reduce384:
+        ; A = running lo accumulator (carry from previous byte), Y = hi.
+        ; Start at zero.
         lda #0
-        sta sol384_acc_lo
-        sta sol384_acc_hi
+        tay
+        ldx #0                          ; byte index
 
-        ldx #0
-@byte_loop:
-        stx sol384_byte_idx
-
-        lda sol384_acc_lo
-        sta sol384_sum_lo
-        lda sol384_acc_hi
-        sta sol384_sum_hi
-
-        ; --- Add s1[x] = fp384_wide[x] ---
-        ldx sol384_byte_idx
+sol384_byte_loop:
+        ; Add s1[x] = fp384_wide[x] (always present).
         clc
-        lda sol384_sum_lo
         adc fp384_wide,x
-        sta sol384_sum_lo
-        lda sol384_sum_hi
-        adc #0
-        sta sol384_sum_hi
+        bcc sol384_s1_done
+        iny
+sol384_s1_done:
+        ; Dispatch to per-byte contribution routine via self-modifying JMP.
+        ; We must preserve A and Y across the setup, but we can freely use X
+        ; for table indexing then reload it at the destination.
+        sta sol384_lo_save              ; 4
+        lda sol384_jmp_tbl_lo,x         ; 4
+        sta sol384_dispatch+1           ; 4
+        lda sol384_jmp_tbl_hi,x         ; 4
+        sta sol384_dispatch+2           ; 4
+        lda sol384_lo_save              ; 4  (A restored, X and Y untouched)
+sol384_dispatch:
+        jmp sol384_b0                   ; 3, operand rewritten above
 
-        jsr sol384_add_contributions
-
-        lda sol384_sum_lo
-        ldx sol384_byte_idx
-        sta fp384_r0,x
-        lda sol384_sum_hi
-        sta sol384_acc_lo
-        bpl +
-        lda #$ff
-        sta sol384_acc_hi
-        ldx sol384_byte_idx
+        ; All per-byte routines jump back here. On entry:
+        ;   A = final lo byte of accumulator
+        ;   Y = final hi byte of accumulator
+        ;   X = byte index (preserved across per-byte routine)
+sol384_after_contrib:
+        sta fp384_r0,x                  ; store output byte
+        ; Next iteration's carry-in: A = old Y (signed byte), Y = sign-ext(old Y).
+        tya                             ; A = old hi, sets N flag from old Y
+        bpl sol384_pos                  ; branch BEFORE clobbering flags
+        ldy #$ff                        ; negative: sign-extend high to $ff
+        jmp sol384_cont
+sol384_pos:
+        ldy #$00                        ; non-negative: high = 0
+sol384_cont:
         inx
         cpx #48
         bcs @byte_done
-        jmp @byte_loop
-+
-        lda #0
-        sta sol384_acc_hi
-        ldx sol384_byte_idx
-        inx
-        cpx #48
-        bcs @byte_done
-        jmp @byte_loop
+        jmp sol384_byte_loop
 
 @byte_done:
-        lda sol384_acc_lo
+        ; A = final lo overflow (signed), Y = final hi overflow (sign-extended)
         sta sol384_overflow
-        lda sol384_acc_hi
-        sta sol384_overflow+1
+        sty sol384_overflow+1
 
 @reduce_loop:
         lda sol384_overflow+1
@@ -284,59 +281,62 @@ fp_mod_reduce384:
 @reduction_done:
         rts
 
-sol384_add_contributions:
-        lda sol384_byte_idx
-        asl
-        tax
-        lda sol384_jmp_tbl,x
-        sta sol384_jmp_addr
-        lda sol384_jmp_tbl+1,x
-        sta sol384_jmp_addr+1
-        jmp (sol384_jmp_addr)
+; Parallel lo/hi tables for self-modifying dispatch JMP.
+sol384_jmp_tbl_lo:
+        !byte <sol384_b0,  <sol384_b1,  <sol384_b2,  <sol384_b3
+        !byte <sol384_b4,  <sol384_b5,  <sol384_b6,  <sol384_b7
+        !byte <sol384_b8,  <sol384_b9,  <sol384_b10, <sol384_b11
+        !byte <sol384_b12, <sol384_b13, <sol384_b14, <sol384_b15
+        !byte <sol384_b16, <sol384_b17, <sol384_b18, <sol384_b19
+        !byte <sol384_b20, <sol384_b21, <sol384_b22, <sol384_b23
+        !byte <sol384_b24, <sol384_b25, <sol384_b26, <sol384_b27
+        !byte <sol384_b28, <sol384_b29, <sol384_b30, <sol384_b31
+        !byte <sol384_b32, <sol384_b33, <sol384_b34, <sol384_b35
+        !byte <sol384_b36, <sol384_b37, <sol384_b38, <sol384_b39
+        !byte <sol384_b40, <sol384_b41, <sol384_b42, <sol384_b43
+        !byte <sol384_b44, <sol384_b45, <sol384_b46, <sol384_b47
 
-sol384_jmp_addr: !word 0
-
-sol384_jmp_tbl:
-        !word sol384_b0,  sol384_b1,  sol384_b2,  sol384_b3
-        !word sol384_b4,  sol384_b5,  sol384_b6,  sol384_b7
-        !word sol384_b8,  sol384_b9,  sol384_b10, sol384_b11
-        !word sol384_b12, sol384_b13, sol384_b14, sol384_b15
-        !word sol384_b16, sol384_b17, sol384_b18, sol384_b19
-        !word sol384_b20, sol384_b21, sol384_b22, sol384_b23
-        !word sol384_b24, sol384_b25, sol384_b26, sol384_b27
-        !word sol384_b28, sol384_b29, sol384_b30, sol384_b31
-        !word sol384_b32, sol384_b33, sol384_b34, sol384_b35
-        !word sol384_b36, sol384_b37, sol384_b38, sol384_b39
-        !word sol384_b40, sol384_b41, sol384_b42, sol384_b43
-        !word sol384_b44, sol384_b45, sol384_b46, sol384_b47
+sol384_jmp_tbl_hi:
+        !byte >sol384_b0,  >sol384_b1,  >sol384_b2,  >sol384_b3
+        !byte >sol384_b4,  >sol384_b5,  >sol384_b6,  >sol384_b7
+        !byte >sol384_b8,  >sol384_b9,  >sol384_b10, >sol384_b11
+        !byte >sol384_b12, >sol384_b13, >sol384_b14, >sol384_b15
+        !byte >sol384_b16, >sol384_b17, >sol384_b18, >sol384_b19
+        !byte >sol384_b20, >sol384_b21, >sol384_b22, >sol384_b23
+        !byte >sol384_b24, >sol384_b25, >sol384_b26, >sol384_b27
+        !byte >sol384_b28, >sol384_b29, >sol384_b30, >sol384_b31
+        !byte >sol384_b32, >sol384_b33, >sol384_b34, >sol384_b35
+        !byte >sol384_b36, >sol384_b37, >sol384_b38, >sol384_b39
+        !byte >sol384_b40, >sol384_b41, >sol384_b42, >sol384_b43
+        !byte >sol384_b44, >sol384_b45, >sol384_b46, >sol384_b47
 
 sol384_b0:
         +sol384_add_byte 48
         +sol384_add_byte 80
         +sol384_add_byte 84
         +sol384_sub_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b1:
         +sol384_add_byte 49
         +sol384_add_byte 81
         +sol384_add_byte 85
         +sol384_sub_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b2:
         +sol384_add_byte 50
         +sol384_add_byte 82
         +sol384_add_byte 86
         +sol384_sub_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b3:
         +sol384_add_byte 51
         +sol384_add_byte 83
         +sol384_add_byte 87
         +sol384_sub_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b4:
         +sol384_sub_byte 48
@@ -344,7 +344,7 @@ sol384_b4:
         +sol384_sub_byte 80
         +sol384_add_byte 88
         +sol384_add_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b5:
         +sol384_sub_byte 49
@@ -352,7 +352,7 @@ sol384_b5:
         +sol384_sub_byte 81
         +sol384_add_byte 89
         +sol384_add_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b6:
         +sol384_sub_byte 50
@@ -360,7 +360,7 @@ sol384_b6:
         +sol384_sub_byte 82
         +sol384_add_byte 90
         +sol384_add_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b7:
         +sol384_sub_byte 51
@@ -368,35 +368,35 @@ sol384_b7:
         +sol384_sub_byte 83
         +sol384_add_byte 91
         +sol384_add_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b8:
         +sol384_sub_byte 52
         +sol384_add_byte 56
         +sol384_sub_byte 84
         +sol384_add_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b9:
         +sol384_sub_byte 53
         +sol384_add_byte 57
         +sol384_sub_byte 85
         +sol384_add_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b10:
         +sol384_sub_byte 54
         +sol384_add_byte 58
         +sol384_sub_byte 86
         +sol384_add_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b11:
         +sol384_sub_byte 55
         +sol384_add_byte 59
         +sol384_sub_byte 87
         +sol384_add_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b12:
         +sol384_add_byte 48
@@ -406,7 +406,7 @@ sol384_b12:
         +sol384_add_byte 84
         +sol384_sub_byte 88
         +sol384_sub_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b13:
         +sol384_add_byte 49
@@ -416,7 +416,7 @@ sol384_b13:
         +sol384_add_byte 85
         +sol384_sub_byte 89
         +sol384_sub_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b14:
         +sol384_add_byte 50
@@ -426,7 +426,7 @@ sol384_b14:
         +sol384_add_byte 86
         +sol384_sub_byte 90
         +sol384_sub_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b15:
         +sol384_add_byte 51
@@ -436,7 +436,7 @@ sol384_b15:
         +sol384_add_byte 87
         +sol384_sub_byte 91
         +sol384_sub_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b16:
         +sol384_add_byte 48
@@ -448,7 +448,7 @@ sol384_b16:
         +sol384_add_byte 88
         +sol384_sub_byte 92
         +sol384_sub_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b17:
         +sol384_add_byte 49
@@ -460,7 +460,7 @@ sol384_b17:
         +sol384_add_byte 89
         +sol384_sub_byte 93
         +sol384_sub_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b18:
         +sol384_add_byte 50
@@ -472,7 +472,7 @@ sol384_b18:
         +sol384_add_byte 90
         +sol384_sub_byte 94
         +sol384_sub_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b19:
         +sol384_add_byte 51
@@ -484,7 +484,7 @@ sol384_b19:
         +sol384_add_byte 91
         +sol384_sub_byte 95
         +sol384_sub_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b20:
         +sol384_add_byte 52
@@ -494,7 +494,7 @@ sol384_b20:
         +sol384_add_byte 84
         +sol384_add2_byte 88
         +sol384_add_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b21:
         +sol384_add_byte 53
@@ -504,7 +504,7 @@ sol384_b21:
         +sol384_add_byte 85
         +sol384_add2_byte 89
         +sol384_add_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b22:
         +sol384_add_byte 54
@@ -514,7 +514,7 @@ sol384_b22:
         +sol384_add_byte 86
         +sol384_add2_byte 90
         +sol384_add_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b23:
         +sol384_add_byte 55
@@ -524,7 +524,7 @@ sol384_b23:
         +sol384_add_byte 87
         +sol384_add2_byte 91
         +sol384_add_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b24:
         +sol384_add_byte 56
@@ -533,7 +533,7 @@ sol384_b24:
         +sol384_add_byte 72
         +sol384_add_byte 88
         +sol384_add2_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b25:
         +sol384_add_byte 57
@@ -542,7 +542,7 @@ sol384_b25:
         +sol384_add_byte 73
         +sol384_add_byte 89
         +sol384_add2_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b26:
         +sol384_add_byte 58
@@ -551,7 +551,7 @@ sol384_b26:
         +sol384_add_byte 74
         +sol384_add_byte 90
         +sol384_add2_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b27:
         +sol384_add_byte 59
@@ -560,7 +560,7 @@ sol384_b27:
         +sol384_add_byte 75
         +sol384_add_byte 91
         +sol384_add2_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b28:
         +sol384_add_byte 60
@@ -568,7 +568,7 @@ sol384_b28:
         +sol384_sub_byte 72
         +sol384_add_byte 76
         +sol384_add_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b29:
         +sol384_add_byte 61
@@ -576,7 +576,7 @@ sol384_b29:
         +sol384_sub_byte 73
         +sol384_add_byte 77
         +sol384_add_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b30:
         +sol384_add_byte 62
@@ -584,7 +584,7 @@ sol384_b30:
         +sol384_sub_byte 74
         +sol384_add_byte 78
         +sol384_add_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b31:
         +sol384_add_byte 63
@@ -592,125 +592,122 @@ sol384_b31:
         +sol384_sub_byte 75
         +sol384_add_byte 79
         +sol384_add_byte 95
-        rts
+        jmp sol384_after_contrib
 
 sol384_b32:
         +sol384_add_byte 64
         +sol384_add_byte 68
         +sol384_sub_byte 76
         +sol384_add_byte 80
-        rts
+        jmp sol384_after_contrib
 
 sol384_b33:
         +sol384_add_byte 65
         +sol384_add_byte 69
         +sol384_sub_byte 77
         +sol384_add_byte 81
-        rts
+        jmp sol384_after_contrib
 
 sol384_b34:
         +sol384_add_byte 66
         +sol384_add_byte 70
         +sol384_sub_byte 78
         +sol384_add_byte 82
-        rts
+        jmp sol384_after_contrib
 
 sol384_b35:
         +sol384_add_byte 67
         +sol384_add_byte 71
         +sol384_sub_byte 79
         +sol384_add_byte 83
-        rts
+        jmp sol384_after_contrib
 
 sol384_b36:
         +sol384_add_byte 68
         +sol384_add_byte 72
         +sol384_sub_byte 80
         +sol384_add_byte 84
-        rts
+        jmp sol384_after_contrib
 
 sol384_b37:
         +sol384_add_byte 69
         +sol384_add_byte 73
         +sol384_sub_byte 81
         +sol384_add_byte 85
-        rts
+        jmp sol384_after_contrib
 
 sol384_b38:
         +sol384_add_byte 70
         +sol384_add_byte 74
         +sol384_sub_byte 82
         +sol384_add_byte 86
-        rts
+        jmp sol384_after_contrib
 
 sol384_b39:
         +sol384_add_byte 71
         +sol384_add_byte 75
         +sol384_sub_byte 83
         +sol384_add_byte 87
-        rts
+        jmp sol384_after_contrib
 
 sol384_b40:
         +sol384_add_byte 72
         +sol384_add_byte 76
         +sol384_sub_byte 84
         +sol384_add_byte 88
-        rts
+        jmp sol384_after_contrib
 
 sol384_b41:
         +sol384_add_byte 73
         +sol384_add_byte 77
         +sol384_sub_byte 85
         +sol384_add_byte 89
-        rts
+        jmp sol384_after_contrib
 
 sol384_b42:
         +sol384_add_byte 74
         +sol384_add_byte 78
         +sol384_sub_byte 86
         +sol384_add_byte 90
-        rts
+        jmp sol384_after_contrib
 
 sol384_b43:
         +sol384_add_byte 75
         +sol384_add_byte 79
         +sol384_sub_byte 87
         +sol384_add_byte 91
-        rts
+        jmp sol384_after_contrib
 
 sol384_b44:
         +sol384_add_byte 76
         +sol384_add_byte 80
         +sol384_sub_byte 88
         +sol384_add_byte 92
-        rts
+        jmp sol384_after_contrib
 
 sol384_b45:
         +sol384_add_byte 77
         +sol384_add_byte 81
         +sol384_sub_byte 89
         +sol384_add_byte 93
-        rts
+        jmp sol384_after_contrib
 
 sol384_b46:
         +sol384_add_byte 78
         +sol384_add_byte 82
         +sol384_sub_byte 90
         +sol384_add_byte 94
-        rts
+        jmp sol384_after_contrib
 
 sol384_b47:
         +sol384_add_byte 79
         +sol384_add_byte 83
         +sol384_sub_byte 91
         +sol384_add_byte 95
-        rts
+        jmp sol384_after_contrib
 
-sol384_acc_lo:      !byte 0
-sol384_acc_hi:      !byte 0
-sol384_sum_lo:      !byte 0
-sol384_sum_hi:      !byte 0
-sol384_byte_idx:    !byte 0
+sol384_lo_save:     !byte 0
+sol384_idx_save:    !byte 0
 sol384_overflow:    !word 0
 
 ; =============================================================================
