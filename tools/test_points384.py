@@ -89,6 +89,10 @@ def jacobian_to_affine_python(jx, jy, jz):
     return ax, ay
 
 
+def int_to_be_bytes(val, length=48):
+    return val.to_bytes(length, "big")
+
+
 def zero_point(transport, addr, nbytes=144):
     """Zero-fill a buffer from Python (avoids relying on asm infinity fill)."""
     write_bytes(transport, addr, b"\x00" * nbytes)
@@ -293,6 +297,82 @@ def test_add_infinity_plus_g_384(transport, labels):
     return passed, failed
 
 
+def test_scalar_mul_k1_384(transport, labels):
+    """Scalar multiplication k=1: 1*G = G via ec_scalar_mul_384."""
+    passed = failed = 0
+    SCALAR_BUF = 0x033C
+
+    print("  Writing scalar k=1 (big-endian, 48 bytes) to memory...")
+    k_bytes = int_to_be_bytes(1, 48)
+    write_bytes(transport, SCALAR_BUF, k_bytes)
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
+
+    print("  Calling ec_scalar_mul_384 (k=1)...")
+    t0 = time.time()
+    jsr(transport, labels["ec_scalar_mul_384"], timeout=3600.0)
+    elapsed = time.time() - t0
+    print(f"  ec_scalar_mul_384 completed in {elapsed:.1f}s")
+
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec384_p3"])
+    if VERBOSE:
+        print(f"    Jacobian result: X={p3x:#098x}")
+        print(f"                     Y={p3y:#098x}")
+        print(f"                     Z={p3z:#098x}")
+
+    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
+
+    if ax == G_X and ay == G_Y:
+        passed += 1
+        print("  PASS: 1*G via scalar_mul_384 = G")
+    else:
+        failed += 1
+        print("  FAIL: 1*G via scalar_mul_384 does not match G")
+        print(f"    expected X = {G_X:#098x}")
+        print(f"    got      X = {ax:#098x}")
+        print(f"    expected Y = {G_Y:#098x}")
+        print(f"    got      Y = {ay:#098x}")
+
+    return passed, failed
+
+
+def test_scalar_mul_small_384(transport, labels):
+    """Small scalar multiplication -- 2*G via ec_scalar_mul_384."""
+    passed = failed = 0
+    SCALAR_BUF = 0x033C
+
+    print("  Writing scalar k=2 (big-endian, 48 bytes) to memory...")
+    k_bytes = int_to_be_bytes(2, 48)
+    write_bytes(transport, SCALAR_BUF, k_bytes)
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
+
+    print("  Calling ec_scalar_mul_384 (k=2, windowed method)...")
+    t0 = time.time()
+    jsr(transport, labels["ec_scalar_mul_384"], timeout=3600.0)
+    elapsed = time.time() - t0
+    print(f"  ec_scalar_mul_384 completed in {elapsed:.1f}s")
+
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec384_p3"])
+    if VERBOSE:
+        print(f"    Jacobian result: X={p3x:#098x}")
+        print(f"                     Y={p3y:#098x}")
+        print(f"                     Z={p3z:#098x}")
+
+    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
+
+    if ax == TWO_G_X and ay == TWO_G_Y:
+        passed += 1
+        print("  PASS: 2*G via scalar_mul_384 matches expected coordinates")
+    else:
+        failed += 1
+        print("  FAIL: 2*G via scalar_mul_384 does not match")
+        print(f"    expected X = {TWO_G_X:#098x}")
+        print(f"    got      X = {ax:#098x}")
+        print(f"    expected Y = {TWO_G_Y:#098x}")
+        print(f"    got      Y = {ay:#098x}")
+
+    return passed, failed
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -314,6 +394,10 @@ def run_tests(transport, labels):
          lambda: test_point_at_infinity_384(transport, labels)),
         ("Infinity + G = G (add)",
          lambda: test_add_infinity_plus_g_384(transport, labels)),
+        ("Scalar mul (k=1, expect G)",
+         lambda: test_scalar_mul_k1_384(transport, labels)),
+        ("Scalar mul (k=2, expect 2*G)",
+         lambda: test_scalar_mul_small_384(transport, labels)),
     ]
 
     for name, test_fn in test_groups:
@@ -378,10 +462,11 @@ def main():
     required = [
         "ec384_p1", "ec384_p2", "ec384_p3",
         "ec_gx384", "ec_gy384", "ec_p384",
-        "ec_point_double_384", "ec_point_add_384",
+        "ec_point_double_384", "ec_point_add_384", "ec_scalar_mul_384",
         "ec_set_modp_384", "ec_mulp_384",
         "fp_copy_384", "fp_zero_384",
         "sqtab_init", "reu_mul_init",
+        "ec_scalar_ptr",
         "fp_src1", "fp_src2", "fp_dst", "fp_misc",
         "fp384_tmp1", "fp384_tmp2", "fp384_tmp3",
     ]
