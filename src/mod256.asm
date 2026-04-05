@@ -840,91 +840,83 @@ fp_mod_inv:
 @halfu:
         lda fp_inv_u            ; byte 0 = LSB
         and #1
-        bne @halfv
+        beq +
+        jmp @halfv
++
 
-        lda #<fp_inv_u
-        sta fp_src1
-        lda #>fp_inv_u
-        sta fp_src1+1
-        jsr fp_rshift1
+        ; Inlined 32-byte shift of fp_inv_u using absolute addressing.
+        ; MSB-first ROR chain; clc before first ROR (equivalent to LSR on MSB).
+        clc
+!for .i, 31, 0 {
+        ror fp_inv_u + .i
+}
 
         lda fp_inv_x1           ; byte 0 = LSB
         and #1
         beq @x1ev_nocarry
-        ; x1 += mod
-        lda #<fp_inv_x1
-        sta fp_src1
-        sta fp_dst
-        lda #>fp_inv_x1
-        sta fp_src1+1
-        sta fp_dst+1
-        lda fp_misc
-        sta fp_src2
-        lda fp_misc+1
-        sta fp_src2+1
-        jsr fp_add
+        ; x1 += mod (in place). mod is (fp_misc) - dynamic, use indirect for src2.
+        ; x1 destination is absolute; use absolute addressing for x1 to avoid
+        ; indirect fp_src1/fp_dst pointer setup/teardown.
+        clc
+        ldy #0
+        ldx #32
+@x1addmod:
+        lda fp_inv_x1,y
+        adc (fp_misc),y
+        sta fp_inv_x1,y
+        iny
+        dex
+        bne @x1addmod
+        lda #0
+        adc #0                  ; A = carry out (0 or 1)
+        lsr                     ; push into 6502 carry flag
         jmp @x1do_shift
 @x1ev_nocarry:
-        lda #0
-        sta fp_carry
+        clc
 @x1do_shift:
-        ; x1 >>= 1, with carry from fp_add shifted in as MSB
-        ; In little-endian, MSB is byte 31 - shift carry into byte 31's top bit
-        lda fp_carry
-        lsr                     ; shift into 6502 carry flag
-        ldy #31                 ; start from MSB
-        ldx #32
-@x1sh:
-        lda fp_inv_x1,y
-        ror                     ; rotate carry in from left (high bit)
-        sta fp_inv_x1,y
-        dey
-        dex
-        bne @x1sh
+        ; x1 >>= 1, with add-carry shifted into MSB.
+        ; Inlined ROR chain on absolute addresses.
+!for .i, 31, 0 {
+        ror fp_inv_x1 + .i
+}
         jmp @halfu
 
         ; While v is even
 @halfv:
         lda fp_inv_v            ; byte 0 = LSB
         and #1
-        bne @comp
+        beq +
+        jmp @comp
++
 
-        lda #<fp_inv_v
-        sta fp_src1
-        lda #>fp_inv_v
-        sta fp_src1+1
-        jsr fp_rshift1
+        clc
+!for .i, 31, 0 {
+        ror fp_inv_v + .i
+}
 
         lda fp_inv_x2           ; byte 0 = LSB
         and #1
         beq @x2ev_nocarry
-        lda #<fp_inv_x2
-        sta fp_src1
-        sta fp_dst
-        lda #>fp_inv_x2
-        sta fp_src1+1
-        sta fp_dst+1
-        lda fp_misc
-        sta fp_src2
-        lda fp_misc+1
-        sta fp_src2+1
-        jsr fp_add
+        clc
+        ldy #0
+        ldx #32
+@x2addmod:
+        lda fp_inv_x2,y
+        adc (fp_misc),y
+        sta fp_inv_x2,y
+        iny
+        dex
+        bne @x2addmod
+        lda #0
+        adc #0
+        lsr
         jmp @x2do_shift
 @x2ev_nocarry:
-        lda #0
-        sta fp_carry
+        clc
 @x2do_shift:
-        lda fp_carry
-        lsr                     ; into 6502 carry
-        ldy #31
-        ldx #32
-@x2sh:
-        lda fp_inv_x2,y
-        ror
-        sta fp_inv_x2,y
-        dey
-        dex
-        bne @x2sh
+!for .i, 31, 0 {
+        ror fp_inv_x2 + .i
+}
         jmp @halfv
 
 @comp:

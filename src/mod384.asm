@@ -796,87 +796,77 @@ fp_mod_inv_384:
 @halfu:
         lda fp384_inv_u
         and #1
-        bne @halfv
+        beq +
+        jmp @halfv
++
 
-        lda #<fp384_inv_u
-        sta fp_src1
-        lda #>fp384_inv_u
-        sta fp_src1+1
-        jsr fp_rshift1_384
+        ; Inlined 48-byte shift of fp384_inv_u, MSB-first ROR chain.
+        clc
+!for .i, 47, 0 {
+        ror fp384_inv_u + .i
+}
 
         lda fp384_inv_x1
         and #1
         beq @x1ev_nocarry
-        lda #<fp384_inv_x1
-        sta fp_src1
-        sta fp_dst
-        lda #>fp384_inv_x1
-        sta fp_src1+1
-        sta fp_dst+1
-        lda fp_misc
-        sta fp_src2
-        lda fp_misc+1
-        sta fp_src2+1
-        jsr fp_add_384
+        ; x1 += mod (in place) using absolute addressing for x1.
+        clc
+        ldy #0
+        ldx #48
+@x1addmod:
+        lda fp384_inv_x1,y
+        adc (fp_misc),y
+        sta fp384_inv_x1,y
+        iny
+        dex
+        bne @x1addmod
+        lda #0
+        adc #0
+        lsr                     ; carry-out -> 6502 carry flag
         jmp @x1do_shift
 @x1ev_nocarry:
-        lda #0
-        sta fp_carry
+        clc
 @x1do_shift:
-        lda fp_carry
-        lsr
-        ldy #47
-        ldx #48
-@x1sh:
-        lda fp384_inv_x1,y
-        ror
-        sta fp384_inv_x1,y
-        dey
-        dex
-        bne @x1sh
+!for .i, 47, 0 {
+        ror fp384_inv_x1 + .i
+}
         jmp @halfu
 
 @halfv:
         lda fp384_inv_v
         and #1
-        bne @comp
+        beq +
+        jmp @comp
++
 
-        lda #<fp384_inv_v
-        sta fp_src1
-        lda #>fp384_inv_v
-        sta fp_src1+1
-        jsr fp_rshift1_384
+        clc
+!for .i, 47, 0 {
+        ror fp384_inv_v + .i
+}
 
         lda fp384_inv_x2
         and #1
         beq @x2ev_nocarry
-        lda #<fp384_inv_x2
-        sta fp_src1
-        sta fp_dst
-        lda #>fp384_inv_x2
-        sta fp_src1+1
-        sta fp_dst+1
-        lda fp_misc
-        sta fp_src2
-        lda fp_misc+1
-        sta fp_src2+1
-        jsr fp_add_384
+        clc
+        ldy #0
+        ldx #48
+@x2addmod:
+        lda fp384_inv_x2,y
+        adc (fp_misc),y
+        sta fp384_inv_x2,y
+        iny
+        dex
+        bne @x2addmod
+        lda #0
+        adc #0
+        lsr
         jmp @x2do_shift
 @x2ev_nocarry:
-        lda #0
-        sta fp_carry
+        clc
 @x2do_shift:
-        lda fp_carry
-        lsr
-        ldy #47
-        ldx #48
-@x2sh:
-        lda fp384_inv_x2,y
-        ror
-        sta fp384_inv_x2,y
-        dey
-        dex
-        bne @x2sh
+!for .i, 47, 0 {
+        ror fp384_inv_x2 + .i
+}
         jmp @halfv
 
 @comp:
