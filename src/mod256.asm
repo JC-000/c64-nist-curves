@@ -171,83 +171,52 @@ fp_mod_sub:
 ; Output byte position p corresponds to word index p/4 and byte offset p%4.
 
 fp_mod_reduce256:
-        ; Use fp_red_tmp[0..32] as the 33-byte accumulation buffer (32 + carry)
-        ; Working with a signed 16-bit accumulator in sol_acc_lo/sol_acc_hi
+        ; Signed 16-bit accumulator: low byte in sol_sum_lo (abs), high byte in Y.
+        ; Byte index (0..31) kept in X throughout. Contribution routines preserve
+        ; X and Y, updating sol_sum_lo and Y via self-modifying JMP dispatch.
 
-        ; Zero the accumulator carry
         lda #0
-        sta sol_acc_lo
-        sta sol_acc_hi
-
-        ; Process each output byte 0..31
-        ldx #0                  ; output byte index
-@byte_loop:
-        stx sol_byte_idx
-
-        ; Start with carry from previous byte
-        lda sol_acc_lo
         sta sol_sum_lo
-        lda sol_acc_hi
-        sta sol_sum_hi
+        tay                     ; Y = 0 (signed high byte of accumulator)
+        ldx #0                  ; byte index
 
+sol_byte_loop:
         ; --- Add s1[x] = fp_wide[x] (lower half, always present) ---
-        ldx sol_byte_idx
         clc
         lda sol_sum_lo
         adc fp_wide,x
         sta sol_sum_lo
-        lda sol_sum_hi
-        adc #0
-        sta sol_sum_hi
-
-        ; --- Now add contributions from s2..s9 based on byte position ---
-        ; We need to figure out which cN bytes contribute at this position.
-        ; Instead of a big branch table, we use a lookup table approach.
-        ; But for clarity and correctness, we use a subroutine for each
-        ; byte position. Since there are only 32 bytes, we index into
-        ; a contribution table.
-
-        ; Call the per-byte contribution accumulator
-        jsr sol_add_contributions
-
-        ; Extract result byte and carry for next position
-        ; sol_sum is a signed 16-bit value. The low byte is the result byte.
-        ; The high byte (possibly signed) is the carry to next byte.
-        lda sol_sum_lo
-        ldx sol_byte_idx
-        sta fp_r0,x
-        lda sol_sum_hi
-        sta sol_acc_lo
-        ; Sign-extend the carry
-        bpl +
-        lda #$ff
-        sta sol_acc_hi
-        ldx sol_byte_idx
-        inx
-        cpx #32
-        bcs @byte_done
-        jmp @byte_loop
+        bcc +
+        iny
 +
+        ; --- Dispatch to per-byte contribution routine via self-mod JMP ---
+        lda sol_jmp_tbl_lo,x
+        sta sol_dispatch+1
+        lda sol_jmp_tbl_hi,x
+        sta sol_dispatch+2
+sol_dispatch:
+        jmp $0000               ; patched -> sol_bN; returns via jmp sol_after_contrib
+sol_after_contrib:
+        ; sol_sum_lo + Y now holds the signed 16-bit partial sum for this byte.
+        lda sol_sum_lo
+        sta fp_r0,x
+        ; Carry into next byte: low = old high (Y), high = sign-extend(Y).
+        sty sol_sum_lo
+        cpy #$80                ; carry = (Y >= $80); sets sign flag too
         lda #0
-        sta sol_acc_hi
-        ldx sol_byte_idx
+        bcc +
+        lda #$ff                ; Y was negative -> sign-extend to $FF
++
+        tay
         inx
         cpx #32
-        bcc @byte_loop
+        bcc sol_byte_loop
 
-@byte_done:
-        ; sol_acc_lo/hi contains the signed overflow beyond byte 31.
-        ; The true value is: overflow * 2^256 + fp_r0 (unsigned 256-bit).
-        ; We need to reduce to [0, p-1].
-        ;
-        ; Treat {sol_overflow, fp_r0} as a 34-byte signed number.
-        ; Repeatedly add or subtract p (propagating borrow/carry into overflow)
-        ; until overflow == 0 and fp_r0 < p.
-
-        lda sol_acc_lo
+        ; sol_sum_lo / Y contain the signed overflow beyond byte 31 --
+        ; i.e. (Y, sol_sum_lo) is the signed 16-bit overflow.
+        lda sol_sum_lo
         sta sol_overflow
-        lda sol_acc_hi
-        sta sol_overflow+1
+        sty sol_overflow+1
 
 @reduce_loop:
         ; Check if overflow is negative -> add p
@@ -326,71 +295,69 @@ fp_mod_reduce256:
 ;
 ; We implement this as a jump table indexed by byte position.
 
-sol_add_contributions:
-        lda sol_byte_idx
-        asl                     ; *2 for address table
-        tax
-        lda sol_jmp_tbl,x
-        sta sol_jmp_addr
-        lda sol_jmp_tbl+1,x
-        sta sol_jmp_addr+1
-        jmp (sol_jmp_addr)
+; Jump tables for 32 byte positions (indexed by X = byte idx 0..31).
+; Split into parallel lo/hi byte tables so dispatch is a single indexed
+; load into the self-modifying sol_dispatch instruction above.
+sol_jmp_tbl_lo:
+        !byte <sol_b0,  <sol_b1,  <sol_b2,  <sol_b3
+        !byte <sol_b4,  <sol_b5,  <sol_b6,  <sol_b7
+        !byte <sol_b8,  <sol_b9,  <sol_b10, <sol_b11
+        !byte <sol_b12, <sol_b13, <sol_b14, <sol_b15
+        !byte <sol_b16, <sol_b17, <sol_b18, <sol_b19
+        !byte <sol_b20, <sol_b21, <sol_b22, <sol_b23
+        !byte <sol_b24, <sol_b25, <sol_b26, <sol_b27
+        !byte <sol_b28, <sol_b29, <sol_b30, <sol_b31
+sol_jmp_tbl_hi:
+        !byte >sol_b0,  >sol_b1,  >sol_b2,  >sol_b3
+        !byte >sol_b4,  >sol_b5,  >sol_b6,  >sol_b7
+        !byte >sol_b8,  >sol_b9,  >sol_b10, >sol_b11
+        !byte >sol_b12, >sol_b13, >sol_b14, >sol_b15
+        !byte >sol_b16, >sol_b17, >sol_b18, >sol_b19
+        !byte >sol_b20, >sol_b21, >sol_b22, >sol_b23
+        !byte >sol_b24, >sol_b25, >sol_b26, >sol_b27
+        !byte >sol_b28, >sol_b29, >sol_b30, >sol_b31
 
-sol_jmp_addr: !word 0
+; Macro-like helpers for adding/subtracting an fp_wide byte to the running
+; 16-bit signed accumulator. Convention: low byte lives in `sol_sum_lo`,
+; high byte lives in the Y register throughout the per-byte contribution
+; sequence. X holds the output byte index and must be preserved.
 
-; Jump table for 32 byte positions
-sol_jmp_tbl:
-        !word sol_b0,  sol_b1,  sol_b2,  sol_b3   ; word 0 (bytes 0-3)
-        !word sol_b4,  sol_b5,  sol_b6,  sol_b7   ; word 1 (bytes 4-7)
-        !word sol_b8,  sol_b9,  sol_b10, sol_b11  ; word 2 (bytes 8-11)
-        !word sol_b12, sol_b13, sol_b14, sol_b15  ; word 3 (bytes 12-15)
-        !word sol_b16, sol_b17, sol_b18, sol_b19  ; word 4 (bytes 16-19)
-        !word sol_b20, sol_b21, sol_b22, sol_b23  ; word 5 (bytes 20-23)
-        !word sol_b24, sol_b25, sol_b26, sol_b27  ; word 6 (bytes 24-27)
-        !word sol_b28, sol_b29, sol_b30, sol_b31  ; word 7 (bytes 28-31)
-
-; Macro-like helpers for adding/subtracting a byte from fp_wide to sol_sum
-; These are called via jsr from the per-byte routines.
-
-; Add fp_wide byte at offset in Y to sol_sum (unsigned addition to signed acc)
-; Preserves: nothing special, but sol_sum is updated
+; Add fp_wide[off] to (Y:sol_sum_lo). Clobbers A, flags; updates Y on carry.
 !macro sol_add_byte .off {
         clc
         lda sol_sum_lo
         adc fp_wide + .off
         sta sol_sum_lo
-        lda sol_sum_hi
-        adc #0
-        sta sol_sum_hi
-}
-
-; Add 2 * fp_wide byte (for 2*s2, 2*s3)
-!macro sol_add2_byte .off {
-        lda fp_wide + .off
-        asl                     ; *2, carry = bit 7 of original (worth 256)
-        php                     ; save carry from ASL on stack
-        clc
-        adc sol_sum_lo
-        sta sol_sum_lo
-        lda sol_sum_hi
-        adc #0
-        sta sol_sum_hi
-        ; Now add the carry from ASL (worth 1 in high byte)
-        plp                     ; restore carry from ASL
         bcc .skip
-        inc sol_sum_hi
+        iny
 .skip:
 }
 
-; Subtract fp_wide byte
+; Add 2 * fp_wide[off] to (Y:sol_sum_lo). Bit 7 of the byte becomes a +1 in Y,
+; plus any carry from the low-byte addition.
+!macro sol_add2_byte .off {
+        lda fp_wide + .off
+        asl
+        bcc .noinc1
+        iny                     ; bit 7 -> +256
+.noinc1:
+        clc
+        adc sol_sum_lo
+        sta sol_sum_lo
+        bcc .noinc2
+        iny
+.noinc2:
+}
+
+; Subtract fp_wide[off] from (Y:sol_sum_lo). Borrow decrements Y.
 !macro sol_sub_byte .off {
         sec
         lda sol_sum_lo
         sbc fp_wide + .off
         sta sol_sum_lo
-        lda sol_sum_hi
-        sbc #0
-        sta sol_sum_hi
+        bcs .skip
+        dey
+.skip:
 }
 
 ; For each byte position, list contributions beyond s1 (which is always added
@@ -413,7 +380,7 @@ sol_b0: ; +c8[0] +c9[0] -c11[0] -c12[0] -c13[0] -c14[0]
         +sol_sub_byte 48        ; c12[0]
         +sol_sub_byte 52        ; c13[0]
         +sol_sub_byte 56        ; c14[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b1: ; +c8[1] +c9[1] -c11[1] -c12[1] -c13[1] -c14[1]
         +sol_add_byte 33
@@ -422,7 +389,7 @@ sol_b1: ; +c8[1] +c9[1] -c11[1] -c12[1] -c13[1] -c14[1]
         +sol_sub_byte 49
         +sol_sub_byte 53
         +sol_sub_byte 57
-        rts
+        jmp sol_after_contrib
 
 sol_b2: ; +c8[2] +c9[2] -c11[2] -c12[2] -c13[2] -c14[2]
         +sol_add_byte 34
@@ -431,7 +398,7 @@ sol_b2: ; +c8[2] +c9[2] -c11[2] -c12[2] -c13[2] -c14[2]
         +sol_sub_byte 50
         +sol_sub_byte 54
         +sol_sub_byte 58
-        rts
+        jmp sol_after_contrib
 
 sol_b3: ; +c8[3] +c9[3] -c11[3] -c12[3] -c13[3] -c14[3]
         +sol_add_byte 35
@@ -440,7 +407,7 @@ sol_b3: ; +c8[3] +c9[3] -c11[3] -c12[3] -c13[3] -c14[3]
         +sol_sub_byte 51
         +sol_sub_byte 55
         +sol_sub_byte 59
-        rts
+        jmp sol_after_contrib
 
 ; Word 1 (bytes 4-7):
 ;   s1:w1=c1, s2:w1=0, s3:w1=0, s4:w1=c9, s5:w1=c10
@@ -454,7 +421,7 @@ sol_b4:
         +sol_sub_byte 52        ; c13[0]
         +sol_sub_byte 56        ; c14[0]
         +sol_sub_byte 60        ; c15[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b5:
         +sol_add_byte 37
@@ -463,7 +430,7 @@ sol_b5:
         +sol_sub_byte 53
         +sol_sub_byte 57
         +sol_sub_byte 61
-        rts
+        jmp sol_after_contrib
 
 sol_b6:
         +sol_add_byte 38
@@ -472,7 +439,7 @@ sol_b6:
         +sol_sub_byte 54
         +sol_sub_byte 58
         +sol_sub_byte 62
-        rts
+        jmp sol_after_contrib
 
 sol_b7:
         +sol_add_byte 39
@@ -481,7 +448,7 @@ sol_b7:
         +sol_sub_byte 55
         +sol_sub_byte 59
         +sol_sub_byte 63
-        rts
+        jmp sol_after_contrib
 
 ; Word 2 (bytes 8-11):
 ;   s1:w2=c2, s2:w2=0, s3:w2=0, s4:w2=c10, s5:w2=c11
@@ -494,7 +461,7 @@ sol_b8:
         +sol_sub_byte 52        ; c13[0]
         +sol_sub_byte 56        ; c14[0]
         +sol_sub_byte 60        ; c15[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b9:
         +sol_add_byte 41
@@ -502,7 +469,7 @@ sol_b9:
         +sol_sub_byte 53
         +sol_sub_byte 57
         +sol_sub_byte 61
-        rts
+        jmp sol_after_contrib
 
 sol_b10:
         +sol_add_byte 42
@@ -510,7 +477,7 @@ sol_b10:
         +sol_sub_byte 54
         +sol_sub_byte 58
         +sol_sub_byte 62
-        rts
+        jmp sol_after_contrib
 
 sol_b11:
         +sol_add_byte 43
@@ -518,7 +485,7 @@ sol_b11:
         +sol_sub_byte 55
         +sol_sub_byte 59
         +sol_sub_byte 63
-        rts
+        jmp sol_after_contrib
 
 ; Word 3 (bytes 12-15):
 ;   s1:w3=c3, s2:w3=c11, s3:w3=c12, s4:w3=0, s5:w3=c13
@@ -532,7 +499,7 @@ sol_b12:
         +sol_sub_byte 60        ; c15[0]
         +sol_sub_byte 32        ; c8[0]
         +sol_sub_byte 36        ; c9[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b13:
         +sol_add2_byte 45       ; 2*c11[1]
@@ -541,7 +508,7 @@ sol_b13:
         +sol_sub_byte 61        ; c15[1]
         +sol_sub_byte 33        ; c8[1]
         +sol_sub_byte 37        ; c9[1]
-        rts
+        jmp sol_after_contrib
 
 sol_b14:
         +sol_add2_byte 46
@@ -550,7 +517,7 @@ sol_b14:
         +sol_sub_byte 62
         +sol_sub_byte 34
         +sol_sub_byte 38
-        rts
+        jmp sol_after_contrib
 
 sol_b15:
         +sol_add2_byte 47
@@ -559,7 +526,7 @@ sol_b15:
         +sol_sub_byte 63
         +sol_sub_byte 35
         +sol_sub_byte 39
-        rts
+        jmp sol_after_contrib
 
 ; Word 4 (bytes 16-19):
 ;   s1:w4=c4, s2:w4=c12, s3:w4=c13, s4:w4=0, s5:w4=c14
@@ -572,7 +539,7 @@ sol_b16:
         +sol_add_byte 56        ; c14[0]
         +sol_sub_byte 36        ; c9[0]
         +sol_sub_byte 40        ; c10[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b17:
         +sol_add2_byte 49
@@ -580,7 +547,7 @@ sol_b17:
         +sol_add_byte 57
         +sol_sub_byte 37
         +sol_sub_byte 41
-        rts
+        jmp sol_after_contrib
 
 sol_b18:
         +sol_add2_byte 50
@@ -588,7 +555,7 @@ sol_b18:
         +sol_add_byte 58
         +sol_sub_byte 38
         +sol_sub_byte 42
-        rts
+        jmp sol_after_contrib
 
 sol_b19:
         +sol_add2_byte 51
@@ -596,7 +563,7 @@ sol_b19:
         +sol_add_byte 59
         +sol_sub_byte 39
         +sol_sub_byte 43
-        rts
+        jmp sol_after_contrib
 
 ; Word 5 (bytes 20-23):
 ;   s1:w5=c5, s2:w5=c13, s3:w5=c14, s4:w5=0, s5:w5=c15
@@ -609,7 +576,7 @@ sol_b20:
         +sol_add_byte 60        ; c15[0]
         +sol_sub_byte 40        ; c10[0]
         +sol_sub_byte 44        ; c11[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b21:
         +sol_add2_byte 53
@@ -617,7 +584,7 @@ sol_b21:
         +sol_add_byte 61
         +sol_sub_byte 41
         +sol_sub_byte 45
-        rts
+        jmp sol_after_contrib
 
 sol_b22:
         +sol_add2_byte 54
@@ -625,7 +592,7 @@ sol_b22:
         +sol_add_byte 62
         +sol_sub_byte 42
         +sol_sub_byte 46
-        rts
+        jmp sol_after_contrib
 
 sol_b23:
         +sol_add2_byte 55
@@ -633,7 +600,7 @@ sol_b23:
         +sol_add_byte 63
         +sol_sub_byte 43
         +sol_sub_byte 47
-        rts
+        jmp sol_after_contrib
 
 ; Word 6 (bytes 24-27):
 ;   s1:w6=c6, s2:w6=c14, s3:w6=c15, s4:w6=c14, s5:w6=c13
@@ -649,7 +616,7 @@ sol_b24:
         +sol_add_byte 52        ; c13[0]
         +sol_sub_byte 32        ; c8[0]
         +sol_sub_byte 36        ; c9[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b25:
         +sol_add_byte 57
@@ -659,7 +626,7 @@ sol_b25:
         +sol_add_byte 53
         +sol_sub_byte 33
         +sol_sub_byte 37
-        rts
+        jmp sol_after_contrib
 
 sol_b26:
         +sol_add_byte 58
@@ -669,7 +636,7 @@ sol_b26:
         +sol_add_byte 54
         +sol_sub_byte 34
         +sol_sub_byte 38
-        rts
+        jmp sol_after_contrib
 
 sol_b27:
         +sol_add_byte 59
@@ -679,7 +646,7 @@ sol_b27:
         +sol_add_byte 55
         +sol_sub_byte 35
         +sol_sub_byte 39
-        rts
+        jmp sol_after_contrib
 
 ; Word 7 (bytes 28-31):
 ;   s1:w7=c7, s2:w7=c15, s3:w7=0, s4:w7=c15, s5:w7=c8
@@ -696,7 +663,7 @@ sol_b28:
         +sol_sub_byte 44        ; c11[0]
         +sol_sub_byte 48        ; c12[0]
         +sol_sub_byte 52        ; c13[0]
-        rts
+        jmp sol_after_contrib
 
 sol_b29:
         +sol_add_byte 61
@@ -707,7 +674,7 @@ sol_b29:
         +sol_sub_byte 45
         +sol_sub_byte 49
         +sol_sub_byte 53
-        rts
+        jmp sol_after_contrib
 
 sol_b30:
         +sol_add_byte 62
@@ -718,7 +685,7 @@ sol_b30:
         +sol_sub_byte 46
         +sol_sub_byte 50
         +sol_sub_byte 54
-        rts
+        jmp sol_after_contrib
 
 sol_b31:
         +sol_add_byte 63
@@ -729,7 +696,7 @@ sol_b31:
         +sol_sub_byte 47
         +sol_sub_byte 51
         +sol_sub_byte 55
-        rts
+        jmp sol_after_contrib
 
 ; Scratch variables for Solinas reduction
 sol_acc_lo:      !byte 0
