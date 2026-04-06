@@ -122,6 +122,9 @@ ec384_affine_y: !fill 48, 0
 ; --- P-384 scalar multiply state ---
 ec384_sc_byte:  !byte 0
 ec384_sc_mask:  !byte 0
+ec384_sc_nibble: !byte 0          ; current nibble index (0..95)
+ec384_sc_half:  !byte 0           ; 0=high nibble, 1=low nibble
+ec384_precomp_i: !byte 0          ; precompute loop counter
 
 ; --- P-384 Solinas reduction scratch ---
 fp384_red_tmp:

@@ -43,6 +43,10 @@ G_Y = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
 TWO_G_X = 0x7CF27B188D034F7E8A52380304B51AC3C08969E277F21B35A60B48FC47669978
 TWO_G_Y = 0x07775510DB8ED040293D9AC69F7430DBBA7DADE63CE982299E04B79D227873D1
 
+# Known 3*G coordinates (P-256)
+THREE_G_X = 0x5ECBE4D1A6330A44C8F7EF951D4BF165E6C6B721EFADA985FB41661BC6E7FD6C
+THREE_G_Y = 0x8734640C4998FF7E374B06CE1A64A2ECD82AB036384FB83D9A79B127A27D5032
+
 # RFC 6979 A.2.5 test private key (from assembly data, as integer)
 # Private key: sample signing key for message "sample" with SHA-256
 TEST_PRIVKEY = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
@@ -399,6 +403,43 @@ def test_scalar_mul_small(transport, labels):
     return passed, failed
 
 
+def test_scalar_mul_k3(transport, labels):
+    """Test: scalar multiplication with k=3 -> 3*G.
+
+    Exercises the windowed method with nibble value 3 (uses T[3] from precompute).
+    """
+    passed = failed = 0
+
+    SCALAR_BUF = 0x033C
+    k_bytes = int_to_be_bytes(3, 32)
+    write_bytes(transport, SCALAR_BUF, k_bytes)
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
+
+    print("  Calling ec_scalar_mul (k=3)...")
+    jsr(transport, labels["ec_scalar_mul"], timeout=3600.0)
+
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    if VERBOSE:
+        print(f"    Jacobian result: X={p3x:#066x}")
+        print(f"                     Y={p3y:#066x}")
+        print(f"                     Z={p3z:#066x}")
+
+    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
+
+    if ax == THREE_G_X and ay == THREE_G_Y:
+        passed += 1
+        print("  PASS: 3*G via scalar_mul matches expected coordinates")
+    else:
+        failed += 1
+        print("  FAIL: 3*G via scalar_mul does not match")
+        print(f"    expected X = {THREE_G_X:#066x}")
+        print(f"    got      X = {ax:#066x}")
+        print(f"    expected Y = {THREE_G_Y:#066x}")
+        print(f"    got      Y = {ay:#066x}")
+
+    return passed, failed
+
+
 def test_scalar_mul_full(transport, labels):
     """Test 3: Full scalar multiplication -- k*G for test private key.
 
@@ -473,6 +514,8 @@ def run_tests(transport, labels, run_full):
          lambda: test_add_infinity_plus_g(transport, labels)),
         ("Scalar mul (k=2, 2*G)", False,
          lambda: test_scalar_mul_small(transport, labels)),
+        ("Scalar mul (k=3, 3*G)", False,
+         lambda: test_scalar_mul_k3(transport, labels)),
         ("Scalar mul (full private key)", True,
          lambda: test_scalar_mul_full(transport, labels)),
     ]
@@ -575,39 +618,30 @@ def main():
 
         transport = inst.transport
 
-        # Wait for program to boot
-        grid = wait_for_text(transport, "READY.", timeout=180.0, verbose=False)
-        if grid is None:
-            print("FATAL: Program did not reach READY state")
-            print("  (sqtab_init + reu_mul_init may still be running)")
+        # Wait for C64 initialization to complete (sentinel byte at $02A7)
+        # Init includes sqtab, REU multiply tables, and precompute tables.
+        print("Waiting for init sentinel...")
+        start = time.time()
+        sentinel_ok = False
+        while time.time() - start < 600.0:
+            sentinel = read_bytes(transport, 0x02A7, 1)
+            if sentinel[0] == 0x42:
+                sentinel_ok = True
+                break
+            # Binary monitor pauses the CPU on each memory read; resume it.
+            try:
+                transport.resume()
+            except Exception:
+                pass
+            time.sleep(0.5)
+        if not sentinel_ok:
+            print("FATAL: init sentinel not set within timeout")
             mgr.release(inst)
             sys.exit(1)
-
-        print("VICE ready, program initialized.")
+        print(f"Init complete after {time.time()-start:.1f}s")
 
         # Safety: write JMP $0339 at $0339 so CPU loops harmlessly
         write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
-
-        # Re-initialize lookup tables via jsr().  The tables set up during
-        # the BASIC SYS startup can be corrupt due to VICE timing issues
-        # (binary monitor attach vs. program execution race).  Reinitializing
-        # via jsr() guarantees correct state.
-        print("Initializing quarter-square table (sqtab_init)...")
-        jsr(transport, labels["sqtab_init"], timeout=30.0)
-        print("Initializing REU multiply tables (reu_mul_init)...")
-        print("  (this takes ~2 minutes in warp mode)")
-        jsr(transport, labels["reu_mul_init"], timeout=300.0)
-        print("Tables initialized.")
-
-        # Write known-good curve data constants.  VICE startup can corrupt
-        # the PRG image due to a binary monitor attach race, so we
-        # overwrite data areas with known-correct values.  We do NOT
-        # overwrite code areas (ec_mulp etc.) because that proved to
-        # sometimes disrupt the binary monitor's jsr() mechanism.
-        print("Writing known-good curve constants to memory...")
-        write_field_elem(transport, labels["ec_gx256"], G_X)
-        write_field_elem(transport, labels["ec_gy256"], G_Y)
-        write_bytes(transport, labels["ec_p256"], int_to_le_bytes(P256))
 
         # Set fp_misc to point to ec_p256 for modular routines
         p256_addr = labels["ec_p256"]

@@ -46,6 +46,10 @@ start:
         ; Initialize REU multiplication tables
         jsr reu_mul_init
 
+        ; Precompute windowed scalar multiplication tables into REU bank 2
+        jsr ec_precompute_256
+        jsr ec_precompute_384
+
         ; display ready message
         lda #<ready_msg
         ldy #>ready_msg
