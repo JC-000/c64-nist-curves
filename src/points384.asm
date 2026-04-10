@@ -740,82 +740,126 @@ ec_point_add_384:
 PRECOMP_REU_BANK = 2
 
 ; =============================================================================
-; ec_precompute_384: Build T[0..15] = i*G as affine, stash to REU bank 2.
-; Called once at init. REU layout: bank 2 offset $0400, 16 slots * 96 bytes.
+; ec_precompute_384: Build wNAF-5 table T[0..7] = (2j+1)*G for j=0..7,
+;   i.e. { G, 3G, 5G, 7G, 9G, 11G, 13G, 15G }, stored as 96-byte affine
+;   entries in REU bank 2 offset $0400. Also caches affine 2G in
+;   ec_aff2g_384_{x,y}.
 ; =============================================================================
 ec_precompute_384:
-        ; --- T[0] = point at infinity (96 zero bytes) ---
-        ldy #95
-        lda #0
-.sm384w_clr0:
-        sta ec384_p2,y
-        dey
-        bpl .sm384w_clr0
-        lda #0
-        sta ec384_precomp_i
-        jsr .sm384w_stash_p2     ; stash 96 zero bytes as T[0]
-
-        ; --- T[1] = G (already affine, store directly) ---
+        ; --- Stash T[0] = G affine from the curve generator ---
         ldy #47
-.sm384w_t1gx:
+.sm384w_t0x:
         lda ec_gx384,y
         sta ec384_p2,y
         dey
-        bpl .sm384w_t1gx
+        bpl .sm384w_t0x
         ldy #47
-.sm384w_t1gy:
+.sm384w_t0y:
         lda ec_gy384,y
         sta ec384_p2+48,y
         dey
-        bpl .sm384w_t1gy
-        lda #1
+        bpl .sm384w_t0y
+        lda #0
         sta ec384_precomp_i
-        jsr .sm384w_stash_p2     ; stash G affine as T[1]
+        jsr .sm384w_stash_p2
 
-        ; --- Set up ec384_p1 = G as Jacobian (Z=1) for building T[2..15] ---
+        ; --- Compute 2G: ec384_p1 = G as Jacobian, double, convert to affine ---
         ldy #47
-.sm384w_j1x:
+.sm384w_g1x:
         lda ec_gx384,y
         sta ec384_p1,y
         dey
-        bpl .sm384w_j1x
+        bpl .sm384w_g1x
         ldy #47
-.sm384w_j1y:
+.sm384w_g1y:
         lda ec_gy384,y
         sta ec384_p1+48,y
         dey
-        bpl .sm384w_j1y
+        bpl .sm384w_g1y
         ldy #47
         lda #0
-.sm384w_j1z:
+.sm384w_g1z:
         sta ec384_p1+96,y
         dey
-        bpl .sm384w_j1z
+        bpl .sm384w_g1z
         lda #1
-        sta ec384_p1+96          ; Z=1 little-endian
+        sta ec384_p1+96
 
-        ; ec384_p2 already has G affine from T[1] setup above.
-        ; ec_point_add_384 reads P1=Jacobian, P2=affine(X,Y only).
-
-        ; Set modular arithmetic to use P-384 prime
         jsr ec_set_modp_384
+        jsr ec_point_double_384
+        jsr ec_jacobian_to_affine_384
 
-        ; --- T[i] = T[i-1] + G for i=2..15 ---
-        ; ec384_p1 holds T[i-1] as Jacobian.
-        ; ec384_p2 holds G affine (constant throughout precompute).
-        lda #2
+        ; Save 2G affine persistently
+        ldy #47
+.sm384w_s2gx:
+        lda ec384_affine_x,y
+        sta ec_aff2g_384_x,y
+        dey
+        bpl .sm384w_s2gx
+        ldy #47
+.sm384w_s2gy:
+        lda ec384_affine_y,y
+        sta ec_aff2g_384_y,y
+        dey
+        bpl .sm384w_s2gy
+
+        ; --- Running Jacobian accumulator = T[0] = G ---
+        ldy #47
+.sm384w_a0x:
+        lda ec_gx384,y
+        sta ec384_p1,y
+        dey
+        bpl .sm384w_a0x
+        ldy #47
+.sm384w_a0y:
+        lda ec_gy384,y
+        sta ec384_p1+48,y
+        dey
+        bpl .sm384w_a0y
+        ldy #47
+        lda #0
+.sm384w_a0z:
+        sta ec384_p1+96,y
+        dey
+        bpl .sm384w_a0z
+        lda #1
+        sta ec384_p1+96
+
+        ; --- T[j] = T[j-1] + 2G for j = 1..7 ---
+        lda #1
         sta ec384_precomp_i
 
 .sm384w_precomp_loop:
-        ; ec384_p3 = ec384_p1 + ec384_p2 (= T[i-1] + G) as Jacobian
+        ; Load 2G affine into ec384_p2
+        ldy #47
+.sm384w_ld2gx:
+        lda ec_aff2g_384_x,y
+        sta ec384_p2,y
+        dey
+        bpl .sm384w_ld2gx
+        ldy #47
+.sm384w_ld2gy:
+        lda ec_aff2g_384_y,y
+        sta ec384_p2+48,y
+        dey
+        bpl .sm384w_ld2gy
+
+        ; ec384_p3 = ec384_p1 + ec384_p2 = T[j-1] + 2G
         jsr ec_point_add_384
 
-        ; Convert ec384_p3 (Jacobian) to affine
-        jsr ec_jacobian_to_affine_384
-        ; Result in ec384_affine_x, ec384_affine_y
+        ; Copy ec384_p3 Jacobian -> ec384_p1 (next running accumulator)
+        ldy #0
+.sm384w_cp_acc:
+        lda ec384_p3,y
+        sta ec384_p1,y
+        iny
+        cpy #144
+        bne .sm384w_cp_acc
 
-        ; Copy affine coords into ec384_p2 for stashing
-        ; (We'll restore G into ec384_p2 after stash)
+        ; Convert ec384_p3 -> affine
+        jsr ec_jacobian_to_affine_384
+
+        ; Copy affine to ec384_p2 for stashing
         ldy #47
 .sm384w_cpax:
         lda ec384_affine_x,y
@@ -829,35 +873,11 @@ ec_precompute_384:
         dey
         bpl .sm384w_cpay
 
-        ; Stash affine T[i] to REU
         jsr .sm384w_stash_p2
-
-        ; Copy ec384_p3 (Jacobian T[i]) -> ec384_p1 for next iteration
-        ldy #0
-.sm384w_cp_pre:
-        lda ec384_p3,y
-        sta ec384_p1,y
-        iny
-        cpy #144
-        bne .sm384w_cp_pre
-
-        ; Restore G affine into ec384_p2 for next add
-        ldy #47
-.sm384w_rg_x:
-        lda ec_gx384,y
-        sta ec384_p2,y
-        dey
-        bpl .sm384w_rg_x
-        ldy #47
-.sm384w_rg_y:
-        lda ec_gy384,y
-        sta ec384_p2+48,y
-        dey
-        bpl .sm384w_rg_y
 
         inc ec384_precomp_i
         lda ec384_precomp_i
-        cmp #16
+        cmp #8
         bne .sm384w_precomp_loop
 
         rts
@@ -869,88 +889,98 @@ ec_precompute_384:
 ; REQUIRES: ec_precompute_384 must have been called first.
 ; =============================================================================
 ec_scalar_mul_384:
-        ; =====================================================================
-        ; Main loop - process 96 nibbles of k, MSB first
-        ; =====================================================================
+        ; --- Recode scalar into wNAF-5 digits (shared recoder from points256) ---
+        lda #48                  ; P-384 scalar length in bytes
+        jsr ec_naf_recode
 
-        lda #0
-        sta ec384_sc_byte        ; byte index into scalar (0..47)
-        sta ec384_sc_half        ; 0=high nibble, 1=low nibble
-
-        ; Find first nonzero nibble (skip leading zeros)
-.sm384w_skip_zero:
-        jsr .sm384w_get_nibble
-        bne .sm384w_found_first
-
-        jsr .sm384w_advance_nibble
-        bcc .sm384w_skip_zero
-        ; All nibbles zero -> result is point at infinity
+        ; If length == 0 -> result is infinity
+        lda ec_naf_len
+        ora ec_naf_len+1
+        bne .sm384n_have
         jmp .sm384w_all_zero
 
-.sm384w_found_first:
-        ; A = first nonzero nibble value (1..15)
-        ; Fetch T[A] affine from REU into ec384_p2
-        jsr .sm384w_fetch_to_p2
-        ; Set ec384_p1 = T[A] as Jacobian with Z=1
-        ldy #47
-.sm384w_init_x:
-        lda ec384_p2,y
-        sta ec384_p1,y
-        dey
-        bpl .sm384w_init_x
-        ldy #47
-.sm384w_init_y:
-        lda ec384_p2+48,y
-        sta ec384_p1+48,y
-        dey
-        bpl .sm384w_init_y
-        ldy #47
-        lda #0
-.sm384w_init_z:
-        sta ec384_p1+96,y
-        dey
-        bpl .sm384w_init_z
-        lda #1
-        sta ec384_p1+96          ; Z=1
+.sm384n_have:
+        jsr ec_set_modp_384
 
-        ; Advance past first nibble
-        jsr .sm384w_advance_nibble
-        bcs .sm384w_finish       ; last nibble -> done
+        lda ec_naf_len
+        sec
+        sbc #1
+        sta .sm384n_idx_lo
+        lda ec_naf_len+1
+        sbc #0
+        sta .sm384n_idx_hi
 
-.sm384w_main_loop:
-        ; Double R (in ec384_p1) four times
-        jsr .sm384w_double4
+        jsr .sm384n_load_top     ; ec384_p1 = (top digit) * G (Jacobian, Z=1)
 
-        ; Extract current nibble
-        jsr .sm384w_get_nibble
-        beq .sm384w_no_add       ; skip add if nibble is 0
+.sm384n_main:
+        lda .sm384n_idx_lo
+        ora .sm384n_idx_hi
+        bne .sm384n_decr
+        jmp .sm384n_done
+.sm384n_decr:
+        lda .sm384n_idx_lo
+        bne .sm384n_dec_lo
+        dec .sm384n_idx_hi
+.sm384n_dec_lo:
+        dec .sm384n_idx_lo
 
-        ; Fetch T[nibble] affine from REU into ec384_p2
-        jsr .sm384w_fetch_to_p2
-        ; ec384_p3 = ec384_p1 + ec384_p2
-        jsr ec_point_add_384
-        ; Copy ec384_p3 -> ec384_p1
+        ; Double R once
+        jsr ec_point_double_384
         ldy #0
-.sm384w_cp_add:
+.sm384n_dcp:
         lda ec384_p3,y
         sta ec384_p1,y
         iny
         cpy #144
-        bne .sm384w_cp_add
+        bne .sm384n_dcp
 
-.sm384w_no_add:
-        jsr .sm384w_advance_nibble
-        bcc .sm384w_main_loop
+        jsr .sm384n_get_digit
+        beq .sm384n_main
 
-.sm384w_finish:
-        ; Copy ec384_p1 -> ec384_p3 (result)
+        sta .sm384n_dig_tmp
+        bmi .sm384n_neg
+        lsr
+        jsr .sm384w_fetch_to_p2
+        jmp .sm384n_do_add
+.sm384n_neg:
+        lda #0
+        sec
+        sbc .sm384n_dig_tmp
+        lsr
+        jsr .sm384w_fetch_to_p2
+        ; Negate Y in ec384_p2: ec384_p2+48 = p384 - ec384_p2+48
+        lda #<ec_p384
+        sta fp_src1
+        lda #>ec_p384
+        sta fp_src1+1
+        lda #<(ec384_p2+48)
+        sta fp_src2
+        lda #>(ec384_p2+48)
+        sta fp_src2+1
+        lda #<(ec384_p2+48)
+        sta fp_dst
+        lda #>(ec384_p2+48)
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+.sm384n_do_add:
+        jsr ec_point_add_384
         ldy #0
-.sm384w_cfin:
+.sm384n_acp:
+        lda ec384_p3,y
+        sta ec384_p1,y
+        iny
+        cpy #144
+        bne .sm384n_acp
+        jmp .sm384n_main
+
+.sm384n_done:
+        ldy #0
+.sm384n_fin:
         lda ec384_p1,y
         sta ec384_p3,y
         iny
         cpy #144
-        bne .sm384w_cfin
+        bne .sm384n_fin
         rts
 
 .sm384w_all_zero:
@@ -963,69 +993,73 @@ ec_scalar_mul_384:
         bne .sm384w_czr
         rts
 
-; -----------------------------------------------------------------------------
-; .sm384w_double4: Double ec384_p1 four times (ec384_p1 = 16*ec384_p1)
-; -----------------------------------------------------------------------------
-.sm384w_double4:
-        ldx #4
-.sm384w_d4_loop:
-        txa
-        pha
-        jsr ec_point_double_384  ; ec384_p3 = 2*ec384_p1
-        ldy #0
-.sm384w_d4_cp:
-        lda ec384_p3,y
-        sta ec384_p1,y
-        iny
-        cpy #144
-        bne .sm384w_d4_cp
-        pla
-        tax
-        dex
-        bne .sm384w_d4_loop
-        rts
-
-; -----------------------------------------------------------------------------
-; .sm384w_get_nibble: Extract current nibble from scalar k
-; Output: A = nibble value (0..15)
-; -----------------------------------------------------------------------------
-.sm384w_get_nibble:
-        ldy ec384_sc_byte
-        lda (ec_scalar_ptr),y
-        ldy ec384_sc_half
-        bne .sm384w_low_nib
+; --- Load top wNAF digit into ec384_p1 as Jacobian (Z=1) ---
+.sm384n_load_top:
+        jsr .sm384n_get_digit
+        sta .sm384n_dig_tmp
+        bmi .sm384n_lt_neg
         lsr
-        lsr
-        lsr
-        lsr
-        rts
-.sm384w_low_nib:
-        and #$0f
-        rts
-
-; -----------------------------------------------------------------------------
-; .sm384w_advance_nibble: Move to next nibble
-; Output: C=1 if past last nibble (done), C=0 otherwise
-; -----------------------------------------------------------------------------
-.sm384w_advance_nibble:
-        lda ec384_sc_half
-        bne .sm384w_next_byte
-        lda #1
-        sta ec384_sc_half
-        clc
-        rts
-.sm384w_next_byte:
+        jsr .sm384w_fetch_to_p2
+        jmp .sm384n_lt_cp
+.sm384n_lt_neg:
         lda #0
-        sta ec384_sc_half
-        inc ec384_sc_byte
-        lda ec384_sc_byte
-        cmp #48
-        beq .sm384w_adv_done
-        clc
-        rts
-.sm384w_adv_done:
         sec
+        sbc .sm384n_dig_tmp
+        lsr
+        jsr .sm384w_fetch_to_p2
+        lda #<ec_p384
+        sta fp_src1
+        lda #>ec_p384
+        sta fp_src1+1
+        lda #<(ec384_p2+48)
+        sta fp_src2
+        lda #>(ec384_p2+48)
+        sta fp_src2+1
+        lda #<(ec384_p2+48)
+        sta fp_dst
+        lda #>(ec384_p2+48)
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+.sm384n_lt_cp:
+        ; Copy ec384_p2 (affine X,Y) to ec384_p1 with Z=1
+        ldy #47
+.sm384n_lx:
+        lda ec384_p2,y
+        sta ec384_p1,y
+        dey
+        bpl .sm384n_lx
+        ldy #47
+.sm384n_ly:
+        lda ec384_p2+48,y
+        sta ec384_p1+48,y
+        dey
+        bpl .sm384n_ly
+        ldy #47
+        lda #0
+.sm384n_lz:
+        sta ec384_p1+96,y
+        dey
+        bpl .sm384n_lz
+        lda #1
+        sta ec384_p1+96
         rts
+
+; --- Fetch signed digit at index .sm384n_idx_{lo,hi} into A ---
+.sm384n_get_digit:
+        lda .sm384n_idx_lo
+        clc
+        adc #<ec_naf_digits
+        sta zp_ptr1
+        lda .sm384n_idx_hi
+        adc #>ec_naf_digits
+        sta zp_ptr1+1
+        ldy #0
+        lda (zp_ptr1),y
+        rts
+
+.sm384n_idx_lo: !byte 0
+.sm384n_idx_hi: !byte 0
+.sm384n_dig_tmp: !byte 0
 
 ; -----------------------------------------------------------------------------
 ; .sm384w_stash_p2: Stash ec384_p2 (96 bytes affine) to REU bank 2

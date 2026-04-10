@@ -912,280 +912,495 @@ ec_point_add:
 .sm_nibble_val: !byte 0         ; current nibble value
 
 ; =============================================================================
-; ec_precompute_256: Build T[0..15] = i*G as affine, stash to REU bank 2.
-; Called once at init. T[0] is never fetched (nibble=0 skips addition).
-; REU layout: bank 2 offset $0000, 16 slots * 64 bytes = 1024 bytes.
-; Also uses bank 2 offset $0800 for temporary Jacobian storage during build.
+; ec_precompute_256: Build wNAF-5 table T[0..7] of odd multiples of G.
+;   T[j] = (2j+1)*G for j in 0..7, i.e. { G, 3G, 5G, 7G, 9G, 11G, 13G, 15G }.
+; Stored as 64-byte AFFINE (X,Y) entries in REU bank 2 offset $0000.
+; Also precomputes affine 2G into ec_aff2g_256_{x,y} (not stashed to REU).
+; Called once at init.
 ; =============================================================================
 ec_precompute_256:
-        ; T[1] = G (already affine). Store Gx,Gy directly.
+        ; --- Stash T[0] = G affine directly from curve generator ---
         ldy #31
-.sm_t1x:
+.sm_t0x:
         lda ec_gx256,y
         sta ec_affine_x,y
         dey
-        bpl .sm_t1x
+        bpl .sm_t0x
         ldy #31
-.sm_t1y:
+.sm_t0y:
         lda ec_gy256,y
         sta ec_affine_y,y
         dey
-        bpl .sm_t1y
-        lda #1
-        jsr .sm_reu_stash_affine ; stash T[1] affine
+        bpl .sm_t0y
+        lda #0
+        jsr .sm_reu_stash_affine ; stash T[0] = G
 
-        ; Also store T[1] as Jacobian (Z=1) in temp area for precompute chain
+        ; --- Compute 2G: set ec_p1 = G as Jacobian (Z=1), double into ec_p3,
+        ;     then convert ec_p3 -> affine and save to ec_aff2g_256_{x,y}.
         ldy #31
-.sm_t1jx:
+.sm_g1x:
         lda ec_gx256,y
-        sta ec_p3,y
+        sta ec_p1,y
         dey
-        bpl .sm_t1jx
+        bpl .sm_g1x
         ldy #31
-.sm_t1jy:
+.sm_g1y:
         lda ec_gy256,y
-        sta ec_p3+32,y
+        sta ec_p1+32,y
         dey
-        bpl .sm_t1jy
+        bpl .sm_g1y
         ldy #31
         lda #0
-.sm_t1jz:
-        sta ec_p3+64,y
+.sm_g1z:
+        sta ec_p1+64,y
         dey
-        bpl .sm_t1jz
+        bpl .sm_g1z
         lda #1
-        sta ec_p3+64
-        lda #1
-        jsr .sm_reu_stash_jac   ; stash T[1] Jacobian to temp area
+        sta ec_p1+64             ; Z = 1 little-endian
 
-        ; Load G into ec_p2 (affine, stays constant for all precompute adds)
-        ldy #31
-.sm_lg2x:
-        lda ec_gx256,y
-        sta ec_p2,y
-        dey
-        bpl .sm_lg2x
-        ldy #31
-.sm_lg2y:
-        lda ec_gy256,y
-        sta ec_p2+32,y
-        dey
-        bpl .sm_lg2y
-
-        ; Set modular arithmetic to use P-256 prime
         jsr ec_set_modp
+        jsr ec_point_double      ; ec_p3 = 2G (Jacobian)
+        jsr ec_jacobian_to_affine ; ec_affine_x/y = 2G affine
 
-        ; T[i] = T[i-1] + G for i = 2..15
-        ; For each: fetch T[i-1] Jacobian -> ec_p1, add G -> ec_p3,
-        ; convert ec_p3 to affine, stash affine to REU, stash Jacobian too.
-        lda #2
-        sta ec_sc_byte          ; precompute counter
+        ; Save 2G affine to persistent scratch (ec_affine_x/y is clobbered
+        ; by every subsequent jacobian_to_affine).
+        ldy #31
+.sm_s2gx:
+        lda ec_affine_x,y
+        sta ec_aff2g_256_x,y
+        dey
+        bpl .sm_s2gx
+        ldy #31
+.sm_s2gy:
+        lda ec_affine_y,y
+        sta ec_aff2g_256_y,y
+        dey
+        bpl .sm_s2gy
+
+        ; --- Set ec_p1 = G Jacobian (running accumulator = T[0] = G) ---
+        ldy #31
+.sm_a0x:
+        lda ec_gx256,y
+        sta ec_p1,y
+        dey
+        bpl .sm_a0x
+        ldy #31
+.sm_a0y:
+        lda ec_gy256,y
+        sta ec_p1+32,y
+        dey
+        bpl .sm_a0y
+        ldy #31
+        lda #0
+.sm_a0z:
+        sta ec_p1+64,y
+        dey
+        bpl .sm_a0z
+        lda #1
+        sta ec_p1+64
+
+        ; --- T[j] = T[j-1] + 2G for j = 1..7 ---
+        ; ec_p1 holds running Jacobian accumulator.
+        ; ec_p2 holds 2G affine (reload each iter; ec_point_add may clobber).
+        lda #1
+        sta ec_sc_byte           ; precompute j counter
 
 .sm_precomp:
-        ; Fetch T[i-1] Jacobian from REU temp area into ec_p1
-        lda ec_sc_byte
-        sec
-        sbc #1
-        jsr .sm_reu_fetch_jac   ; ec_p1 = T[i-1] Jacobian
+        ; Load 2G affine into ec_p2
+        ldy #31
+.sm_ld2gx:
+        lda ec_aff2g_256_x,y
+        sta ec_p2,y
+        dey
+        bpl .sm_ld2gx
+        ldy #31
+.sm_ld2gy:
+        lda ec_aff2g_256_y,y
+        sta ec_p2+32,y
+        dey
+        bpl .sm_ld2gy
 
-        ; ec_p3 = ec_p1 + ec_p2 (T[i-1] + G)
+        ; ec_p3 = ec_p1 + ec_p2 = T[j-1] + 2G
         jsr ec_point_add
 
-        ; Stash Jacobian ec_p3 to temp area for next iteration
-        lda ec_sc_byte
-        jsr .sm_reu_stash_jac
+        ; Copy ec_p3 -> ec_p1 (new running Jacobian accumulator)
+        ldy #95
+.sm_cpj:
+        lda ec_p3,y
+        sta ec_p1,y
+        dey
+        bpl .sm_cpj
 
         ; Convert ec_p3 Jacobian to affine -> ec_affine_x, ec_affine_y
         jsr ec_jacobian_to_affine
 
-        ; Stash affine point to REU
+        ; Stash affine to REU slot j
         lda ec_sc_byte
         jsr .sm_reu_stash_affine
 
-        ; Re-load G into ec_p2 (ec_point_add/ec_jacobian_to_affine may clobber)
-        ldy #31
-.sm_rlgx:
-        lda ec_gx256,y
-        sta ec_p2,y
-        dey
-        bpl .sm_rlgx
-        ldy #31
-.sm_rlgy:
-        lda ec_gy256,y
-        sta ec_p2+32,y
-        dey
-        bpl .sm_rlgy
-
         inc ec_sc_byte
         lda ec_sc_byte
-        cmp #16
+        cmp #8
         bne .sm_precomp
 
         rts
 
 ; =============================================================================
-; ec_scalar_mul: ec_p3 = k * G
+; ec_scalar_mul: ec_p3 = k * G using width-5 wNAF with table T[0..7].
 ; k is a 32-byte scalar pointed to by (ec_scalar_ptr), BIG-ENDIAN byte order.
-; Uses 4-bit windowed method with precomputed table T[0..15] in REU bank 2.
-; Each T[i] = i*G stored as 64-byte AFFINE point (X,Y).
-; T[0] is never fetched (nibble=0 skips addition).
-; Result in ec_p3 (Jacobian).
+; Table T[j] = (2j+1)*G for j=0..7, stored as 64-byte affine (X,Y) in REU
+; bank 2 offset $0000. Result in ec_p3 (Jacobian).
 ; REQUIRES: ec_precompute_256 must have been called first.
 ; =============================================================================
 ec_scalar_mul:
-        ; =====================================================================
-        ; Windowed scalar multiply - process 64 nibbles MSB first
-        ; =====================================================================
+        ; Recode scalar into signed wNAF-5 digits (ec_naf_digits / ec_naf_len).
+        lda #32                 ; P-256 scalar length in bytes
+        jsr ec_naf_recode
 
-        ; Find first nonzero nibble (skip leading zeros)
-        lda #0
-        sta ec_sc_byte          ; nibble index (0..63)
-
-.sm_find_nz:
-        jsr .sm_get_nibble      ; A = current nibble value
-        bne .sm_found_nz
-        inc ec_sc_byte
-        lda ec_sc_byte
-        cmp #64
-        bne .sm_find_nz
-
-        ; All nibbles zero -> result is infinity
+        ; If length == 0 -> result is infinity.
+        lda ec_naf_len
+        ora ec_naf_len+1
+        bne .smn_have_digits
         ldy #95
         lda #0
-.sm_zinf:
+.smn_zinf:
         sta ec_p3,y
         dey
-        bpl .sm_zinf
+        bpl .smn_zinf
         rts
 
-.sm_found_nz:
-        ; A = first nonzero nibble value (1..15)
-        ; Initialize R = T[A] as Jacobian in ec_p1
-        ; T[A] is stored as affine. Load into ec_p1 with Z=1.
-        sta .sm_nibble_val
+.smn_have_digits:
+        jsr ec_set_modp
 
-        ; Fetch affine T[A] into ec_p2 (we'll copy to ec_p1)
-        lda .sm_nibble_val
-        jsr .sm_reu_fetch_affine ; ec_p2 = T[A] affine (X,Y)
+        ; Index = len - 1 (points at most significant digit).
+        ; Digits fit in <= 257 for P-256 so we need a 16-bit cursor.
+        lda ec_naf_len
+        sec
+        sbc #1
+        sta .smn_idx_lo
+        lda ec_naf_len+1
+        sbc #0
+        sta .smn_idx_hi
 
-        ; Copy affine to ec_p1 as Jacobian (Z=1)
-        ldy #31
-.sm_init_x:
-        lda ec_p2,y
+        ; --- Load most significant digit. It is guaranteed nonzero ---
+        ; (the recoder loop stops as soon as k==0, so the last emitted
+        ;  digit is always from the final odd-residue step).
+        jsr .smn_load_digit_to_p1 ; set ec_p1 = digit * G (Jacobian, Z=1)
+
+.smn_main_loop:
+        ; Move to next (lower) digit. If idx == 0, we're done with the top
+        ; digit already; check by examining lo/hi before decrementing.
+        lda .smn_idx_lo
+        ora .smn_idx_hi
+        bne .smn_decr
+        jmp .smn_done
+.smn_decr:
+        lda .smn_idx_lo
+        bne .smn_dec_lo
+        dec .smn_idx_hi
+.smn_dec_lo:
+        dec .smn_idx_lo
+
+        ; --- Double R once (R = 2*ec_p1, result in ec_p3, copy back) ---
+        jsr ec_point_double
+        ldy #95
+.smn_dcp:
+        lda ec_p3,y
         sta ec_p1,y
         dey
-        bpl .sm_init_x
-        ldy #31
-.sm_init_y:
-        lda ec_p2+32,y
-        sta ec_p1+32,y
-        dey
-        bpl .sm_init_y
-        ldy #31
+        bpl .smn_dcp
+
+        ; --- Fetch current digit; if zero, skip add ---
+        jsr .smn_get_digit      ; A = signed digit byte
+        beq .smn_main_loop
+
+        ; Nonzero digit: load |d| entry into ec_p2; negate Y in place if d<0.
+        sta .smn_dig_tmp
+        bmi .smn_neg
+        ; Positive: table index = (d - 1) / 2
+        lsr                     ; clears bit0 (d is odd), shifts divide
+        jsr .sm_reu_fetch_affine ; ec_p2 = T[idx]
+        jmp .smn_do_add
+.smn_neg:
+        ; Negative: fetch T[(|d| - 1) / 2] = T[(-d - 1)/2], then negate Y.
         lda #0
-.sm_init_z:
-        sta ec_p1+64,y
-        dey
-        bpl .sm_init_z
-        lda #1
-        sta ec_p1+64            ; Z = 1 (little-endian)
-
-        ; Process remaining nibbles
-        inc ec_sc_byte
-
-.sm_nib_loop:
-        lda ec_sc_byte
-        cmp #64
-        beq .sm_nib_done
-
-        ; Double R four times: R = 2^4 * R
-        jsr ec_point_double     ; ec_p3 = 2*ec_p1
-        ldy #95
-.sm_d1:
-        lda ec_p3,y
-        sta ec_p1,y
-        dey
-        bpl .sm_d1
-
-        jsr ec_point_double
-        ldy #95
-.sm_d2:
-        lda ec_p3,y
-        sta ec_p1,y
-        dey
-        bpl .sm_d2
-
-        jsr ec_point_double
-        ldy #95
-.sm_d3:
-        lda ec_p3,y
-        sta ec_p1,y
-        dey
-        bpl .sm_d3
-
-        jsr ec_point_double
-        ldy #95
-.sm_d4:
-        lda ec_p3,y
-        sta ec_p1,y
-        dey
-        bpl .sm_d4
-
-        ; Extract current nibble
-        jsr .sm_get_nibble      ; A = nibble value
-        beq .sm_nib_skip        ; nibble == 0, skip add
-
-        ; Fetch T[nibble] affine into ec_p2
+        sec
+        sbc .smn_dig_tmp        ; A = -d = |d| (d is in -15..-1)
+        lsr                     ; A = (|d|-1)/2  (|d| is odd)
         jsr .sm_reu_fetch_affine
+        ; Negate Y: ec_p2+32 = p256 - ec_p2+32
+        lda #<ec_p256
+        sta fp_src1
+        lda #>ec_p256
+        sta fp_src1+1
+        lda #<(ec_p2+32)
+        sta fp_src2
+        lda #>(ec_p2+32)
+        sta fp_src2+1
+        lda #<(ec_p2+32)
+        sta fp_dst
+        lda #>(ec_p2+32)
+        sta fp_dst+1
+        jsr fp_mod_sub          ; ec_p2+32 = p - ec_p2+32
 
-        ; ec_p3 = ec_p1 + ec_p2 (R + T[nibble])
-        jsr ec_point_add
-
-        ; Copy ec_p3 -> ec_p1
+.smn_do_add:
+        jsr ec_point_add        ; ec_p3 = ec_p1 + ec_p2
         ldy #95
-.sm_nib_cp:
+.smn_acp:
         lda ec_p3,y
         sta ec_p1,y
         dey
-        bpl .sm_nib_cp
+        bpl .smn_acp
+        jmp .smn_main_loop
 
-.sm_nib_skip:
-        inc ec_sc_byte
-        jmp .sm_nib_loop
-
-.sm_nib_done:
-        ; Result is in ec_p1; copy to ec_p3
+.smn_done:
         ldy #95
-.sm_cfin:
+.smn_cfin:
         lda ec_p1,y
         sta ec_p3,y
         dey
-        bpl .sm_cfin
+        bpl .smn_cfin
         rts
 
-; --- Extract nibble at index ec_sc_byte from scalar ---
-; Scalar is big-endian at (ec_scalar_ptr).
-; Nibble 2j = high nibble of byte j, nibble 2j+1 = low nibble.
-; Returns nibble value in A (0..15). Preserves ec_sc_byte.
-.sm_get_nibble:
-        lda ec_sc_byte
-        lsr                     ; byte index = nibble/2
-        tay
-        lda ec_sc_byte
+; --- Load T[|d|/2] into ec_p1 as Jacobian (Z=1), negating Y if d<0 ---
+; Input: current digit at ec_naf_digits[.smn_idx_lo/hi] is the leading
+;        nonzero digit (odd, -15..15).
+.smn_load_digit_to_p1:
+        jsr .smn_get_digit      ; A = signed digit
+        sta .smn_dig_tmp
+        bmi .smn_ldn
+        lsr
+        jsr .sm_reu_fetch_affine ; ec_p2 = T[idx]
+        jmp .smn_ldcopy
+.smn_ldn:
+        lda #0
+        sec
+        sbc .smn_dig_tmp
+        lsr
+        jsr .sm_reu_fetch_affine
+        ; Negate Y in ec_p2
+        lda #<ec_p256
+        sta fp_src1
+        lda #>ec_p256
+        sta fp_src1+1
+        lda #<(ec_p2+32)
+        sta fp_src2
+        lda #>(ec_p2+32)
+        sta fp_src2+1
+        lda #<(ec_p2+32)
+        sta fp_dst
+        lda #>(ec_p2+32)
+        sta fp_dst+1
+        jsr fp_mod_sub
+.smn_ldcopy:
+        ; Copy ec_p2 (affine X,Y) to ec_p1 with Z=1
+        ldy #31
+.smn_lx:
+        lda ec_p2,y
+        sta ec_p1,y
+        dey
+        bpl .smn_lx
+        ldy #31
+.smn_ly:
+        lda ec_p2+32,y
+        sta ec_p1+32,y
+        dey
+        bpl .smn_ly
+        ldy #31
+        lda #0
+.smn_lz:
+        sta ec_p1+64,y
+        dey
+        bpl .smn_lz
+        lda #1
+        sta ec_p1+64
+        rts
+
+; --- Fetch signed digit at index .smn_idx_{lo,hi} into A ---
+.smn_get_digit:
+        lda .smn_idx_lo
+        clc
+        adc #<ec_naf_digits
+        sta zp_ptr1
+        lda .smn_idx_hi
+        adc #>ec_naf_digits
+        sta zp_ptr1+1
+        ldy #0
+        lda (zp_ptr1),y
+        rts
+
+.smn_idx_lo:    !byte 0
+.smn_idx_hi:    !byte 0
+.smn_dig_tmp:   !byte 0
+
+; =============================================================================
+; ec_naf_recode: Recode (ec_scalar_ptr) big-endian scalar into width-5 wNAF.
+; Input:   A = scalar length in bytes (32 for P-256, 48 for P-384)
+;          (ec_scalar_ptr) -> scalar (BE)
+; Output:  ec_naf_k, ec_naf_digits, ec_naf_len populated.
+;
+; Algorithm:
+;   while k != 0:
+;     if k & 1:
+;       d = k mod 32  (low 5 bits, 0..31)
+;       if d >= 16: d -= 32         -> now d in {-15,-13,...,-1}
+;       k -= d (signed)
+;     else: d = 0
+;     emit d; shift k right by 1
+;
+; Working buffer ec_naf_k is (length+1) bytes little-endian with one byte
+; of headroom for a carry produced when adding (32-d) for a negative d.
+; =============================================================================
+ec_naf_recode:
+        sta .nr_nkb             ; key length (32 or 48)
+        ; Copy BE scalar -> ec_naf_k little-endian.
+        ; For i in 0..nkb-1: ec_naf_k[i] = scalar[nkb-1-i]
+        ; We use Y as the BE source index counting DOWN from nkb-1 to 0,
+        ; and .nr_dsti as the LE destination index counting UP.
+        lda #0
+        sta .nr_dsti
+        ldy .nr_nkb
+        dey                     ; Y = nkb - 1
+.nr_copy:
+        lda (ec_scalar_ptr),y
+        sty .nr_ysave
+        ldy .nr_dsti
+        sta ec_naf_k,y
+        inc .nr_dsti
+        ldy .nr_ysave
+        dey
+        bpl .nr_copy
+        ; Zero the headroom byte at ec_naf_k[nkb]
+        ldy .nr_nkb
+        lda #0
+        sta ec_naf_k,y
+
+        ; Zero output length
+        lda #0
+        sta ec_naf_len
+        sta ec_naf_len+1
+
+        ; nkbhr = nkb + 1 (bytes to scan/shift)
+        lda .nr_nkb
+        clc
+        adc #1
+        sta .nr_nkbhr
+
+.nr_main:
+        ; k == 0?  scan ec_naf_k[0..nkbhr-1]
+        ldy .nr_nkbhr
+        dey
+.nr_scan:
+        lda ec_naf_k,y
+        bne .nr_nonzero
+        dey
+        bpl .nr_scan
+        ; k is zero -> done
+        rts
+
+.nr_nonzero:
+        ; Check bit 0 of k (i.e. ec_naf_k[0])
+        lda ec_naf_k
         and #1
-        bne .sm_gn_lo
-        ; High nibble (even nibble index)
-        lda (ec_scalar_ptr),y
-        lsr
-        lsr
-        lsr
-        lsr
-        rts
-.sm_gn_lo:
-        ; Low nibble (odd nibble index)
-        lda (ec_scalar_ptr),y
-        and #$0F
-        rts
+        bne .nr_odd
+        jmp .nr_emit_zero
+.nr_odd:
+        ; Odd. d = ec_naf_k[0] & 0x1F
+        lda ec_naf_k
+        and #$1F
+        sta .nr_dig
+        cmp #16
+        bcc .nr_pos_sub         ; d < 16 -> positive
+
+        ; d >= 16: effective signed digit = d - 32 (negative). To clear the
+        ; low 5 bits of k we add (32 - d) to k (unsigned ripple carry).
+        lda #32
+        sec
+        sbc .nr_dig             ; A = 32 - d  (1..16)
+        sta .nr_addv
+        ldy #0
+        clc
+        lda ec_naf_k
+        adc .nr_addv
+        sta ec_naf_k
+.nr_add_rip:
+        bcc .nr_add_done
+        iny
+        cpy .nr_nkbhr
+        beq .nr_add_done
+        lda ec_naf_k,y
+        adc #0
+        sta ec_naf_k,y
+        jmp .nr_add_rip
+.nr_add_done:
+        ; Store signed digit = d - 32 (as byte, two's complement negative)
+        lda .nr_dig
+        sec
+        sbc #32
+        jmp .nr_store_digit
+
+.nr_pos_sub:
+        ; d < 16: subtract d from k (unsigned ripple borrow).
+        ldy #0
+        lda ec_naf_k
+        sec
+        sbc .nr_dig
+        sta ec_naf_k
+.nr_sub_rip:
+        bcs .nr_sub_done
+        iny
+        cpy .nr_nkbhr
+        beq .nr_sub_done
+        lda ec_naf_k,y
+        sbc #0
+        sta ec_naf_k,y
+        jmp .nr_sub_rip
+.nr_sub_done:
+        lda .nr_dig             ; positive digit
+
+.nr_store_digit:
+        ; Store A at ec_naf_digits[ec_naf_len], then len++ and shift k right.
+        ldy ec_naf_len+1
+        beq .nr_store_lo
+        ; high page: use base + $0100
+        sta .nr_sd_ptr_lo
+        lda ec_naf_len
+        tay
+        lda .nr_sd_ptr_lo
+        sta ec_naf_digits+$100,y
+        jmp .nr_after_store
+.nr_store_lo:
+        ldy ec_naf_len
+        sta ec_naf_digits,y
+.nr_after_store:
+        inc ec_naf_len
+        bne .nr_shift
+        inc ec_naf_len+1
+
+.nr_shift:
+        ; k >>= 1 (nkbhr-byte LE right shift)
+        ldy .nr_nkbhr
+        dey
+        clc
+.nr_sh_loop:
+        lda ec_naf_k,y
+        ror
+        sta ec_naf_k,y
+        dey
+        bpl .nr_sh_loop
+        jmp .nr_main
+
+.nr_emit_zero:
+        lda #0
+        jmp .nr_store_digit
+
+.nr_nkb:        !byte 0
+.nr_nkbhr:      !byte 0
+.nr_dsti:       !byte 0
+.nr_ysave:      !byte 0
+.nr_dig:        !byte 0
+.nr_addv:       !byte 0
+.nr_sd_ptr_lo:  !byte 0
 
 ; =============================================================================
 ; ec_jacobian_to_affine: convert ec_p3 (Jacobian) to affine (x,y)
