@@ -320,12 +320,10 @@ fp_mul_384:
 @prop_carry_a:
         cpx #96
         bcs @carry_done_a
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
+        inc fp384_wide,x
+        bne @carry_done_a
         inx
-        bcs @prop_carry_a
+        bne @prop_carry_a       ; always (x<96)
 @carry_done_a:
         ldx fp_mul_j
         jmp @next_j_first
@@ -341,12 +339,10 @@ fp_mul_384:
 @prop_carry_b:
         cpx #96
         bcs @carry_done_b
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
+        inc fp384_wide,x
+        bne @carry_done_b
         inx
-        bcs @prop_carry_b
+        bne @prop_carry_b
 @carry_done_b:
         ldx fp_mul_j
         jmp @next_j_second
@@ -362,12 +358,10 @@ fp_mul_384:
 @prop_carry_c:
         cpx #96
         bcs @carry_done_c
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
+        inc fp384_wide,x
+        bne @carry_done_c
         inx
-        bcs @prop_carry_c
+        bne @prop_carry_c
 @carry_done_c:
         ldx fp_mul_j
         jmp @next_j_third
@@ -383,12 +377,10 @@ fp_mul_384:
 @prop_carry_d:
         cpx #96
         bcs @carry_done_d
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
+        inc fp384_wide,x
+        bne @carry_done_d
         inx
-        bcs @prop_carry_d
+        bne @prop_carry_d
 @carry_done_d:
         ldx fp_mul_j
         jmp @next_j
@@ -556,11 +548,8 @@ fp_sqr_384:
         inx
         cpx #96
         bcs @sqr_prop1_done
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
-        bcs @sqr_prop1
+        inc fp384_wide,x
+        beq @sqr_prop1
 @sqr_prop1_done:
         ldx fp_mul_j
 
@@ -615,11 +604,8 @@ fp_sqr_384:
         inx
         cpx #96
         bcs @sqr_prop2_done
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
-        bcs @sqr_prop2
+        inc fp384_wide,x
+        beq @sqr_prop2
 @sqr_prop2_done:
         ldx fp_mul_j
 
@@ -674,11 +660,8 @@ fp_sqr_384:
         inx
         cpx #96
         bcs @sqr_prop3_done
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
-        bcs @sqr_prop3
+        inc fp384_wide,x
+        beq @sqr_prop3
 @sqr_prop3_done:
         ldx fp_mul_j
 
@@ -733,11 +716,8 @@ fp_sqr_384:
         inx
         cpx #96
         bcs @sqr_prop4_done
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
-        bcs @sqr_prop4
+        inc fp384_wide,x
+        beq @sqr_prop4
 @sqr_prop4_done:
         ldx fp_mul_j
 
@@ -791,11 +771,8 @@ fp_sqr_384:
         inx
         cpx #96
         bcs @diag_skip
-        sec
-        lda fp384_wide,x
-        adc #0
-        sta fp384_wide,x
-        bcs @diag_prop
+        inc fp384_wide,x
+        beq @diag_prop
 
 @diag_skip:
         inc fp_mul_i

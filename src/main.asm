@@ -7,7 +7,7 @@
 ;   $7800-$7BFF: sqtab (quarter-square multiply tables)
 ; =============================================================================
 
-!cpu 6502
+!cpu nmos6502
 !source "constants.asm"
 
 ; --- Program origin ---

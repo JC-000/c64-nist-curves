@@ -334,12 +334,10 @@ fp_mul:
 @prop_carry_a:
         cpx #64
         bcs @carry_done_a
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
+        inc fp_wide,x           ; add the pending carry byte
+        bne @carry_done_a       ; if no overflow, done
         inx
-        bcs @prop_carry_a
+        bne @prop_carry_a       ; always (x<64)
 @carry_done_a:
         ldx fp_mul_j
         jmp @next_j_first
@@ -355,12 +353,10 @@ fp_mul:
 @prop_carry_b:
         cpx #64
         bcs @carry_done_b
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
+        inc fp_wide,x
+        bne @carry_done_b
         inx
-        bcs @prop_carry_b
+        bne @prop_carry_b
 @carry_done_b:
         ldx fp_mul_j
         jmp @next_j_second
@@ -376,12 +372,10 @@ fp_mul:
 @prop_carry_c:
         cpx #64
         bcs @carry_done_c
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
+        inc fp_wide,x
+        bne @carry_done_c
         inx
-        bcs @prop_carry_c
+        bne @prop_carry_c
 @carry_done_c:
         ldx fp_mul_j
         jmp @next_j_third
@@ -397,12 +391,10 @@ fp_mul:
 @prop_carry_d:
         cpx #64
         bcs @carry_done_d
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
+        inc fp_wide,x
+        bne @carry_done_d
         inx
-        bcs @prop_carry_d
+        bne @prop_carry_d
 @carry_done_d:
         ldx fp_mul_j
         jmp @next_j
@@ -684,11 +676,8 @@ fp_sqr:
         inx
         cpx #64
         bcs @sqr_carry_done_a
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
-        bcs @sqr_prop_a
+        inc fp_wide,x
+        beq @sqr_prop_a
 @sqr_carry_done_a:
         ldx fp_mul_j
         jmp @sqr_next_j_a
@@ -711,11 +700,8 @@ fp_sqr:
         inx
         cpx #64
         bcs @sqr_carry_done_b
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
-        bcs @sqr_prop_b
+        inc fp_wide,x
+        beq @sqr_prop_b
 @sqr_carry_done_b:
         ldx fp_mul_j
         jmp @sqr_next_j_b
@@ -738,11 +724,8 @@ fp_sqr:
         inx
         cpx #64
         bcs @sqr_carry_done_c
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
-        bcs @sqr_prop_c
+        inc fp_wide,x
+        beq @sqr_prop_c
 @sqr_carry_done_c:
         ldx fp_mul_j
         jmp @sqr_next_j_c
@@ -765,11 +748,8 @@ fp_sqr:
         inx
         cpx #64
         bcs @sqr_carry_done_d
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
-        bcs @sqr_prop_d
+        inc fp_wide,x
+        beq @sqr_prop_d
 @sqr_carry_done_d:
         ldx fp_mul_j
         jmp @sqr_next_j_d
@@ -830,11 +810,8 @@ fp_sqr:
         inx
         cpx #64
         bcs @diag_skip
-        sec
-        lda fp_wide,x
-        adc #0
-        sta fp_wide,x
-        bcs @diag_prop
+        inc fp_wide,x
+        beq @diag_prop
 
 @diag_skip:
         inc fp_mul_i
