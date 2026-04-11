@@ -8,7 +8,7 @@ P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 C
 make clean && make
 ```
 Assembler: ACME. Output: build/nist-curves.prg + build/labels.txt (VICE symbol table).
-Current PRG size: ~19.6 KB (20055 bytes post-Wave-5), loaded at $0801.
+Current PRG size: ~20.2 KB (20695 bytes post-Wave-7a), loaded at $0801.
 
 ## Test
 ```
@@ -70,7 +70,7 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 - Dedicated squaring with deferred doubling of cross terms (Wave 4e)
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill (Wave 4b)
 - Solinas fast reduction with self-modifying dispatch and register-resident accumulator
-- h=4 Lim-Lee fixed-base comb for P-256 and P-384 scalar_mul with REU-resident anchor table (Wave 5a/5b)
+- h=8 Lim-Lee fixed-base comb for P-256 and P-384 scalar_mul with 256-entry REU-resident anchor table (Wave 7a; h=4 landed in Wave 5a/5b)
 - Unrolled binary GCD shift loops for modular inversion
 - VIC-II screen blanking (+20-25% CPU)
 
@@ -130,10 +130,12 @@ field op is running in mainline, or state will be corrupted. The
 simplest safe pattern is to mask IRQs around a crypto operation, or
 keep all library calls on a single thread of control.
 
-### REU precompute table layout
-- P-256: bank 2, offset $0000, 16 entries x 64 bytes (X,Y only) = 1024 bytes
-- P-384: bank 2, offset $0400, 16 entries x 96 bytes (X,Y only) = 1536 bytes
+### REU precompute table layout (Wave 7a h=8)
+- P-256: bank 2, offset $0000..$3FFF, 256 entries x 64 bytes (X,Y only) = 16 KB
+- P-384: bank 2, offset $4000..$9F9F, 256 entries x 96 bytes (X,Y only) = 24 KB
+- Total used in bank 2: 40 KB of 64 KB (banks 0-1 hold multiply tables; bank 2 scratch $A000-$FFFF = 24 KB free)
 - Tables are computed once at boot by `ec_precompute_256` and `ec_precompute_384`
+- Boot cost at h=8: ~100s additional over h=4 baseline (~89s measured on P-384 bench tool; P-256 comparable)
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues

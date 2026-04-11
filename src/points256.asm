@@ -779,71 +779,7 @@ ec_point_add:
         sta reu_command
         jmp .sm_reu_restore
 
-; --- REU DMA: fetch 96 bytes (Jacobian) from REU temp area to ec_p1 ---
-; REU bank 2 offset $0800 + idx*96 for Jacobian temp storage
-; Input: A = table index (0..15)
-.sm_reu_fetch_jac:
-        sta .sm_reu_idx
-        jsr .sm_calc_offset_96  ; compute offset = idx * 96
-        ; Add $0800 base offset for Jacobian temp area
-        lda .sm_reu_off_lo
-        clc
-        adc #0
-        sta .sm_reu_off_lo
-        lda .sm_reu_off_hi
-        adc #$08
-        sta .sm_reu_off_hi
-        lda #<ec_p1
-        sta reu_c64_lo
-        lda #>ec_p1
-        sta reu_c64_hi
-        lda .sm_reu_off_lo
-        sta reu_reu_lo
-        lda .sm_reu_off_hi
-        sta reu_reu_hi
-        lda #2
-        sta reu_reu_bank
-        lda #96
-        sta reu_len_lo
-        lda #0
-        sta reu_len_hi
-        sta reu_addr_ctrl
-        lda #$B1                ; execute + autoload + FETCH
-        sta reu_command
-        jmp .sm_reu_restore
-
-; --- REU DMA: stash 96 bytes (Jacobian) from ec_p3 to REU temp area ---
-; Input: A = table index (0..15)
-.sm_reu_stash_jac:
-        sta .sm_reu_idx
-        jsr .sm_calc_offset_96
-        lda .sm_reu_off_lo
-        clc
-        adc #0
-        sta .sm_reu_off_lo
-        lda .sm_reu_off_hi
-        adc #$08
-        sta .sm_reu_off_hi
-        lda #<ec_p3
-        sta reu_c64_lo
-        lda #>ec_p3
-        sta reu_c64_hi
-        lda .sm_reu_off_lo
-        sta reu_reu_lo
-        lda .sm_reu_off_hi
-        sta reu_reu_hi
-        lda #2
-        sta reu_reu_bank
-        lda #96
-        sta reu_len_lo
-        lda #0
-        sta reu_len_hi
-        sta reu_addr_ctrl
-        lda #$B0                ; execute + autoload + STASH
-        sta reu_command
-        jmp .sm_reu_restore
-
-; --- Calculate offset = idx * 64 ---
+; --- Calculate offset = idx * 64 (idx in 0..255 -> 16-bit result 0..16320) ---
 .sm_calc_offset_64:
         lda .sm_reu_idx
         asl                     ; *2
@@ -851,42 +787,11 @@ ec_point_add:
         asl                     ; *8
         asl                     ; *16
         asl                     ; *32
-        asl                     ; *64
+        asl                     ; *64 (top two bits of idx discarded here)
         sta .sm_reu_off_lo
         lda .sm_reu_idx
-        lsr                     ; idx/2 = high byte of idx*64 (partial)
+        lsr                     ; high-byte = idx >> 2
         lsr
-        sta .sm_reu_off_hi
-        rts
-
-; --- Calculate offset = idx * 96 = idx*64 + idx*32 ---
-.sm_calc_offset_96:
-        lda .sm_reu_idx
-        asl                     ; *2
-        asl                     ; *4
-        asl                     ; *8
-        asl                     ; *16
-        asl                     ; *32
-        sta .sm_reu_off_lo      ; low byte of idx*32
-        lda .sm_reu_idx
-        lsr
-        lsr
-        lsr                     ; high byte of idx*32
-        sta .sm_reu_off_hi
-        ; idx*64 = idx*32 * 2
-        lda .sm_reu_off_lo
-        asl
-        sta .sm_reu_tmp
-        lda .sm_reu_off_hi
-        rol
-        sta .sm_reu_tmp+1
-        ; offset = idx*32 + idx*64
-        lda .sm_reu_off_lo
-        clc
-        adc .sm_reu_tmp
-        sta .sm_reu_off_lo
-        lda .sm_reu_off_hi
-        adc .sm_reu_tmp+1
         sta .sm_reu_off_hi
         rts
 
@@ -912,28 +817,24 @@ ec_point_add:
 .sm_nibble_val: !byte 0         ; current nibble value
 
 ; =============================================================================
-; ec_precompute_256: Build Lim-Lee 4-way fixed-base comb table for P-256.
+; ec_precompute_256: Build Lim-Lee 8-way fixed-base comb table for P-256
+; (Wave 7a h=8).
 ;
-; Comb parameters: h = 4 sub-scalars, a = 64 bits each (h*a = 256).
-; Anchors:
-;   A1 = G               (= 2^0   * G)
-;   A2 = 2^64  * G       (64 doublings of A1)
-;   A3 = 2^128 * G       (128 doublings of A1, i.e. 64 doublings of A2)
-;   A4 = 2^192 * G       (192 doublings of A1, i.e. 64 doublings of A3)
-; Table T[j] for j in 1..15:
-;   T[j] = ((j>>0)&1)*A1 + ((j>>1)&1)*A2 + ((j>>2)&1)*A3 + ((j>>3)&1)*A4
-; Bit p of j corresponds to sub-scalar K_p (this exact convention is also
-; used by ec_scalar_mul -- see the index extraction code there).
+; Comb parameters: h = 8 sub-scalars, a = 32 bits each (h*a = 256).
+; Anchors: A_p = 2^(32*(p-1)) * G for p = 1..8.
+;   A1 = G, A2 = 2^32 * G, ..., A8 = 2^224 * G.
+; Each non-trivial anchor A_{p+1} is built by 32 doublings of A_p.
+; Table T[j] for j in 1..255:
+;   T[j] = sum over p=0..7 of ((j>>p) & 1) * A_{p+1}
+; Bit p of j corresponds to sub-scalar K_p (matches ec_scalar_mul).
 ; T[0] is the identity and is never fetched.
 ;
-; Storage: 16 slots * 64-byte affine (X,Y) in REU bank 2 offset $0000..$03FF.
-; Slot 0 is left as whatever junk; the main loop guards against fetching it.
+; Storage: 256 slots * 64-byte affine (X,Y) in REU bank 2 at offset
+; $0000..$3FFF (16 KB). Slot 0 is never fetched.
 ;
-; This routine is called once at init.  It uses 192 ec_point_doubles to
-; build the four anchors plus 26 mixed ec_point_adds (sum of |T[j]|-1 over
-; j=1..15) and 19 jacobian_to_affine conversions (4 anchors + 15 table
-; entries that have at least one set bit).  No Montgomery-batched inversion
-; is used in v1.
+; Called once at init. Uses 224 ec_point_doubles (7*32 for anchors A2..A8),
+; plus 762 mixed ec_point_adds (sum over j=1..255 of popcount(j)-1), plus
+; 255 jacobian_to_affine conversions (T[1..255]). Boot cost ~25 Mcyc.
 ; =============================================================================
 ec_precompute_256:
         jsr ec_set_modp
@@ -952,12 +853,12 @@ ec_precompute_256:
         dey
         bpl .cmp_a1y
 
-        ; ----- Build A2 = 2^64 * G via 64 doublings of G. -----
-        ; Initialise ec_p1 = G (Jacobian, Z=1).
-        jsr .cmp_load_p1_g
-        lda #64
+        ; ----- Build A2..A8: each via 32 doublings from the previous. -----
+        jsr .cmp_load_p1_g              ; ec_p1 = G (Jacobian, Z=1)
+
+        ; A2 = 2^32 * G
+        lda #32
         jsr .cmp_double_p1_n
-        ; ec_p1 holds 2^64 * G in Jacobian -- copy to ec_p3 then convert.
         jsr .cmp_p1_to_p3
         jsr ec_jacobian_to_affine
         ldy #31
@@ -973,8 +874,8 @@ ec_precompute_256:
         dey
         bpl .cmp_sa2y
 
-        ; ----- Build A3 = 2^128 * G via 64 more doublings. -----
-        lda #64
+        ; A3 = 2^64 * G
+        lda #32
         jsr .cmp_double_p1_n
         jsr .cmp_p1_to_p3
         jsr ec_jacobian_to_affine
@@ -991,8 +892,8 @@ ec_precompute_256:
         dey
         bpl .cmp_sa3y
 
-        ; ----- Build A4 = 2^192 * G via 64 more doublings. -----
-        lda #64
+        ; A4 = 2^96 * G
+        lda #32
         jsr .cmp_double_p1_n
         jsr .cmp_p1_to_p3
         jsr ec_jacobian_to_affine
@@ -1009,38 +910,130 @@ ec_precompute_256:
         dey
         bpl .cmp_sa4y
 
-        ; ----- Build T[j] for j = 1..15 by subset-sum. -----
+        ; A5 = 2^128 * G
+        lda #32
+        jsr .cmp_double_p1_n
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        ldy #31
+.cmp_sa5x:
+        lda ec_affine_x,y
+        sta ec_anchor5_x,y
+        dey
+        bpl .cmp_sa5x
+        ldy #31
+.cmp_sa5y:
+        lda ec_affine_y,y
+        sta ec_anchor5_y,y
+        dey
+        bpl .cmp_sa5y
+
+        ; A6 = 2^160 * G
+        lda #32
+        jsr .cmp_double_p1_n
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        ldy #31
+.cmp_sa6x:
+        lda ec_affine_x,y
+        sta ec_anchor6_x,y
+        dey
+        bpl .cmp_sa6x
+        ldy #31
+.cmp_sa6y:
+        lda ec_affine_y,y
+        sta ec_anchor6_y,y
+        dey
+        bpl .cmp_sa6y
+
+        ; A7 = 2^192 * G
+        lda #32
+        jsr .cmp_double_p1_n
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        ldy #31
+.cmp_sa7x:
+        lda ec_affine_x,y
+        sta ec_anchor7_x,y
+        dey
+        bpl .cmp_sa7x
+        ldy #31
+.cmp_sa7y:
+        lda ec_affine_y,y
+        sta ec_anchor7_y,y
+        dey
+        bpl .cmp_sa7y
+
+        ; A8 = 2^224 * G
+        lda #32
+        jsr .cmp_double_p1_n
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        ldy #31
+.cmp_sa8x:
+        lda ec_affine_x,y
+        sta ec_anchor8_x,y
+        dey
+        bpl .cmp_sa8x
+        ldy #31
+.cmp_sa8y:
+        lda ec_affine_y,y
+        sta ec_anchor8_y,y
+        dey
+        bpl .cmp_sa8y
+
+        ; ----- Build T[j] for j = 1..255 by subset-sum over 8 anchors. -----
         lda #1
-        sta ec_sc_byte                  ; j counter
+        sta ec_sc_byte                  ; j counter (wraps to 0 after 255)
 .cmp_tloop:
-        ; ec_p1 starts uninitialised this iteration. We use cm_seeded
-        ; flag: 0 = next set bit copies anchor into ec_p1 (with Z=1),
-        ; 1 = subsequent set bits load anchor as affine ec_p2 and add.
         lda #0
         sta cm_seeded
-        ; Test bit 0 (A1)
         lda ec_sc_byte
-        and #1
+        and #$01
         beq .cmp_tj_b1
-        lda #0                          ; anchor index 0
+        lda #0
         jsr .cmp_accum_anchor
 .cmp_tj_b1:
         lda ec_sc_byte
-        and #2
+        and #$02
         beq .cmp_tj_b2
         lda #1
         jsr .cmp_accum_anchor
 .cmp_tj_b2:
         lda ec_sc_byte
-        and #4
+        and #$04
         beq .cmp_tj_b3
         lda #2
         jsr .cmp_accum_anchor
 .cmp_tj_b3:
         lda ec_sc_byte
-        and #8
-        beq .cmp_tj_done
+        and #$08
+        beq .cmp_tj_b4
         lda #3
+        jsr .cmp_accum_anchor
+.cmp_tj_b4:
+        lda ec_sc_byte
+        and #$10
+        beq .cmp_tj_b5
+        lda #4
+        jsr .cmp_accum_anchor
+.cmp_tj_b5:
+        lda ec_sc_byte
+        and #$20
+        beq .cmp_tj_b6
+        lda #5
+        jsr .cmp_accum_anchor
+.cmp_tj_b6:
+        lda ec_sc_byte
+        and #$40
+        beq .cmp_tj_b7
+        lda #6
+        jsr .cmp_accum_anchor
+.cmp_tj_b7:
+        lda ec_sc_byte
+        and #$80
+        beq .cmp_tj_done
+        lda #7
         jsr .cmp_accum_anchor
 .cmp_tj_done:
         ; ec_p1 holds T[j] in Jacobian. Convert to affine and stash.
@@ -1049,9 +1042,7 @@ ec_precompute_256:
         lda ec_sc_byte
         jsr .sm_reu_stash_affine
         inc ec_sc_byte
-        lda ec_sc_byte
-        cmp #16
-        bne .cmp_tloop
+        bne .cmp_tloop                  ; loop until ec_sc_byte wraps 255->0
         rts
 
 ; --- Internal helper: load ec_p1 = G as Jacobian (Z=1). ---
@@ -1107,7 +1098,7 @@ ec_precompute_256:
 ; --- Internal helper: accumulate anchor[A] into ec_p1 (Jacobian). ---
 ; If cm_seeded == 0: copy anchor into ec_p1 with Z=1, set cm_seeded=1.
 ; Else: copy anchor into ec_p2 (affine), call ec_point_add, copy ec_p3->ec_p1.
-; A in 0..3 (anchor index).
+; A in 0..7 (anchor index).
 .cmp_accum_anchor:
         sta cm_anch_idx
         lda cm_seeded
@@ -1130,7 +1121,7 @@ ec_precompute_256:
         bpl .cmp_acc_cp
         rts
 
-; --- Load anchor[A] into ec_p1 (Jacobian, Z=1). A in 0..3. ---
+; --- Load anchor[A] into ec_p1 (Jacobian, Z=1). A in 0..7. ---
 .cmp_load_anchor_p1:
         asl
         tax
@@ -1169,7 +1160,7 @@ ec_precompute_256:
         sta ec_p1+64
         rts
 
-; --- Load anchor[A] into ec_p2 (affine X,Y; Z slot unused). A in 0..3. ---
+; --- Load anchor[A] into ec_p2 (affine X,Y; Z slot unused). A in 0..7. ---
 .cmp_load_anchor_p2:
         asl
         tax
@@ -1204,157 +1195,34 @@ ec_precompute_256:
         !word ec_anchor2_x
         !word ec_anchor3_x
         !word ec_anchor4_x
-        ; --- Stash T[0] = G affine directly from curve generator ---
-        ldy #31
-.sm_t0x:
-        lda ec_gx256,y
-        sta ec_affine_x,y
-        dey
-        bpl .sm_t0x
-        ldy #31
-.sm_t0y:
-        lda ec_gy256,y
-        sta ec_affine_y,y
-        dey
-        bpl .sm_t0y
-        lda #0
-        jsr .sm_reu_stash_affine ; stash T[0] = G
-
-        ; --- Compute 2G: set ec_p1 = G as Jacobian (Z=1), double into ec_p3,
-        ;     then convert ec_p3 -> affine and save to ec_aff2g_256_{x,y}.
-        ldy #31
-.sm_g1x:
-        lda ec_gx256,y
-        sta ec_p1,y
-        dey
-        bpl .sm_g1x
-        ldy #31
-.sm_g1y:
-        lda ec_gy256,y
-        sta ec_p1+32,y
-        dey
-        bpl .sm_g1y
-        ldy #31
-        lda #0
-.sm_g1z:
-        sta ec_p1+64,y
-        dey
-        bpl .sm_g1z
-        lda #1
-        sta ec_p1+64             ; Z = 1 little-endian
-
-        jsr ec_set_modp
-        jsr ec_point_double      ; ec_p3 = 2G (Jacobian)
-        jsr ec_jacobian_to_affine ; ec_affine_x/y = 2G affine
-
-        ; Save 2G affine to persistent scratch (ec_affine_x/y is clobbered
-        ; by every subsequent jacobian_to_affine).
-        ldy #31
-.sm_s2gx:
-        lda ec_affine_x,y
-        sta ec_aff2g_256_x,y
-        dey
-        bpl .sm_s2gx
-        ldy #31
-.sm_s2gy:
-        lda ec_affine_y,y
-        sta ec_aff2g_256_y,y
-        dey
-        bpl .sm_s2gy
-
-        ; --- Set ec_p1 = G Jacobian (running accumulator = T[0] = G) ---
-        ldy #31
-.sm_a0x:
-        lda ec_gx256,y
-        sta ec_p1,y
-        dey
-        bpl .sm_a0x
-        ldy #31
-.sm_a0y:
-        lda ec_gy256,y
-        sta ec_p1+32,y
-        dey
-        bpl .sm_a0y
-        ldy #31
-        lda #0
-.sm_a0z:
-        sta ec_p1+64,y
-        dey
-        bpl .sm_a0z
-        lda #1
-        sta ec_p1+64
-
-        ; --- T[j] = T[j-1] + 2G for j = 1..7 ---
-        ; ec_p1 holds running Jacobian accumulator.
-        ; ec_p2 holds 2G affine (reload each iter; ec_point_add may clobber).
-        lda #1
-        sta ec_sc_byte           ; precompute j counter
-
-.sm_precomp:
-        ; Load 2G affine into ec_p2
-        ldy #31
-.sm_ld2gx:
-        lda ec_aff2g_256_x,y
-        sta ec_p2,y
-        dey
-        bpl .sm_ld2gx
-        ldy #31
-.sm_ld2gy:
-        lda ec_aff2g_256_y,y
-        sta ec_p2+32,y
-        dey
-        bpl .sm_ld2gy
-
-        ; ec_p3 = ec_p1 + ec_p2 = T[j-1] + 2G
-        jsr ec_point_add
-
-        ; Copy ec_p3 -> ec_p1 (new running Jacobian accumulator)
-        ldy #95
-.sm_cpj:
-        lda ec_p3,y
-        sta ec_p1,y
-        dey
-        bpl .sm_cpj
-
-        ; Convert ec_p3 Jacobian to affine -> ec_affine_x, ec_affine_y
-        jsr ec_jacobian_to_affine
-
-        ; Stash affine to REU slot j
-        lda ec_sc_byte
-        jsr .sm_reu_stash_affine
-
-        inc ec_sc_byte
-        lda ec_sc_byte
-        cmp #8
-        bne .sm_precomp
-
-        rts
+        !word ec_anchor5_x
+        !word ec_anchor6_x
+        !word ec_anchor7_x
+        !word ec_anchor8_x
 
 ; =============================================================================
-; ec_scalar_mul: ec_p3 = k * G using a 4-way Lim-Lee fixed-base comb.
+; ec_scalar_mul: ec_p3 = k * G using an 8-way Lim-Lee fixed-base comb (Wave 7a).
 ;
 ; k is a 32-byte scalar pointed to by (ec_scalar_ptr), BIG-ENDIAN byte order.
-; The 256-bit scalar is split into K3||K2||K1||K0 (each 64 bits, K0 = least
-; significant). The comb table T[1..15] in REU bank 2 offset $0000 holds
-;     T[j] = ((j>>0)&1)*A1 + ((j>>1)&1)*A2 + ((j>>2)&1)*A3 + ((j>>3)&1)*A4
-; where A_p = 2^(64*p) * G. Bit p of j corresponds to sub-scalar K_p.
+; The 256-bit scalar is split into K7||K6||...||K0 (each 32 bits = 4 bytes,
+; K0 = LSBs). The comb table T[1..255] in REU bank 2 offset $0000 holds
+;     T[j] = sum over p=0..7 of ((j>>p) & 1) * A_{p+1}
+; where A_p = 2^(32*(p-1)) * G. Bit p of j corresponds to sub-scalar K_p.
 ;
-; For each iteration b = 63 downto 0:
+; For each iteration b = 31 downto 0:
 ;   - double R
-;   - idx = (bit_b(K3)<<3) | (bit_b(K2)<<2) | (bit_b(K1)<<1) | bit_b(K0)
+;   - idx = sum over p=0..7 of bit_b(K_p) << p
 ;   - if idx != 0: R += T[idx] (mixed Jacobian + affine add)
-; The first iteration in which idx != 0 seeds R = T[idx] directly (R was
-; the point at infinity); we track this with cm_r_inf.
+; The first non-zero idx seeds R (was point at infinity); tracked by cm_r_inf.
 ;
-; Cost: 64 doublings + ~60 mixed adds (vs 256 doublings + ~51 adds for
-; wNAF-5 baseline).
+; Cost: 32 doublings + ~32 mixed adds (vs 64 doublings + ~60 adds for h=4).
 ;
 ; Result in ec_p3 (Jacobian).
 ; REQUIRES: ec_precompute_256 must have been called first.
 ; =============================================================================
 ec_scalar_mul:
         ; --- Transpose 32-byte BE scalar -> cm_k little-endian ---
-        ; cm_k[i] = scalar[31 - i]; cm_k[0..7]=K0 (LSBs), cm_k[24..31]=K3 (MSBs).
+        ; cm_k[i] = scalar[31 - i]; cm_k[0..3] = K0 (LSBs), ..., cm_k[28..31] = K7.
         ldy #31                 ; BE source index
         ldx #0                  ; LE destination index
 .cm_xpose:
@@ -1365,11 +1233,11 @@ ec_scalar_mul:
         bpl .cm_xpose
 
         ; --- Init state ---
-        lda #7
-        sta cm_byte_off         ; bit 63 lives in cm_k[7] for each K_p
+        lda #3
+        sta cm_byte_off         ; bit 31 of each K_p lives in cm_k[3 + 4*p]
         lda #$80
-        sta cm_bit_mask         ; bit 7 = bit 63 of K_p
-        lda #64
+        sta cm_bit_mask
+        lda #32
         sta cm_loop_ctr
         lda #1
         sta cm_r_inf            ; R starts at the point at infinity
@@ -1389,36 +1257,64 @@ ec_scalar_mul:
         bpl .cm_dcp
 .cm_skip_double:
 
-        ; --- Extract idx from current bit position ---
+        ; --- Extract idx (8 bits) from current bit position, K7..K0 -----
         lda #0
         sta cm_idx
         ldx cm_byte_off
 
-        lda cm_k+24,x           ; K3
+        lda cm_k+28,x           ; K7
+        and cm_bit_mask
+        beq .cm_b7z
+        lda #$80
+        ora cm_idx
+        sta cm_idx
+.cm_b7z:
+        lda cm_k+24,x           ; K6
+        and cm_bit_mask
+        beq .cm_b6z
+        lda #$40
+        ora cm_idx
+        sta cm_idx
+.cm_b6z:
+        lda cm_k+20,x           ; K5
+        and cm_bit_mask
+        beq .cm_b5z
+        lda #$20
+        ora cm_idx
+        sta cm_idx
+.cm_b5z:
+        lda cm_k+16,x           ; K4
+        and cm_bit_mask
+        beq .cm_b4z
+        lda #$10
+        ora cm_idx
+        sta cm_idx
+.cm_b4z:
+        lda cm_k+12,x           ; K3
         and cm_bit_mask
         beq .cm_b3z
-        lda #8
+        lda #$08
         ora cm_idx
         sta cm_idx
 .cm_b3z:
-        lda cm_k+16,x           ; K2
+        lda cm_k+8,x            ; K2
         and cm_bit_mask
         beq .cm_b2z
-        lda #4
+        lda #$04
         ora cm_idx
         sta cm_idx
 .cm_b2z:
-        lda cm_k+8,x            ; K1
+        lda cm_k+4,x            ; K1
         and cm_bit_mask
         beq .cm_b1z
-        lda #2
+        lda #$02
         ora cm_idx
         sta cm_idx
 .cm_b1z:
         lda cm_k+0,x            ; K0
         and cm_bit_mask
         beq .cm_b0z
-        lda #1
+        lda #$01
         ora cm_idx
         sta cm_idx
 .cm_b0z:

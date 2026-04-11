@@ -147,8 +147,8 @@ fp384_red_tmp:
 ec_aff2g_256_x: !fill 32, 0
 ec_aff2g_256_y: !fill 32, 0
 
-; --- Lim-Lee 4-way fixed-base comb anchors for P-256.
-;     A_p (p in 1..4) = 2^(64*(p-1)) * G stored as affine (X then Y, each
+; --- Lim-Lee 8-way fixed-base comb anchors for P-256 (Wave 7a, h=8).
+;     A_p (p in 1..8) = 2^(32*(p-1)) * G stored as affine (X then Y, each
 ;     32 bytes, contiguous so a single base pointer can index both halves).
 ec_anchor1_x:   !fill 32, 0
 ec_anchor1_y:   !fill 32, 0
@@ -158,16 +158,22 @@ ec_anchor3_x:   !fill 32, 0
 ec_anchor3_y:   !fill 32, 0
 ec_anchor4_x:   !fill 32, 0
 ec_anchor4_y:   !fill 32, 0
+ec_anchor5_x:   !fill 32, 0
+ec_anchor5_y:   !fill 32, 0
+ec_anchor6_x:   !fill 32, 0
+ec_anchor6_y:   !fill 32, 0
+ec_anchor7_x:   !fill 32, 0
+ec_anchor7_y:   !fill 32, 0
+ec_anchor8_x:   !fill 32, 0
+ec_anchor8_y:   !fill 32, 0
 
 ; --- Lim-Lee comb working scalar (32 bytes, little-endian transpose of
-;     the BE input scalar). cm_k[0..7]   = K0 (least significant 64 bits),
-;                            cm_k[8..15]  = K1,
-;                            cm_k[16..23] = K2,
-;                            cm_k[24..31] = K3 (most significant 64 bits).
+;     the BE input scalar). Wave 7a h=8: 8 sub-scalars of 32 bits (4 bytes)
+;     each. cm_k[0..3] = K0 (LSBs), cm_k[4..7] = K1, ..., cm_k[28..31] = K7.
 cm_k:           !fill 32, 0
 
-; --- Lim-Lee 4-way fixed-base comb anchors for P-384.
-;     A_p (p in 1..4) = 2^(96*(p-1)) * G stored as affine (X then Y, each
+; --- Lim-Lee 8-way fixed-base comb anchors for P-384 (Wave 7a, h=8).
+;     A_p (p in 1..8) = 2^(48*(p-1)) * G stored as affine (X then Y, each
 ;     48 bytes, contiguous so a single base pointer can index both halves).
 ec_anchor1_384_x: !fill 48, 0
 ec_anchor1_384_y: !fill 48, 0
@@ -177,10 +183,16 @@ ec_anchor3_384_x: !fill 48, 0
 ec_anchor3_384_y: !fill 48, 0
 ec_anchor4_384_x: !fill 48, 0
 ec_anchor4_384_y: !fill 48, 0
+ec_anchor5_384_x: !fill 48, 0
+ec_anchor5_384_y: !fill 48, 0
+ec_anchor6_384_x: !fill 48, 0
+ec_anchor6_384_y: !fill 48, 0
+ec_anchor7_384_x: !fill 48, 0
+ec_anchor7_384_y: !fill 48, 0
+ec_anchor8_384_x: !fill 48, 0
+ec_anchor8_384_y: !fill 48, 0
 
-; --- Lim-Lee comb working scalar for P-384 (48 bytes, little-endian
-;     transpose of the BE input). cm_k_384[0..11]   = K0 (LSBs),
-;                                   cm_k_384[12..23] = K1,
-;                                   cm_k_384[24..35] = K2,
-;                                   cm_k_384[36..47] = K3 (MSBs).
+; --- Lim-Lee comb working scalar for P-384 (48 bytes, LE transpose of
+;     BE input). Wave 7a h=8: 8 sub-scalars of 48 bits (6 bytes) each.
+;     cm_k_384[0..5] = K0 (LSBs), ..., cm_k_384[42..47] = K7 (MSBs).
 cm_k_384:       !fill 48, 0

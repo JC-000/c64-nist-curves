@@ -15,8 +15,8 @@ Commodore 64 plus a RAM Expansion Unit (REU):
 
 - 32-byte / 48-byte field arithmetic (add, sub, mul, sqr, inv, modular variants)
 - Jacobian point doubling and mixed Jacobian/affine point addition
-- Fixed-base scalar multiplication `k * G` via a 4-way width-1 Lim-Lee comb
-  over a REU-resident precompute table
+- Fixed-base scalar multiplication `k * G` via an 8-way width-1 Lim-Lee comb
+  over a REU-resident 256-entry precompute table (Wave 7a; h=4 landed in Wave 5)
 - Jacobian-to-affine conversion for result export
 
 Target platform: 6502 @ 1 MHz with a 1764 / 1750 / compatible REU. Source is
@@ -41,20 +41,20 @@ slots only requires editing `src/zp_config.asm`.
 
 | Region | Address range | Purpose |
 |---|---|---|
-| PRG code | `$0801`-`$57FF` (approx.) | BASIC stub, boot code, math routines. Current PRG size: 20055 bytes. |
+| PRG code | `$0801`-`$58FF` (approx.) | BASIC stub, boot code, math routines. Current PRG size: 20695 bytes (post-Wave-7a). |
 | P-256 field buffers | `$4608`-`$49E9` | `fp_wide`, `fp_tmp1..4`, `fp_r0..3`, `fp_inv_*` (see `data.asm`). |
 | P-256 point buffers | `$47CA`-`$49E9` | `ec_p1`, `ec_p2`, `ec_p3`, `ec_t1..6`, `ec_affine_x/y`. Overlap in table above reflects contiguous placement in `data.asm`. |
 | `mul_cached_a` / `mul_src2_buf` / reduction scratch | `$49EA`-`$4AFF` (approx.) | Shared multiply scratch and Solinas accumulator. |
 | `mul_dma_lo` (page-aligned) | `$4B00`-`$4BFF` | REU DMA target: low bytes of the current multiply row. |
 | `mul_dma_hi` | `$4C00`-`$4CFF` | REU DMA target: high bytes of the current multiply row. |
 | P-384 field + point buffers | `$4D21`-`$5365` | `fp384_wide`, `fp384_tmp1..4`, `fp384_r0..3`, `fp384_inv_*`, `ec384_p1/p2/p3`, `ec384_t1..6`, `ec384_affine_x/y`. |
-| Lim-Lee anchors + working scalar (P-256) | `$5367`-`$5486` | `ec_anchor1..4_x/y`, `cm_k`. |
-| Lim-Lee anchors + working scalar (P-384) | `$5487`-`$56F6` | `ec_anchor1..4_384_x/y`, `cm_k_384`. |
+| Lim-Lee anchors + working scalar (P-256) | approx. `$5367`-`$5586` | `ec_anchor1..8_x/y` (8 * 64 bytes), `cm_k` (32). Wave 7a h=8 doubled the anchor storage. |
+| Lim-Lee anchors + working scalar (P-384) | approx. `$5587`-`$58F6` | `ec_anchor1..8_384_x/y` (8 * 96 bytes), `cm_k_384` (48). |
 | Quarter-square multiply tables | `$7800`-`$7BFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. |
 | Zero-page | ~16 bytes, see `zp_config.asm` | `$02`-`$03`, `$1A`-`$1D`, `$22`-`$2D`, `$3B`, `$FB`-`$FE` by default. |
 | REU bank 0-1 | `$00_0000`-`$01_FFFF` | 128 KB full 8x8 -> 16 multiply table, built once by `reu_mul_init`. |
-| REU bank 2, offset `$0000`-`$03FF` | 1 KB | P-256 Lim-Lee comb precompute (16 entries x 64 bytes, X + Y only). |
-| REU bank 2, offset `$0400`-`$09FF` | 1.5 KB | P-384 Lim-Lee comb precompute (16 entries x 96 bytes). |
+| REU bank 2, offset `$0000`-`$3FFF` | 16 KB | P-256 Lim-Lee comb precompute (256 entries x 64 bytes, X + Y only). Wave 7a h=8. |
+| REU bank 2, offset `$4000`-`$9F9F` | 24 KB | P-384 Lim-Lee comb precompute (256 entries x 96 bytes). Wave 7a h=8. |
 
 Run `build/labels.txt` through your own tooling for exact symbol addresses in
 any given build. The address ranges above are derived from the current
@@ -81,13 +81,17 @@ or point routine is used. All of them are defined in `main.asm` / `points256.asm
    multiply table and pre-configures the REU DMA registers. Required for any
    multiply. Takes ~4 seconds on a real C64.
 
-4. **`jsr ec_precompute_256`** — builds the 1 KB Lim-Lee anchor / comb table in
-   REU bank 2 at offset `$0000`. Required before `ec_scalar_mul`. Only needed
-   if you will call P-256 scalar multiply; field arithmetic and
-   point double / add do not depend on it.
+4. **`jsr ec_precompute_256`** — builds the 16 KB Lim-Lee anchor / comb table in
+   REU bank 2 at offset `$0000` (256 entries * 64 bytes, h=8). Required before
+   `ec_scalar_mul`. Only needed if you will call P-256 scalar multiply; field
+   arithmetic and point double / add do not depend on it. Boot cost on a real
+   C64 is on the order of ~25 seconds (224 doubles + 762 mixed adds + 255 J->A
+   conversions).
 
 5. **`jsr ec_precompute_384`** — analogous P-384 precompute at REU bank 2
-   offset `$0400`. Required before `ec_scalar_mul_384`.
+   offset `$4000` (24 KB, 256 entries * 96 bytes, h=8). Required before
+   `ec_scalar_mul_384`. Boot cost is on the order of ~80 seconds (336 doubles
+   + 762 mixed adds + 255 J->A conversions on 48-byte operands).
 
 If your host program only uses one curve, you may omit that curve's
 `ec_precompute_*` call. `sqtab_init` and `reu_mul_init` are mandatory for both.
@@ -223,12 +227,12 @@ identically to the P-256 version.
 |---|---|---|---|---|
 | `ec_point_double` / `ec_point_double_384` | points256/384 | `ec_p1` / `ec384_p1` (Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Handles Z=0 (infinity) input. Uses curve-specific `a = -3` formula. |
 | `ec_point_add` / `ec_point_add_384` | points256/384 | `ec_p1` / `ec384_p1` (Jacobian), `ec_p2` / `ec384_p2` (affine X in first half, Y in second half; Z ignored) | `ec_p3` / `ec384_p3` (Jacobian) | Mixed Jacobian+affine addition. Handles both-infinity / same-point cases. |
-| `ec_scalar_mul` | points256 | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using a 4-way Lim-Lee comb over the P-256 precompute table. **Requires `ec_precompute_256`.** Base-point only. |
-| `ec_scalar_mul_384` | points384 | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue. **Requires `ec_precompute_384`.** |
+| `ec_scalar_mul` | points256 | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. |
+| `ec_scalar_mul_384` | points384 | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
 | `ec_jacobian_to_affine` | points256 | `ec_p3` | `ec_affine_x`, `ec_affine_y` | Sets `fp_misc` to p256 internally. |
 | `ec_jacobian_to_affine_384` | points384 | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y` | P-384 analogue. |
-| `ec_precompute_256` | points256 | — | REU bank 2 @ `$0000`..`$03FF`, `ec_anchor1..4_x/y` | Builds the Lim-Lee comb table. Run once at boot. |
-| `ec_precompute_384` | points384 | — | REU bank 2 @ `$0400`..`$09FF`, `ec_anchor1..4_384_x/y` | P-384 analogue. |
+| `ec_precompute_256` | points256 | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~25 s on real C64). |
+| `ec_precompute_384` | points384 | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~80 s on real C64). |
 
 ## 6. Example usage
 
