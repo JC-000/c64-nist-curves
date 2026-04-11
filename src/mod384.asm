@@ -1001,20 +1001,22 @@ ec_set_modn_384:
         rts
 
 ; =============================================================================
-; ec_mulp_384 - Modular multiply mod p, copy result to (fp_dst)
+; ec_mulp_384 / ec_sqrp_384 - Modular multiply / square mod p384, copy result.
+;
+; Both routines share an internal .copy_result tail that spills fp384_r0
+; into (fp_dst). Wrapped in an !zone so .copy_result is local to this
+; block and does NOT leak into the public symbol table.
 ; =============================================================================
+!zone ec_mulp_384_block {
 ec_mulp_384:
         jsr ec_set_modp_384
         jsr fp_mod_mul_384
-        jmp ec_mulp_384_copy_result
+        jmp .copy_result
 
-; =============================================================================
-; ec_sqrp_384 - Modular square mod p (P-384), copy result to (fp_dst)
-; =============================================================================
 ec_sqrp_384:
         jsr ec_set_modp_384
         jsr fp_mod_sqr_384
-ec_mulp_384_copy_result:
+.copy_result:
         lda fp_src1
         pha
         lda fp_src1+1
@@ -1029,3 +1031,4 @@ ec_mulp_384_copy_result:
         pla
         sta fp_src1
         rts
+}
