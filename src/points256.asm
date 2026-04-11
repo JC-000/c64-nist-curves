@@ -912,13 +912,298 @@ ec_point_add:
 .sm_nibble_val: !byte 0         ; current nibble value
 
 ; =============================================================================
-; ec_precompute_256: Build wNAF-5 table T[0..7] of odd multiples of G.
-;   T[j] = (2j+1)*G for j in 0..7, i.e. { G, 3G, 5G, 7G, 9G, 11G, 13G, 15G }.
-; Stored as 64-byte AFFINE (X,Y) entries in REU bank 2 offset $0000.
-; Also precomputes affine 2G into ec_aff2g_256_{x,y} (not stashed to REU).
-; Called once at init.
+; ec_precompute_256: Build Lim-Lee 4-way fixed-base comb table for P-256.
+;
+; Comb parameters: h = 4 sub-scalars, a = 64 bits each (h*a = 256).
+; Anchors:
+;   A1 = G               (= 2^0   * G)
+;   A2 = 2^64  * G       (64 doublings of A1)
+;   A3 = 2^128 * G       (128 doublings of A1, i.e. 64 doublings of A2)
+;   A4 = 2^192 * G       (192 doublings of A1, i.e. 64 doublings of A3)
+; Table T[j] for j in 1..15:
+;   T[j] = ((j>>0)&1)*A1 + ((j>>1)&1)*A2 + ((j>>2)&1)*A3 + ((j>>3)&1)*A4
+; Bit p of j corresponds to sub-scalar K_p (this exact convention is also
+; used by ec_scalar_mul -- see the index extraction code there).
+; T[0] is the identity and is never fetched.
+;
+; Storage: 16 slots * 64-byte affine (X,Y) in REU bank 2 offset $0000..$03FF.
+; Slot 0 is left as whatever junk; the main loop guards against fetching it.
+;
+; This routine is called once at init.  It uses 192 ec_point_doubles to
+; build the four anchors plus 26 mixed ec_point_adds (sum of |T[j]|-1 over
+; j=1..15) and 19 jacobian_to_affine conversions (4 anchors + 15 table
+; entries that have at least one set bit).  No Montgomery-batched inversion
+; is used in v1.
 ; =============================================================================
 ec_precompute_256:
+        jsr ec_set_modp
+
+        ; ----- A1 = G affine: store directly into ec_anchor1_x/y. -----
+        ldy #31
+.cmp_a1x:
+        lda ec_gx256,y
+        sta ec_anchor1_x,y
+        dey
+        bpl .cmp_a1x
+        ldy #31
+.cmp_a1y:
+        lda ec_gy256,y
+        sta ec_anchor1_y,y
+        dey
+        bpl .cmp_a1y
+
+        ; ----- Build A2 = 2^64 * G via 64 doublings of G. -----
+        ; Initialise ec_p1 = G (Jacobian, Z=1).
+        jsr .cmp_load_p1_g
+        lda #64
+        jsr .cmp_double_p1_n
+        ; ec_p1 holds 2^64 * G in Jacobian -- copy to ec_p3 then convert.
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        ldy #31
+.cmp_sa2x:
+        lda ec_affine_x,y
+        sta ec_anchor2_x,y
+        dey
+        bpl .cmp_sa2x
+        ldy #31
+.cmp_sa2y:
+        lda ec_affine_y,y
+        sta ec_anchor2_y,y
+        dey
+        bpl .cmp_sa2y
+
+        ; ----- Build A3 = 2^128 * G via 64 more doublings. -----
+        lda #64
+        jsr .cmp_double_p1_n
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        ldy #31
+.cmp_sa3x:
+        lda ec_affine_x,y
+        sta ec_anchor3_x,y
+        dey
+        bpl .cmp_sa3x
+        ldy #31
+.cmp_sa3y:
+        lda ec_affine_y,y
+        sta ec_anchor3_y,y
+        dey
+        bpl .cmp_sa3y
+
+        ; ----- Build A4 = 2^192 * G via 64 more doublings. -----
+        lda #64
+        jsr .cmp_double_p1_n
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        ldy #31
+.cmp_sa4x:
+        lda ec_affine_x,y
+        sta ec_anchor4_x,y
+        dey
+        bpl .cmp_sa4x
+        ldy #31
+.cmp_sa4y:
+        lda ec_affine_y,y
+        sta ec_anchor4_y,y
+        dey
+        bpl .cmp_sa4y
+
+        ; ----- Build T[j] for j = 1..15 by subset-sum. -----
+        lda #1
+        sta ec_sc_byte                  ; j counter
+.cmp_tloop:
+        ; ec_p1 starts uninitialised this iteration. We use cm_seeded
+        ; flag: 0 = next set bit copies anchor into ec_p1 (with Z=1),
+        ; 1 = subsequent set bits load anchor as affine ec_p2 and add.
+        lda #0
+        sta cm_seeded
+        ; Test bit 0 (A1)
+        lda ec_sc_byte
+        and #1
+        beq .cmp_tj_b1
+        lda #0                          ; anchor index 0
+        jsr .cmp_accum_anchor
+.cmp_tj_b1:
+        lda ec_sc_byte
+        and #2
+        beq .cmp_tj_b2
+        lda #1
+        jsr .cmp_accum_anchor
+.cmp_tj_b2:
+        lda ec_sc_byte
+        and #4
+        beq .cmp_tj_b3
+        lda #2
+        jsr .cmp_accum_anchor
+.cmp_tj_b3:
+        lda ec_sc_byte
+        and #8
+        beq .cmp_tj_done
+        lda #3
+        jsr .cmp_accum_anchor
+.cmp_tj_done:
+        ; ec_p1 holds T[j] in Jacobian. Convert to affine and stash.
+        jsr .cmp_p1_to_p3
+        jsr ec_jacobian_to_affine
+        lda ec_sc_byte
+        jsr .sm_reu_stash_affine
+        inc ec_sc_byte
+        lda ec_sc_byte
+        cmp #16
+        bne .cmp_tloop
+        rts
+
+; --- Internal helper: load ec_p1 = G as Jacobian (Z=1). ---
+.cmp_load_p1_g:
+        ldy #31
+.cmp_lpg_x:
+        lda ec_gx256,y
+        sta ec_p1,y
+        dey
+        bpl .cmp_lpg_x
+        ldy #31
+.cmp_lpg_y:
+        lda ec_gy256,y
+        sta ec_p1+32,y
+        dey
+        bpl .cmp_lpg_y
+        ldy #31
+        lda #0
+.cmp_lpg_z:
+        sta ec_p1+64,y
+        dey
+        bpl .cmp_lpg_z
+        lda #1
+        sta ec_p1+64
+        rts
+
+; --- Internal helper: ec_p1 = 2^A * ec_p1 (A successive doublings). ---
+; A in 1..255 (uses ec_sc_mask as counter so as not to clobber ec_sc_byte).
+.cmp_double_p1_n:
+        sta ec_sc_mask
+.cmp_dpn_loop:
+        jsr ec_point_double
+        ldy #95
+.cmp_dpn_cp:
+        lda ec_p3,y
+        sta ec_p1,y
+        dey
+        bpl .cmp_dpn_cp
+        dec ec_sc_mask
+        bne .cmp_dpn_loop
+        rts
+
+; --- Internal helper: copy ec_p1 -> ec_p3 (96 bytes). ---
+.cmp_p1_to_p3:
+        ldy #95
+.cmp_pp3_cp:
+        lda ec_p1,y
+        sta ec_p3,y
+        dey
+        bpl .cmp_pp3_cp
+        rts
+
+; --- Internal helper: accumulate anchor[A] into ec_p1 (Jacobian). ---
+; If cm_seeded == 0: copy anchor into ec_p1 with Z=1, set cm_seeded=1.
+; Else: copy anchor into ec_p2 (affine), call ec_point_add, copy ec_p3->ec_p1.
+; A in 0..3 (anchor index).
+.cmp_accum_anchor:
+        sta cm_anch_idx
+        lda cm_seeded
+        bne .cmp_acc_add
+        ; Seed: ec_p1 = anchor (Z=1)
+        lda cm_anch_idx
+        jsr .cmp_load_anchor_p1
+        lda #1
+        sta cm_seeded
+        rts
+.cmp_acc_add:
+        lda cm_anch_idx
+        jsr .cmp_load_anchor_p2
+        jsr ec_point_add
+        ldy #95
+.cmp_acc_cp:
+        lda ec_p3,y
+        sta ec_p1,y
+        dey
+        bpl .cmp_acc_cp
+        rts
+
+; --- Load anchor[A] into ec_p1 (Jacobian, Z=1). A in 0..3. ---
+.cmp_load_anchor_p1:
+        asl
+        tax
+        lda .cmp_anchor_tbl,x
+        sta zp_ptr1
+        lda .cmp_anchor_tbl+1,x
+        sta zp_ptr1+1
+        ; Copy 32 X bytes from (zp_ptr1) to ec_p1
+        ldy #31
+.cmp_lap1_x:
+        lda (zp_ptr1),y
+        sta ec_p1,y
+        dey
+        bpl .cmp_lap1_x
+        ; Advance pointer by 32 to Y coordinate
+        lda zp_ptr1
+        clc
+        adc #32
+        sta zp_ptr1
+        bcc +
+        inc zp_ptr1+1
++
+        ldy #31
+.cmp_lap1_y:
+        lda (zp_ptr1),y
+        sta ec_p1+32,y
+        dey
+        bpl .cmp_lap1_y
+        ldy #31
+        lda #0
+.cmp_lap1_z:
+        sta ec_p1+64,y
+        dey
+        bpl .cmp_lap1_z
+        lda #1
+        sta ec_p1+64
+        rts
+
+; --- Load anchor[A] into ec_p2 (affine X,Y; Z slot unused). A in 0..3. ---
+.cmp_load_anchor_p2:
+        asl
+        tax
+        lda .cmp_anchor_tbl,x
+        sta zp_ptr1
+        lda .cmp_anchor_tbl+1,x
+        sta zp_ptr1+1
+        ldy #31
+.cmp_lap2_x:
+        lda (zp_ptr1),y
+        sta ec_p2,y
+        dey
+        bpl .cmp_lap2_x
+        lda zp_ptr1
+        clc
+        adc #32
+        sta zp_ptr1
+        bcc +
+        inc zp_ptr1+1
++
+        ldy #31
+.cmp_lap2_y:
+        lda (zp_ptr1),y
+        sta ec_p2+32,y
+        dey
+        bpl .cmp_lap2_y
+        rts
+
+; --- Anchor X-base address table (Y is anchor_x + 32, contiguous in data). ---
+.cmp_anchor_tbl:
+        !word ec_anchor1_x
+        !word ec_anchor2_x
+        !word ec_anchor3_x
+        !word ec_anchor4_x
         ; --- Stash T[0] = G affine directly from curve generator ---
         ldy #31
 .sm_t0x:
@@ -1046,361 +1331,185 @@ ec_precompute_256:
         rts
 
 ; =============================================================================
-; ec_scalar_mul: ec_p3 = k * G using width-5 wNAF with table T[0..7].
+; ec_scalar_mul: ec_p3 = k * G using a 4-way Lim-Lee fixed-base comb.
+;
 ; k is a 32-byte scalar pointed to by (ec_scalar_ptr), BIG-ENDIAN byte order.
-; Table T[j] = (2j+1)*G for j=0..7, stored as 64-byte affine (X,Y) in REU
-; bank 2 offset $0000. Result in ec_p3 (Jacobian).
+; The 256-bit scalar is split into K3||K2||K1||K0 (each 64 bits, K0 = least
+; significant). The comb table T[1..15] in REU bank 2 offset $0000 holds
+;     T[j] = ((j>>0)&1)*A1 + ((j>>1)&1)*A2 + ((j>>2)&1)*A3 + ((j>>3)&1)*A4
+; where A_p = 2^(64*p) * G. Bit p of j corresponds to sub-scalar K_p.
+;
+; For each iteration b = 63 downto 0:
+;   - double R
+;   - idx = (bit_b(K3)<<3) | (bit_b(K2)<<2) | (bit_b(K1)<<1) | bit_b(K0)
+;   - if idx != 0: R += T[idx] (mixed Jacobian + affine add)
+; The first iteration in which idx != 0 seeds R = T[idx] directly (R was
+; the point at infinity); we track this with cm_r_inf.
+;
+; Cost: 64 doublings + ~60 mixed adds (vs 256 doublings + ~51 adds for
+; wNAF-5 baseline).
+;
+; Result in ec_p3 (Jacobian).
 ; REQUIRES: ec_precompute_256 must have been called first.
 ; =============================================================================
 ec_scalar_mul:
-        ; Recode scalar into signed wNAF-5 digits (ec_naf_digits / ec_naf_len).
-        lda #32                 ; P-256 scalar length in bytes
-        jsr ec_naf_recode
-
-        ; If length == 0 -> result is infinity.
-        lda ec_naf_len
-        ora ec_naf_len+1
-        bne .smn_have_digits
-        ldy #95
-        lda #0
-.smn_zinf:
-        sta ec_p3,y
+        ; --- Transpose 32-byte BE scalar -> cm_k little-endian ---
+        ; cm_k[i] = scalar[31 - i]; cm_k[0..7]=K0 (LSBs), cm_k[24..31]=K3 (MSBs).
+        ldy #31                 ; BE source index
+        ldx #0                  ; LE destination index
+.cm_xpose:
+        lda (ec_scalar_ptr),y
+        sta cm_k,x
+        inx
         dey
-        bpl .smn_zinf
-        rts
+        bpl .cm_xpose
 
-.smn_have_digits:
+        ; --- Init state ---
+        lda #7
+        sta cm_byte_off         ; bit 63 lives in cm_k[7] for each K_p
+        lda #$80
+        sta cm_bit_mask         ; bit 7 = bit 63 of K_p
+        lda #64
+        sta cm_loop_ctr
+        lda #1
+        sta cm_r_inf            ; R starts at the point at infinity
+
         jsr ec_set_modp
 
-        ; Index = len - 1 (points at most significant digit).
-        ; Digits fit in <= 257 for P-256 so we need a 16-bit cursor.
-        lda ec_naf_len
-        sec
-        sbc #1
-        sta .smn_idx_lo
-        lda ec_naf_len+1
-        sbc #0
-        sta .smn_idx_hi
-
-        ; --- Load most significant digit. It is guaranteed nonzero ---
-        ; (the recoder loop stops as soon as k==0, so the last emitted
-        ;  digit is always from the final odd-residue step).
-        jsr .smn_load_digit_to_p1 ; set ec_p1 = digit * G (Jacobian, Z=1)
-
-.smn_main_loop:
-        ; Move to next (lower) digit. If idx == 0, we're done with the top
-        ; digit already; check by examining lo/hi before decrementing.
-        lda .smn_idx_lo
-        ora .smn_idx_hi
-        bne .smn_decr
-        jmp .smn_done
-.smn_decr:
-        lda .smn_idx_lo
-        bne .smn_dec_lo
-        dec .smn_idx_hi
-.smn_dec_lo:
-        dec .smn_idx_lo
-
-        ; --- Double R once (R = 2*ec_p1, result in ec_p3, copy back) ---
+.cm_loop:
+        ; --- Double R (skip if R is still infinity) ---
+        lda cm_r_inf
+        bne .cm_skip_double
         jsr ec_point_double
         ldy #95
-.smn_dcp:
+.cm_dcp:
         lda ec_p3,y
         sta ec_p1,y
         dey
-        bpl .smn_dcp
+        bpl .cm_dcp
+.cm_skip_double:
 
-        ; --- Fetch current digit; if zero, skip add ---
-        jsr .smn_get_digit      ; A = signed digit byte
-        beq .smn_main_loop
-
-        ; Nonzero digit: load |d| entry into ec_p2; negate Y in place if d<0.
-        sta .smn_dig_tmp
-        bmi .smn_neg
-        ; Positive: table index = (d - 1) / 2
-        lsr                     ; clears bit0 (d is odd), shifts divide
-        jsr .sm_reu_fetch_affine ; ec_p2 = T[idx]
-        jmp .smn_do_add
-.smn_neg:
-        ; Negative: fetch T[(|d| - 1) / 2] = T[(-d - 1)/2], then negate Y.
+        ; --- Extract idx from current bit position ---
         lda #0
-        sec
-        sbc .smn_dig_tmp        ; A = -d = |d| (d is in -15..-1)
-        lsr                     ; A = (|d|-1)/2  (|d| is odd)
+        sta cm_idx
+        ldx cm_byte_off
+
+        lda cm_k+24,x           ; K3
+        and cm_bit_mask
+        beq .cm_b3z
+        lda #8
+        ora cm_idx
+        sta cm_idx
+.cm_b3z:
+        lda cm_k+16,x           ; K2
+        and cm_bit_mask
+        beq .cm_b2z
+        lda #4
+        ora cm_idx
+        sta cm_idx
+.cm_b2z:
+        lda cm_k+8,x            ; K1
+        and cm_bit_mask
+        beq .cm_b1z
+        lda #2
+        ora cm_idx
+        sta cm_idx
+.cm_b1z:
+        lda cm_k+0,x            ; K0
+        and cm_bit_mask
+        beq .cm_b0z
+        lda #1
+        ora cm_idx
+        sta cm_idx
+.cm_b0z:
+
+        ; --- Advance bit position (next-lower bit) ---
+        lsr cm_bit_mask
+        bne .cm_after_advance
+        lda #$80
+        sta cm_bit_mask
+        dec cm_byte_off
+.cm_after_advance:
+
+        ; --- If idx == 0, no addition this iteration ---
+        lda cm_idx
+        beq .cm_after_add
+
+        ; --- Fetch T[idx] (affine) into ec_p2 ---
+        lda cm_idx
         jsr .sm_reu_fetch_affine
-        ; Negate Y: ec_p2+32 = p256 - ec_p2+32
-        lda #<ec_p256
-        sta fp_src1
-        lda #>ec_p256
-        sta fp_src1+1
-        lda #<(ec_p2+32)
-        sta fp_src2
-        lda #>(ec_p2+32)
-        sta fp_src2+1
-        lda #<(ec_p2+32)
-        sta fp_dst
-        lda #>(ec_p2+32)
-        sta fp_dst+1
-        jsr fp_mod_sub          ; ec_p2+32 = p - ec_p2+32
 
-.smn_do_add:
-        jsr ec_point_add        ; ec_p3 = ec_p1 + ec_p2
-        ldy #95
-.smn_acp:
-        lda ec_p3,y
-        sta ec_p1,y
-        dey
-        bpl .smn_acp
-        jmp .smn_main_loop
-
-.smn_done:
-        ldy #95
-.smn_cfin:
-        lda ec_p1,y
-        sta ec_p3,y
-        dey
-        bpl .smn_cfin
-        rts
-
-; --- Load T[|d|/2] into ec_p1 as Jacobian (Z=1), negating Y if d<0 ---
-; Input: current digit at ec_naf_digits[.smn_idx_lo/hi] is the leading
-;        nonzero digit (odd, -15..15).
-.smn_load_digit_to_p1:
-        jsr .smn_get_digit      ; A = signed digit
-        sta .smn_dig_tmp
-        bmi .smn_ldn
-        lsr
-        jsr .sm_reu_fetch_affine ; ec_p2 = T[idx]
-        jmp .smn_ldcopy
-.smn_ldn:
-        lda #0
-        sec
-        sbc .smn_dig_tmp
-        lsr
-        jsr .sm_reu_fetch_affine
-        ; Negate Y in ec_p2
-        lda #<ec_p256
-        sta fp_src1
-        lda #>ec_p256
-        sta fp_src1+1
-        lda #<(ec_p2+32)
-        sta fp_src2
-        lda #>(ec_p2+32)
-        sta fp_src2+1
-        lda #<(ec_p2+32)
-        sta fp_dst
-        lda #>(ec_p2+32)
-        sta fp_dst+1
-        jsr fp_mod_sub
-.smn_ldcopy:
-        ; Copy ec_p2 (affine X,Y) to ec_p1 with Z=1
+        ; --- If R was infinity, seed R = T[idx] (Z=1) and clear flag ---
+        lda cm_r_inf
+        beq .cm_real_add
         ldy #31
-.smn_lx:
+.cm_seed_x:
         lda ec_p2,y
         sta ec_p1,y
         dey
-        bpl .smn_lx
+        bpl .cm_seed_x
         ldy #31
-.smn_ly:
+.cm_seed_y:
         lda ec_p2+32,y
         sta ec_p1+32,y
         dey
-        bpl .smn_ly
+        bpl .cm_seed_y
         ldy #31
         lda #0
-.smn_lz:
+.cm_seed_z:
         sta ec_p1+64,y
         dey
-        bpl .smn_lz
+        bpl .cm_seed_z
         lda #1
         sta ec_p1+64
+        lda #0
+        sta cm_r_inf
+        jmp .cm_after_add
+
+.cm_real_add:
+        jsr ec_point_add
+        ldy #95
+.cm_acp:
+        lda ec_p3,y
+        sta ec_p1,y
+        dey
+        bpl .cm_acp
+
+.cm_after_add:
+        dec cm_loop_ctr
+        beq .cm_done
+        jmp .cm_loop
+
+.cm_done:
+        ; --- If R is still infinity, return all-zero point. ---
+        lda cm_r_inf
+        beq .cm_copy_out
+        ldy #95
+        lda #0
+.cm_zinf:
+        sta ec_p3,y
+        dey
+        bpl .cm_zinf
         rts
 
-; --- Fetch signed digit at index .smn_idx_{lo,hi} into A ---
-.smn_get_digit:
-        lda .smn_idx_lo
-        clc
-        adc #<ec_naf_digits
-        sta zp_ptr1
-        lda .smn_idx_hi
-        adc #>ec_naf_digits
-        sta zp_ptr1+1
-        ldy #0
-        lda (zp_ptr1),y
+.cm_copy_out:
+        ; --- Final result currently lives in ec_p1; copy to ec_p3. ---
+        ldy #95
+.cm_finc:
+        lda ec_p1,y
+        sta ec_p3,y
+        dey
+        bpl .cm_finc
         rts
 
-.smn_idx_lo:    !byte 0
-.smn_idx_hi:    !byte 0
-.smn_dig_tmp:   !byte 0
-
-; =============================================================================
-; ec_naf_recode: Recode (ec_scalar_ptr) big-endian scalar into width-5 wNAF.
-; Input:   A = scalar length in bytes (32 for P-256, 48 for P-384)
-;          (ec_scalar_ptr) -> scalar (BE)
-; Output:  ec_naf_k, ec_naf_digits, ec_naf_len populated.
-;
-; Algorithm:
-;   while k != 0:
-;     if k & 1:
-;       d = k mod 32  (low 5 bits, 0..31)
-;       if d >= 16: d -= 32         -> now d in {-15,-13,...,-1}
-;       k -= d (signed)
-;     else: d = 0
-;     emit d; shift k right by 1
-;
-; Working buffer ec_naf_k is (length+1) bytes little-endian with one byte
-; of headroom for a carry produced when adding (32-d) for a negative d.
-; =============================================================================
-ec_naf_recode:
-        sta .nr_nkb             ; key length (32 or 48)
-        ; Copy BE scalar -> ec_naf_k little-endian.
-        ; For i in 0..nkb-1: ec_naf_k[i] = scalar[nkb-1-i]
-        ; We use Y as the BE source index counting DOWN from nkb-1 to 0,
-        ; and .nr_dsti as the LE destination index counting UP.
-        lda #0
-        sta .nr_dsti
-        ldy .nr_nkb
-        dey                     ; Y = nkb - 1
-.nr_copy:
-        lda (ec_scalar_ptr),y
-        sty .nr_ysave
-        ldy .nr_dsti
-        sta ec_naf_k,y
-        inc .nr_dsti
-        ldy .nr_ysave
-        dey
-        bpl .nr_copy
-        ; Zero the headroom byte at ec_naf_k[nkb]
-        ldy .nr_nkb
-        lda #0
-        sta ec_naf_k,y
-
-        ; Zero output length
-        lda #0
-        sta ec_naf_len
-        sta ec_naf_len+1
-
-        ; nkbhr = nkb + 1 (bytes to scan/shift)
-        lda .nr_nkb
-        clc
-        adc #1
-        sta .nr_nkbhr
-
-.nr_main:
-        ; k == 0?  scan ec_naf_k[0..nkbhr-1]
-        ldy .nr_nkbhr
-        dey
-.nr_scan:
-        lda ec_naf_k,y
-        bne .nr_nonzero
-        dey
-        bpl .nr_scan
-        ; k is zero -> done
-        rts
-
-.nr_nonzero:
-        ; Check bit 0 of k (i.e. ec_naf_k[0])
-        lda ec_naf_k
-        and #1
-        bne .nr_odd
-        jmp .nr_emit_zero
-.nr_odd:
-        ; Odd. d = ec_naf_k[0] & 0x1F
-        lda ec_naf_k
-        and #$1F
-        sta .nr_dig
-        cmp #16
-        bcc .nr_pos_sub         ; d < 16 -> positive
-
-        ; d >= 16: effective signed digit = d - 32 (negative). To clear the
-        ; low 5 bits of k we add (32 - d) to k (unsigned ripple carry).
-        lda #32
-        sec
-        sbc .nr_dig             ; A = 32 - d  (1..16)
-        sta .nr_addv
-        ldy #0
-        clc
-        lda ec_naf_k
-        adc .nr_addv
-        sta ec_naf_k
-.nr_add_rip:
-        bcc .nr_add_done
-        iny
-        cpy .nr_nkbhr
-        beq .nr_add_done
-        lda ec_naf_k,y
-        adc #0
-        sta ec_naf_k,y
-        jmp .nr_add_rip
-.nr_add_done:
-        ; Store signed digit = d - 32 (as byte, two's complement negative)
-        lda .nr_dig
-        sec
-        sbc #32
-        jmp .nr_store_digit
-
-.nr_pos_sub:
-        ; d < 16: subtract d from k (unsigned ripple borrow).
-        ldy #0
-        lda ec_naf_k
-        sec
-        sbc .nr_dig
-        sta ec_naf_k
-.nr_sub_rip:
-        bcs .nr_sub_done
-        iny
-        cpy .nr_nkbhr
-        beq .nr_sub_done
-        lda ec_naf_k,y
-        sbc #0
-        sta ec_naf_k,y
-        jmp .nr_sub_rip
-.nr_sub_done:
-        lda .nr_dig             ; positive digit
-
-.nr_store_digit:
-        ; Store A at ec_naf_digits[ec_naf_len], then len++ and shift k right.
-        ldy ec_naf_len+1
-        beq .nr_store_lo
-        ; high page: use base + $0100
-        sta .nr_sd_ptr_lo
-        lda ec_naf_len
-        tay
-        lda .nr_sd_ptr_lo
-        sta ec_naf_digits+$100,y
-        jmp .nr_after_store
-.nr_store_lo:
-        ldy ec_naf_len
-        sta ec_naf_digits,y
-.nr_after_store:
-        inc ec_naf_len
-        bne .nr_shift
-        inc ec_naf_len+1
-
-.nr_shift:
-        ; k >>= 1 (nkbhr-byte LE right shift)
-        ldy .nr_nkbhr
-        dey
-        clc
-.nr_sh_loop:
-        lda ec_naf_k,y
-        ror
-        sta ec_naf_k,y
-        dey
-        bpl .nr_sh_loop
-        jmp .nr_main
-
-.nr_emit_zero:
-        lda #0
-        jmp .nr_store_digit
-
-.nr_nkb:        !byte 0
-.nr_nkbhr:      !byte 0
-.nr_dsti:       !byte 0
-.nr_ysave:      !byte 0
-.nr_dig:        !byte 0
-.nr_addv:       !byte 0
-.nr_sd_ptr_lo:  !byte 0
+; --- Comb scalar-mul state vars ---
+cm_byte_off:    !byte 0
+cm_bit_mask:    !byte 0
+cm_loop_ctr:    !byte 0
+cm_idx:         !byte 0
+cm_r_inf:       !byte 0
+cm_seeded:      !byte 0         ; precompute helper
+cm_anch_idx:    !byte 0         ; precompute helper
 
 ; =============================================================================
 ; ec_jacobian_to_affine: convert ec_p3 (Jacobian) to affine (x,y)

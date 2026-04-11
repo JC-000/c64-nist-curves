@@ -11,7 +11,7 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - RFC 6979 test vector validation
 - Optimizations ported from [c64-x25519](https://github.com/JC-000/c64-x25519):
   REU DMA multiply tables, self-modifying code, loop unrolling, dedicated squaring
-- Width-5 signed wNAF scalar multiplication with REU-resident precompute table
+- h=4 Lim-Lee fixed-base comb scalar multiplication with REU-resident anchor table
 - Deferred-doubling squaring (half as many doubling passes over cross terms)
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill
 - Unrolled binary GCD shift loops for modular inversion
@@ -51,8 +51,14 @@ python3 tools/bench_p384.py       # P-384 primitive benchmarks
 | fp_mod_inv (binary GCD)     |       716.667 |      1550.000 |         2.16x |
 | ec_point_double (Jacobian)  |       533.333 |       950.000 |         1.78x |
 | ec_point_add (Jacobian)     |       633.333 |      1100.000 |         1.74x |
+| ec_scalar_mul (k=RFC 6979)  |       89866.7 |      264566.7 |         2.95x |
 
 S/M ratio after Wave 4e: P-256 fp_mod_sqr / fp_mod_mul = 0.94; P-384 = 0.86.
+
+Wave 5 Lim-Lee comb replaced the width-5 wNAF scalar_mul on both curves:
+P-256 `ec_scalar_mul` dropped from 206.4M cycles (201.85 s) to 91.9M cycles
+(89.87 s), a -55.5% improvement on the RFC 6979 sample-message private key.
+P-384 `ec_scalar_mul_384` is now benchmarked at 270.6M cycles (264.57 s).
 
 ## Wave 4 optimization round
 
@@ -83,12 +89,35 @@ Negative findings (investigated, reverted, documented for the record):
   the number of leaves triples the DMA setup overhead, which is not amortized
   by the 25% reduction in 8x8 multiplies at this size. Karatsuba would need
   either a much larger N or a radically different DMA strategy to break even.
-- **Wave 4d — CMO98 / Fay relative Jacobian doubling.** The relative Jacobian
-  formula saves 2S per doubling in exchange for some M's and bookkeeping. The
-  savings only matter when S/M is comfortably below 1. Wave 4e pushed S/M to
-  ~0.94 on P-256, which leaves too little headroom for the saved S's to beat
-  the added bookkeeping. P-384 at S/M=0.86 is marginal (~3% headroom), noted
-  below as a possible follow-up.
+- **Wave 4d / 5c — CMO98 / Fay relative Jacobian doubling.** CMO98's
+  advertised "4M + 4S" J^m doubling is measured against plain Jacobian
+  doubling at 4M + 6S. Both `ec_point_double` and `ec_point_double_384`
+  already use the a=-3 short-Weierstrass trick
+  ((X - Z^2)(X + Z^2) = X^2 - Z^4), which gets standalone Jacobian
+  doubling to exactly 4M + 4S on its own. CMO98 ties in operation count
+  and loses in constants because it still needs a 1M aZ^4 carry update
+  the a=-3 trick avoids. Fay 2014 relative / co-Z is a scalar_mul-level
+  fused DoubleAdd restructure (not a drop-in doubling replacement) and
+  is only applicable to window schemes; the Wave 5 Lim-Lee comb runs
+  back-to-back doubling chains of length h=4 where Meloni reuse is
+  unavailable for most doublings. See `.research/wave5c_p384.txt` for
+  the full analysis.
+
+## Wave 5 optimization round
+
+Wave 5 replaced the width-5 wNAF scalar multiplier on both curves with a
+4-way Lim-Lee fixed-base comb (h=4, 15-entry anchor table in REU bank 2):
+
+- **Wave 5a — Lim-Lee comb for P-256.** `ec_scalar_mul` drops from
+  206,431,995 cycles to 91,906,640 cycles (-55.5%) on the RFC 6979
+  sample-message private key. 64 doublings + ~60 mixed adds replace
+  256 doublings + ~51 adds.
+- **Wave 5b — Lim-Lee comb for P-384.** `ec_scalar_mul_384` now
+  benchmarks at 270,572,330 cycles (264.57 s). Same algorithmic shape
+  as 5a, adapted to the 384-bit scalar split into four 96-bit
+  sub-scalars.
+- **Wave 5c — CMO98 / Fay negative finding (P-384).** See Wave 4d/5c
+  bullet above; documented in `.research/wave5c_p384.txt`.
 
 ## Status
 
@@ -97,9 +126,7 @@ Negative findings (investigated, reverted, documented for the record):
 - [x] Point operations (Jacobian coordinates)
 - [x] P-384 implementation
 - [x] Benchmarking suite
-- [x] Width-5 signed wNAF scalar multiplication with REU-resident precompute table
+- [x] Lim-Lee fixed-base comb (h=4) scalar multiplication on both curves
 - [x] Comprehensive test suite (290 tests)
 - [ ] Fermat inversion (addition chain): implemented for P-256 in
       `src/inv256.asm` but 41x slower than binary GCD, retained for reference
-- [ ] CMO98 / Fay relative-Jacobian doubling on P-384 (S/M=0.86 leaves ~3%
-      headroom; not yet investigated whether bookkeeping fits into that budget)

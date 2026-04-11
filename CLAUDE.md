@@ -8,7 +8,7 @@ P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 C
 make clean && make
 ```
 Assembler: ACME. Output: build/nist-curves.prg + build/labels.txt (VICE symbol table).
-Current PRG size: ~18.9 KB (19373 bytes post-Wave-4), loaded at $0801.
+Current PRG size: ~19.6 KB (20055 bytes post-Wave-5), loaded at $0801.
 
 ## Test
 ```
@@ -61,7 +61,7 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 - Dedicated squaring with deferred doubling of cross terms (Wave 4e)
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill (Wave 4b)
 - Solinas fast reduction with self-modifying dispatch and register-resident accumulator
-- Width-5 signed wNAF scalar multiplication with REU-resident precompute table (Wave 4a)
+- h=4 Lim-Lee fixed-base comb for P-256 and P-384 scalar_mul with REU-resident anchor table (Wave 5a/5b)
 - Unrolled binary GCD shift loops for modular inversion
 - VIC-II screen blanking (+20-25% CPU)
 
@@ -73,11 +73,25 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
   the 25% saving in 8x8 multiplies at this size. Would require a radically
   different DMA strategy (batched / persistent descriptors) or a larger N to
   break even.
-- **CMO98 / Fay relative Jacobian doubling** (Wave 4d, reverted). The formula
-  saves 2S per doubling but needs S/M comfortably below 1. Wave 4e pushed
-  P-256 S/M to ~0.94, which does not leave enough headroom for the added
-  bookkeeping M's. P-384 at S/M=0.86 gives ~3% headroom and is a plausible
-  but still uncertain follow-up: P-384 CMO J^m doubling is pending.
+- **CMO98 / Fay relative Jacobian doubling** (Wave 4d reverted for P-256;
+  Wave 5c analysis confirmed unprofitable for P-384 — see
+  `.research/wave5c_p384.txt`). CMO98's advertised "4M + 4S" J^m doubling
+  is measured against plain Jacobian doubling at 4M + 6S. But both
+  ec_point_double (P-256) and ec_point_double_384 (P-384) already use
+  the a=-3 short-Weierstrass trick ((X-Z^2)(X+Z^2) = X^2 - Z^4), which
+  gets standalone Jacobian doubling to exactly 4M + 4S on its own. CMO98
+  is tied in operation count, and worse in constants because it still
+  needs an aZ^4 carry update (+1M) which the a=-3 trick avoids entirely.
+  No headroom to exploit regardless of S/M ratio — the 2S saving the
+  paper quotes is versus non-a=-3 Jacobian, not versus the trick form
+  already in use here. Fay 2014 relative/co-Z is a scalar_mul-level
+  fused DoubleAdd restructure (not a drop-in doubling replacement) and
+  is only applicable to window schemes where each step is exactly one
+  double followed by one add; the Wave 5a/5b Lim-Lee comb runs
+  back-to-back doubling chains of length h=4 with a single add per
+  chain, where Meloni reuse is unavailable for most doublings. A
+  plausible future angle only if the comb loop is ever restructured
+  around a fused DoubleAdd primitive.
 
 ### Conventions
 - Scalars (private keys, nonces) are big-endian for compatibility with standards
@@ -93,8 +107,10 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
-- `ec_point_double_384`'s infinity branch uses `LDY #143 / DEY / BPL loop` to zero
-  `ec384_p3`. Because `$8F` has bit 7 set, BPL never branches on the first
-  iteration, so only one byte gets written. Workaround: tests pre-zero
-  `ec384_p3` from Python. Fix would be to change the loop to
-  `LDY #144 / DEY / STA ec384_p3,Y / BNE loop` (count down through $00 via BNE).
+- None outstanding. The `LDY #143 / BPL` infinity-fill bug family (BPL
+  never branches on the first iteration because `$8F` bit 7 is set, so
+  only one byte got written) was fixed in Wave 5 across all sites in
+  `ec_point_double_384` and `ec_point_add_384`. The fix pattern is
+  `LDY #144 / DEY / STA ec384_p3,Y / BNE loop` (count down through $00
+  via BNE). `ec_point_add_384` and `ec_jacobian_to_affine_384` no longer
+  require the Python-side pre-zero workaround.
