@@ -12,14 +12,26 @@ Current PRG size: ~20.2 KB (20695 bytes post-Wave-7a), loaded at $0801.
 
 ## Test
 ```
-python3 tools/test_fp256.py          # 134 P-256 field arithmetic tests
-python3 tools/test_points256.py      # 8 P-256 point operation tests
-python3 tools/test_fp384.py          # 140 P-384 field arithmetic tests
-python3 tools/test_points384.py      # 8 P-384 point operation tests
-python3 tools/bench_p256.py          # P-256 primitive benchmarks
-python3 tools/bench_p384.py          # P-384 primitive benchmarks
+python3 tools/test_fp256.py          # P-256 field arithmetic tests
+python3 tools/test_points256.py      # P-256 point operation tests (add --full for 10x samples)
+python3 tools/test_fp384.py          # P-384 field arithmetic tests
+python3 tools/test_points384.py      # P-384 point operation tests (add --full for 10x samples)
+python3 tools/bench_p256.py          # P-256 primitive benchmarks (oracle-gated)
+python3 tools/bench_p384.py          # P-384 primitive benchmarks (oracle-gated)
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
+
+### Oracle-driven testing model
+Field and point tests use an **external oracle** -- the `cryptography`
+Python package plus NIST CAVP KATs shipped under `tools/vectors/` -- to
+produce expected outputs. Test code never hard-codes values from a
+previous implementation run. Benchmarks run a one-shot correctness gate
+against the oracle before recording cycle counts for each routine; a
+routine that fails the gate is marked UNVERIFIED and its cycles are
+dropped. See `tools/vectors/README.md` for the invariant and refresh
+procedure. Random scalars are unseeded by default (`secrets.randbits`);
+`--seed N` reproduces a failure. `--full` on the point tests expands
+sample counts from 3 per routine to 10 and runs all 25 NIST KATs.
 
 ### Init sentinel pattern (replaces wait_for_text race)
 The program writes `$42` to `$02A7` as the very last step of `start:` after all

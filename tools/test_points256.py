@@ -5,17 +5,27 @@ Tests ec_point_double, ec_point_add, ec_scalar_mul, ec_jacobian_to_affine.
 All field elements are LITTLE-ENDIAN (byte 0 = LSB).
 Point layout: X = offset 0..31, Y = offset 32..63, Z = offset 64..95.
 
-Uses the c64-test-harness binary monitor transport.
+Gameability defense (see tools/vectors/README.md):
+
+    * The `cryptography` Python package is the external oracle for
+      scalar multiplication. Every expected output is produced by an
+      independent process, so a 4-entry lookup-table implementation
+      cannot pass.
+    * NIST CAVP KATs (loaded from tools/vectors/nist_p256_ecdh.rsp) are
+      a fixed anchor. They run on every boot and are cross-checked
+      against `cryptography` before any C64 test begins.
+    * Random scalars are drawn from `secrets.randbits()` (OS entropy)
+      unless --seed is passed for reproducing a specific failure.
 
 Usage:
     python3 tools/test_points256.py [--seed S] [--verbose] [--full]
 
-    --full   Run the full scalar multiplication test (hours in warp mode).
-             Without this flag only the fast tests are run.
+    --full   Run an expanded random-scalar set (default: fast mode).
 """
 
 import os
 import random
+import secrets
 import subprocess
 import sys
 import time
@@ -30,30 +40,28 @@ PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 PRG_PATH = os.path.join(PROJECT_ROOT, "build", "nist-curves.prg")
 LABELS_PATH = os.path.join(PROJECT_ROOT, "build", "labels.txt")
 
+# Make `tools.vectors` importable regardless of cwd.
+sys.path.insert(0, PROJECT_ROOT)
+
+from tools.vectors import (  # noqa: E402
+    P256_GX, P256_GY, P256_N, P256_P,
+    affine_add, affine_double, affine_neg,
+    jacobian_to_affine,
+    load_nist_scalar_mul_kats,
+    scalar_mul_oracle,
+    self_check,
+)
+
 VERBOSE = False
 
-# P-256 field prime
-P256 = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+# Convenience aliases
+G_X = P256_GX
+G_Y = P256_GY
+P256 = P256_P
+N256 = P256_N
 
-# P-256 generator coordinates (from SEC 2)
-G_X = 0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296
-G_Y = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
-
-# Known 2*G coordinates (P-256)
-TWO_G_X = 0x7CF27B188D034F7E8A52380304B51AC3C08969E277F21B35A60B48FC47669978
-TWO_G_Y = 0x07775510DB8ED040293D9AC69F7430DBBA7DADE63CE982299E04B79D227873D1
-
-# Known 3*G coordinates (P-256)
-THREE_G_X = 0x5ECBE4D1A6330A44C8F7EF951D4BF165E6C6B721EFADA985FB41661BC6E7FD6C
-THREE_G_Y = 0x8734640C4998FF7E374B06CE1A64A2ECD82AB036384FB83D9A79B127A27D5032
-
-# RFC 6979 A.2.5 test private key (from assembly data, as integer)
-# Private key: sample signing key for message "sample" with SHA-256
+# RFC 6979 A.2.5 sample-message private key (kept as one extra anchor).
 TEST_PRIVKEY = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
-
-# Expected public key from TEST_PRIVKEY * G
-TEST_PUBX = 0x60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6
-TEST_PUBY = 0x7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299
 
 
 # ============================================================================
@@ -61,19 +69,15 @@ TEST_PUBY = 0x7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299
 # ============================================================================
 
 def int_to_le_bytes(val, length=32):
-    """Convert non-negative Python int to little-endian bytes of given length."""
     return val.to_bytes(length, "little")
 
 def le_bytes_to_int(data):
-    """Convert little-endian bytes to Python int."""
     return int.from_bytes(data, "little")
 
 def int_to_be_bytes(val, length=32):
-    """Convert non-negative Python int to big-endian bytes of given length."""
     return val.to_bytes(length, "big")
 
 def set_ptr(transport, zp_addr, target_addr):
-    """Write a 16-bit little-endian pointer to zero page."""
     write_bytes(transport, zp_addr,
                 bytes([target_addr & 0xFF, (target_addr >> 8) & 0xFF]))
 
@@ -83,38 +87,63 @@ def set_ptr(transport, zp_addr, target_addr):
 # ============================================================================
 
 def write_field_elem(transport, addr, value, length=32):
-    """Write a field element (integer) to C64 memory as little-endian bytes."""
     write_bytes(transport, addr, int_to_le_bytes(value, length))
 
 def read_field_elem(transport, addr, length=32):
-    """Read a little-endian field element from C64 memory, return as integer."""
     return le_bytes_to_int(read_bytes(transport, addr, length))
 
 def write_jacobian_point(transport, base_addr, x, y, z):
-    """Write a Jacobian point (X, Y, Z) to memory at base_addr.
-    Each coordinate is 32 bytes, little-endian."""
-    write_field_elem(transport, base_addr, x)       # X at offset 0
-    write_field_elem(transport, base_addr + 32, y)   # Y at offset 32
-    write_field_elem(transport, base_addr + 64, z)   # Z at offset 64
+    write_field_elem(transport, base_addr, x)
+    write_field_elem(transport, base_addr + 32, y)
+    write_field_elem(transport, base_addr + 64, z)
 
 def write_affine_point(transport, base_addr, x, y):
-    """Write an affine point (X, Y) to memory at base_addr.
-    Each coordinate is 32 bytes, little-endian. (Z is not written.)"""
-    write_field_elem(transport, base_addr, x)        # X at offset 0
-    write_field_elem(transport, base_addr + 32, y)    # Y at offset 32
+    write_field_elem(transport, base_addr, x)
+    write_field_elem(transport, base_addr + 32, y)
 
 def read_jacobian_point(transport, base_addr):
-    """Read a Jacobian point from memory. Returns (X, Y, Z) as ints."""
     x = read_field_elem(transport, base_addr)
     y = read_field_elem(transport, base_addr + 32)
     z = read_field_elem(transport, base_addr + 64)
     return x, y, z
 
-def read_affine_result(transport, labels):
-    """Read the affine output from ec_affine_x, ec_affine_y."""
-    ax = read_field_elem(transport, labels["ec_affine_x"])
-    ay = read_field_elem(transport, labels["ec_affine_y"])
-    return ax, ay
+
+# ============================================================================
+# Helpers: obtain a random affine P-256 point via the oracle
+# ============================================================================
+
+def random_affine_point(rng):
+    """Return a random affine (x, y) on P-256 by computing k*G via the oracle."""
+    k = rng.randrange(1, N256 - 1)
+    return scalar_mul_oracle(k, "p256")
+
+
+# ============================================================================
+# C64 invocation wrappers
+# ============================================================================
+
+def c64_double(transport, labels, px, py):
+    write_jacobian_point(transport, labels["ec_p1"], px, py, 1)
+    jsr(transport, labels["ec_point_double"], timeout=600.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    return jacobian_to_affine(p3x, p3y, p3z, "p256")
+
+
+def c64_add(transport, labels, p1x, p1y, p1z, p2x, p2y):
+    write_jacobian_point(transport, labels["ec_p1"], p1x, p1y, p1z)
+    write_affine_point(transport, labels["ec_p2"], p2x, p2y)
+    jsr(transport, labels["ec_point_add"], timeout=1200.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    return jacobian_to_affine(p3x, p3y, p3z, "p256")
+
+
+def c64_scalar_mul(transport, labels, k):
+    SCALAR_BUF = 0x033C
+    write_bytes(transport, SCALAR_BUF, int_to_be_bytes(k, 32))
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
+    jsr(transport, labels["ec_scalar_mul"], timeout=3600.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    return jacobian_to_affine(p3x, p3y, p3z, "p256")
 
 
 # ============================================================================
@@ -122,51 +151,29 @@ def read_affine_result(transport, labels):
 # ============================================================================
 
 def test_ec_mulp(transport, labels):
-    """Smoke test: verify ec_mulp (modular multiply + copy to dst) works.
-
-    Computes 1 * 1 mod p = 1 via ec_mulp and checks the result.
-    This validates the entire chain: ec_set_modp -> fp_mod_mul -> fp_copy.
-    """
+    """Smoke test: field multiply plumbing works."""
     passed = failed = 0
 
-    # Write 1 to fp_tmp1 and fp_tmp2 as src, fp_tmp3 as dst
-    # (Use fp_tmp* rather than ec_t* to avoid any address-related issues)
     write_field_elem(transport, labels["fp_tmp1"], 1)
     write_field_elem(transport, labels["fp_tmp2"], 1)
     set_ptr(transport, labels["fp_src1"], labels["fp_tmp1"])
     set_ptr(transport, labels["fp_src2"], labels["fp_tmp2"])
     set_ptr(transport, labels["fp_dst"], labels["fp_tmp3"])
-
-    print("  Calling ec_mulp (1 * 1 mod p)...")
-    t0 = time.time()
     jsr(transport, labels["ec_mulp"], timeout=300.0)
-    elapsed = time.time() - t0
-    print(f"  ec_mulp completed in {elapsed:.1f}s")
-
     result = read_field_elem(transport, labels["fp_tmp3"])
     if result == 1:
         passed += 1
         print("  PASS: ec_mulp(1, 1) = 1")
     else:
         failed += 1
-        print(f"  FAIL: ec_mulp(1, 1) = {result:#066x} (expected 1)")
-
-    # Now test with actual generator coordinates
-    print(f"  Gx = {G_X:#066x}")
-    print(f"  Gy = {G_Y:#066x}")
+        print(f"  FAIL: ec_mulp(1, 1) = {result:#066x}")
 
     write_field_elem(transport, labels["fp_tmp1"], G_X)
     write_field_elem(transport, labels["fp_tmp2"], G_X)
     set_ptr(transport, labels["fp_src1"], labels["fp_tmp1"])
     set_ptr(transport, labels["fp_src2"], labels["fp_tmp2"])
     set_ptr(transport, labels["fp_dst"], labels["fp_tmp3"])
-
-    print("  Calling ec_mulp (Gx * Gx mod p)...")
-    t0 = time.time()
     jsr(transport, labels["ec_mulp"], timeout=300.0)
-    elapsed = time.time() - t0
-    print(f"  ec_mulp completed in {elapsed:.1f}s")
-
     result = read_field_elem(transport, labels["fp_tmp3"])
     expected = (G_X * G_X) % P256
     if result == expected:
@@ -181,312 +188,211 @@ def test_ec_mulp(transport, labels):
     return passed, failed
 
 
-def jacobian_to_affine_python(jx, jy, jz):
-    """Convert Jacobian (X, Y, Z) to affine (x, y) using Python arithmetic.
-
-    This avoids the extremely slow C64 mod_inv for verification purposes.
-    """
-    z_inv = pow(jz, P256 - 2, P256)
-    z2 = (z_inv * z_inv) % P256
-    z3 = (z2 * z_inv) % P256
-    ax = (jx * z2) % P256
-    ay = (jy * z3) % P256
-    return ax, ay
-
-
-def test_point_double(transport, labels):
-    """Test 1: Point doubling -- 2*G via ec_point_double.
-
-    Load G into ec_p1 as Jacobian (Z=1), double, read Jacobian result,
-    convert to affine IN PYTHON, compare with known 2*G coordinates.
-    """
+def test_point_double(transport, labels, rng, n_random):
+    """Double n_random random affine points + 1 NIST-derived KAT."""
     passed = failed = 0
 
-    print("  Loading generator G into ec_p1 (Jacobian, Z=1)...")
-    if VERBOSE:
-        print(f"    Gx = {G_X:#066x}")
-        print(f"    Gy = {G_Y:#066x}")
+    kats = load_nist_scalar_mul_kats("p256")
+    anchor = kats[0]
+    cases = [(anchor["qx"], anchor["qy"], f"NIST KAT[0] d={anchor['d']:#x}")]
+    for i in range(n_random):
+        x, y = random_affine_point(rng)
+        cases.append((x, y, f"random[{i}]"))
 
-    write_jacobian_point(transport, labels["ec_p1"], G_X, G_Y, 1)
-
-    print("  Calling ec_point_double (7 mod-muls, may take several minutes)...")
-    jsr(transport, labels["ec_point_double"], timeout=1800.0)
-
-    # Read Jacobian result from ec_p3
-    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
-    if VERBOSE:
-        print(f"    Jacobian result: X={p3x:#066x}")
-        print(f"                     Y={p3y:#066x}")
-        print(f"                     Z={p3z:#066x}")
-
-    # Convert to affine in Python (C64 mod_inv is too slow for testing)
-    print("  Converting Jacobian to affine in Python...")
-    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
-    if VERBOSE:
-        print(f"    Affine X = {ax:#066x}")
-        print(f"    Affine Y = {ay:#066x}")
-
-    if ax == TWO_G_X and ay == TWO_G_Y:
-        passed += 1
-        print("  PASS: 2*G matches expected coordinates")
-    else:
-        failed += 1
-        print("  FAIL: 2*G does not match")
-        print(f"    expected X = {TWO_G_X:#066x}")
-        print(f"    got      X = {ax:#066x}")
-        print(f"    expected Y = {TWO_G_Y:#066x}")
-        print(f"    got      Y = {ay:#066x}")
+    for px, py, label in cases:
+        print(f"  Doubling {label}...")
+        t0 = time.time()
+        ax, ay = c64_double(transport, labels, px, py)
+        dt = time.time() - t0
+        expected = affine_double((px, py), "p256")
+        if (ax, ay) == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): {label}")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): {label}")
+            print(f"    expected x={expected[0]:#066x}")
+            print(f"    got      x={ax:#066x}")
+            print(f"    expected y={expected[1]:#066x}")
+            print(f"    got      y={ay:#066x}")
 
     return passed, failed
 
 
-def test_point_add(transport, labels):
-    """Test 2: Point addition -- G + G = 2*G via ec_point_add.
+def test_point_add(transport, labels, rng, n_random):
+    """Add n_random random point pairs + 1 NIST-derived KAT."""
+    passed = failed = 0
 
-    Load G into ec_p1 as Jacobian (Z=1), G into ec_p2 as affine,
-    call ec_point_add, convert to affine, compare with 2*G.
+    kats = load_nist_scalar_mul_kats("p256")
+    anchor = kats[0]
+    cases = [
+        (anchor["qx"], anchor["qy"], G_X, G_Y, "NIST KAT[0] + G"),
+    ]
+    for i in range(n_random):
+        # Draw two distinct random points. If P1.x == P2.x (extreme
+        # coincidence) the mixed-add formula would hit the doubling /
+        # inverse-point branch, so redraw.
+        for _ in range(5):
+            p1 = random_affine_point(rng)
+            p2 = random_affine_point(rng)
+            if p1[0] != p2[0]:
+                break
+        else:
+            continue
+        cases.append((p1[0], p1[1], p2[0], p2[1], f"random[{i}]"))
+
+    for p1x, p1y, p2x, p2y, label in cases:
+        print(f"  Adding {label}...")
+        t0 = time.time()
+        ax, ay = c64_add(transport, labels, p1x, p1y, 1, p2x, p2y)
+        dt = time.time() - t0
+        expected = affine_add((p1x, p1y), (p2x, p2y), "p256")
+        if (ax, ay) == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): {label}")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): {label}")
+            print(f"    expected x={expected[0]:#066x}")
+            print(f"    got      x={ax:#066x}")
+            print(f"    expected y={expected[1]:#066x}")
+            print(f"    got      y={ay:#066x}")
+
+    return passed, failed
+
+
+def test_jacobian_to_affine(transport, labels, rng, n_random):
+    """Feed ec_point_double random Jacobian points with Z != 1.
+
+    For each trial we pick a random affine (x, y) via the oracle, lift
+    to Jacobian as (x*Z^2, y*Z^3, Z) for random Z, and double on the
+    C64. The expected affine output is 2*(x, y) from the oracle.
+
+    This exercises the assembly's Jacobian->Jacobian math with a
+    non-trivial Z value (the default Z=1 path is much less interesting,
+    and is already covered by test_point_double).
     """
     passed = failed = 0
 
-    print("  Loading G into ec_p1 (Jacobian, Z=1) and ec_p2 (affine)...")
-    write_jacobian_point(transport, labels["ec_p1"], G_X, G_Y, 1)
-    write_affine_point(transport, labels["ec_p2"], G_X, G_Y)
+    for i in range(n_random):
+        x, y = random_affine_point(rng)
+        z = rng.randrange(2, P256 - 1)
+        jx = (x * z * z) % P256
+        jy = (y * z * z * z) % P256
+        # Self-check: our Python j2a must round-trip to (x, y).
+        if jacobian_to_affine(jx, jy, z, "p256") != (x, y):
+            failed += 1
+            print(f"  FAIL: Python j2a self-test failed on random[{i}]")
+            continue
 
-    print("  Calling ec_point_add (11 mod-muls, may take 20+ minutes)...")
-    jsr(transport, labels["ec_point_add"], timeout=1800.0)
-
-    # Read Jacobian result and convert in Python
-    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
-    if VERBOSE:
-        print(f"    Jacobian result: X={p3x:#066x}")
-        print(f"                     Y={p3y:#066x}")
-        print(f"                     Z={p3z:#066x}")
-
-    print("  Converting Jacobian to affine in Python...")
-    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
-
-    if ax == TWO_G_X and ay == TWO_G_Y:
-        passed += 1
-        print("  PASS: G + G = 2*G matches expected coordinates")
-    else:
-        failed += 1
-        print("  FAIL: G + G does not match 2*G")
-        print(f"    expected X = {TWO_G_X:#066x}")
-        print(f"    got      X = {ax:#066x}")
-        print(f"    expected Y = {TWO_G_Y:#066x}")
-        print(f"    got      Y = {ay:#066x}")
+        write_jacobian_point(transport, labels["ec_p1"], jx, jy, z)
+        t0 = time.time()
+        jsr(transport, labels["ec_point_double"], timeout=600.0)
+        dt = time.time() - t0
+        p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+        ax, ay = jacobian_to_affine(p3x, p3y, p3z, "p256")
+        expected = affine_double((x, y), "p256")
+        if (ax, ay) == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): random Z random[{i}]")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): random Z random[{i}]")
+            print(f"    z       = {z:#066x}")
+            print(f"    expected x={expected[0]:#066x}")
+            print(f"    got      x={ax:#066x}")
+            print(f"    expected y={expected[1]:#066x}")
+            print(f"    got      y={ay:#066x}")
 
     return passed, failed
 
 
 def test_point_at_infinity(transport, labels):
-    """Test 5: Point at infinity handling.
+    """Doubling infinity -> infinity, on a pre-filled non-zero buffer.
 
-    Set ec_p1 Z = 0 (point at infinity), double, verify result is all zeros.
-    """
+    Pre-fills ec_p3 with $A5 so a no-op cannot pass (the previous test
+    in this suite might have left ec_p3 all-zero; $A5 ensures the
+    check is positive)."""
     passed = failed = 0
 
-    print("  Setting ec_p1 to point at infinity (Z=0)...")
-    # Write some nonzero X,Y but Z=0
     write_jacobian_point(transport, labels["ec_p1"], 42, 99, 0)
-
-    # Refresh safety loop
+    write_bytes(transport, labels["ec_p3"], b"\xA5" * 96)
     write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
 
-    print("  Calling ec_point_double (infinity case, should be fast)...")
+    print("  Calling ec_point_double (infinity)...")
     jsr(transport, labels["ec_point_double"], timeout=60.0)
 
-    # Read ec_p3 -- should be all zeros (infinity)
     p3_data = read_bytes(transport, labels["ec_p3"], 96)
-    all_zero = all(b == 0 for b in p3_data)
-
-    if all_zero:
+    if all(b == 0 for b in p3_data):
         passed += 1
-        print("  PASS: Doubling infinity gives infinity (all zeros)")
+        print("  PASS: doubling infinity overwrote ec_p3 with zeros")
     else:
         failed += 1
+        print("  FAIL: doubling infinity did not zero ec_p3")
+        nonzero = [(i, b) for i, b in enumerate(p3_data) if b != 0]
+        print(f"    nonzero bytes: {nonzero[:8]}...")
+
+    return passed, failed
+
+
+def test_add_infinity_plus_random(transport, labels, rng, n_random):
+    """infinity + R = R for several random R."""
+    passed = failed = 0
+    for i in range(n_random):
+        rx, ry = random_affine_point(rng)
+        write_jacobian_point(transport, labels["ec_p1"], 0, 0, 0)
+        write_affine_point(transport, labels["ec_p2"], rx, ry)
+        # Pre-scribble ec_p3 so a no-op cannot pass.
+        write_bytes(transport, labels["ec_p3"], b"\x5A" * 96)
+        write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
+        jsr(transport, labels["ec_point_add"], timeout=120.0)
         p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
-        print("  FAIL: Doubling infinity did not give all zeros")
-        print(f"    X = {p3x:#066x}")
-        print(f"    Y = {p3y:#066x}")
-        print(f"    Z = {p3z:#066x}")
-
+        if p3x == rx and p3y == ry and p3z == 1:
+            passed += 1
+            print(f"  PASS: infinity + random[{i}] = R (Z=1)")
+        else:
+            failed += 1
+            print(f"  FAIL: infinity + random[{i}] did not give R")
+            print(f"    expected X = {rx:#066x}")
+            print(f"    got      X = {p3x:#066x}")
+            print(f"    expected Y = {ry:#066x}")
+            print(f"    got      Y = {p3y:#066x}")
+            print(f"    expected Z = 1")
+            print(f"    got      Z = {p3z:#066x}")
     return passed, failed
 
 
-def test_add_infinity_plus_g(transport, labels):
-    """Test: infinity + G = G (via ec_point_add).
-
-    Set ec_p1 = infinity (Z=0), ec_p2 = G (affine), call ec_point_add.
-    Result should be G with Z=1.
-    """
+def test_scalar_mul_random(transport, labels, rng, n_random,
+                           n_kat_fast):
+    """n_random random scalars + NIST KATs + RFC 6979 sample."""
     passed = failed = 0
 
-    print("  Setting ec_p1 = infinity, ec_p2 = G...")
-    write_jacobian_point(transport, labels["ec_p1"], 0, 0, 0)
-    write_affine_point(transport, labels["ec_p2"], G_X, G_Y)
+    kats = load_nist_scalar_mul_kats("p256")
+    # In fast mode we subsample KATs to keep runtime bounded; in full
+    # mode we run them all. The call site decides how many.
+    kat_subset = kats if n_kat_fast is None else kats[:n_kat_fast]
 
-    # Verify the safety loop is still intact
-    write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
+    scalars = [(k["d"], f"NIST KAT[{i}]") for i, k in enumerate(kat_subset)]
+    for i in range(n_random):
+        scalars.append((rng.randrange(1, N256 - 1), f"random[{i}]"))
+    scalars.append((TEST_PRIVKEY, "RFC 6979 sample"))
 
-    print("  Calling ec_point_add (infinity + G, should be fast)...")
-    t0 = time.time()
-    jsr(transport, labels["ec_point_add"], timeout=120.0)
-    print(f"  ec_point_add completed in {time.time() - t0:.1f}s")
-
-    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
-
-    # When P1 is infinity, ec_point_add copies P2 to P3 with Z=1
-    if p3x == G_X and p3y == G_Y and p3z == 1:
-        passed += 1
-        print("  PASS: infinity + G = G (with Z=1)")
-    else:
-        failed += 1
-        print("  FAIL: infinity + G did not give G")
-        print(f"    expected X = {G_X:#066x}")
-        print(f"    got      X = {p3x:#066x}")
-        print(f"    expected Y = {G_Y:#066x}")
-        print(f"    got      Y = {p3y:#066x}")
-        print(f"    expected Z = 1")
-        print(f"    got      Z = {p3z:#066x}")
-
-    return passed, failed
-
-
-def test_scalar_mul_small(transport, labels):
-    """Test 4: Small scalar multiplication -- 2*G via ec_scalar_mul.
-
-    Use scalar k = 2 (big-endian: 00 00 ... 00 02).
-    This processes only ~1 set bit, so should be much faster than a full
-    256-bit scalar.
-    """
-    passed = failed = 0
-
-    # Use a safe 32-byte buffer for the scalar that won't be clobbered
-    # by point operations. ec_t1..ec_t6 are used as temps by point_double
-    # and point_add, so we CANNOT use them.
-    # Use the cassette buffer area at $033C (after jsr trampoline + safety JMP).
-    SCALAR_BUF = 0x033C
-
-    print("  Writing scalar k=2 (big-endian) to memory...")
-    k_bytes = int_to_be_bytes(2, 32)
-    write_bytes(transport, SCALAR_BUF, k_bytes)
-
-    # Set ec_scalar_ptr (ZP $3b) to point to the scalar buffer
-    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
-
-    print("  Calling ec_scalar_mul (k=2, expect ~1 add + 256 doubles)...")
-    print("  (this may take 30+ minutes in warp mode)")
-    jsr(transport, labels["ec_scalar_mul"], timeout=3600.0)
-
-    # Read Jacobian result and convert in Python
-    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
-    if VERBOSE:
-        print(f"    Jacobian result: X={p3x:#066x}")
-        print(f"                     Y={p3y:#066x}")
-        print(f"                     Z={p3z:#066x}")
-
-    print("  Converting Jacobian to affine in Python...")
-    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
-
-    if ax == TWO_G_X and ay == TWO_G_Y:
-        passed += 1
-        print("  PASS: 2*G via scalar_mul matches expected coordinates")
-    else:
-        failed += 1
-        print("  FAIL: 2*G via scalar_mul does not match")
-        print(f"    expected X = {TWO_G_X:#066x}")
-        print(f"    got      X = {ax:#066x}")
-        print(f"    expected Y = {TWO_G_Y:#066x}")
-        print(f"    got      Y = {ay:#066x}")
-
-    return passed, failed
-
-
-def test_scalar_mul_k3(transport, labels):
-    """Test: scalar multiplication with k=3 -> 3*G.
-
-    Exercises the windowed method with nibble value 3 (uses T[3] from precompute).
-    """
-    passed = failed = 0
-
-    SCALAR_BUF = 0x033C
-    k_bytes = int_to_be_bytes(3, 32)
-    write_bytes(transport, SCALAR_BUF, k_bytes)
-    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
-
-    print("  Calling ec_scalar_mul (k=3)...")
-    jsr(transport, labels["ec_scalar_mul"], timeout=3600.0)
-
-    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
-    if VERBOSE:
-        print(f"    Jacobian result: X={p3x:#066x}")
-        print(f"                     Y={p3y:#066x}")
-        print(f"                     Z={p3z:#066x}")
-
-    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
-
-    if ax == THREE_G_X and ay == THREE_G_Y:
-        passed += 1
-        print("  PASS: 3*G via scalar_mul matches expected coordinates")
-    else:
-        failed += 1
-        print("  FAIL: 3*G via scalar_mul does not match")
-        print(f"    expected X = {THREE_G_X:#066x}")
-        print(f"    got      X = {ax:#066x}")
-        print(f"    expected Y = {THREE_G_Y:#066x}")
-        print(f"    got      Y = {ay:#066x}")
-
-    return passed, failed
-
-
-def test_scalar_mul_full(transport, labels):
-    """Test 3: Full scalar multiplication -- k*G for test private key.
-
-    Uses the test private key from ecdsa_test_privkey, computes k*G,
-    compares with ecdsa_test_pubx/ecdsa_test_puby.
-
-    WARNING: This is VERY slow (~hours in warp mode for 256 scalar bits).
-    """
-    passed = failed = 0
-
-    # Use the known test private key (big-endian for scalar_mul)
-    privkey_be = int_to_be_bytes(TEST_PRIVKEY, 32)
-    if VERBOSE:
-        print(f"    privkey (BE for scalar_mul) = {privkey_be.hex()}")
-
-    # Write scalar to a safe buffer (cassette buffer area, not ec_t* temps!)
-    SCALAR_BUF = 0x033C
-    write_bytes(transport, SCALAR_BUF, privkey_be)
-
-    # Set ec_scalar_ptr
-    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
-
-    print("  Calling ec_scalar_mul (full 256-bit key)...")
-    print("  WARNING: This will take a VERY long time (~hours in warp mode)")
-    jsr(transport, labels["ec_scalar_mul"], timeout=7200.0)
-
-    # Read Jacobian result and convert in Python
-    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
-    if VERBOSE:
-        print(f"    Jacobian result: X={p3x:#066x}")
-        print(f"                     Y={p3y:#066x}")
-        print(f"                     Z={p3z:#066x}")
-
-    print("  Converting Jacobian to affine in Python...")
-    ax, ay = jacobian_to_affine_python(p3x, p3y, p3z)
-
-    if ax == TEST_PUBX and ay == TEST_PUBY:
-        passed += 1
-        print("  PASS: k*G matches expected public key")
-    else:
-        failed += 1
-        print("  FAIL: k*G does not match expected public key")
-        print(f"    expected X = {TEST_PUBX:#066x}")
-        print(f"    got      X = {ax:#066x}")
-        print(f"    expected Y = {TEST_PUBY:#066x}")
-        print(f"    got      Y = {ay:#066x}")
-
+    for k, label in scalars:
+        print(f"  scalar_mul {label}...")
+        t0 = time.time()
+        ax, ay = c64_scalar_mul(transport, labels, k)
+        dt = time.time() - t0
+        expected = scalar_mul_oracle(k, "p256")
+        if (ax, ay) == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): {label}")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): {label} k={k:#x}")
+            print(f"    expected x={expected[0]:#066x}")
+            print(f"    got      x={ax:#066x}")
+            print(f"    expected y={expected[1]:#066x}")
+            print(f"    got      y={ay:#066x}")
     return passed, failed
 
 
@@ -494,38 +400,48 @@ def test_scalar_mul_full(transport, labels):
 # Main
 # ============================================================================
 
-def run_tests(transport, labels, run_full):
-    """Run all point operation tests."""
+def run_tests(transport, labels, rng, run_full):
     total_passed = 0
     total_failed = 0
     total_skipped = 0
     transport_broken = False
 
+    if run_full:
+        n_dbl = 10
+        n_add = 10
+        n_j2a = 10
+        n_inf = 5
+        n_sca = 10
+        n_kat = None   # run all 25 NIST KATs
+    else:
+        n_dbl = 3
+        n_add = 3
+        n_j2a = 3
+        n_inf = 2
+        n_sca = 3
+        n_kat = 3
+
+    kat_count = len(load_nist_scalar_mul_kats("p256")) if n_kat is None else n_kat
+
     test_groups = [
-        ("ec_mulp smoke test", False,
+        ("ec_mulp smoke test",
          lambda: test_ec_mulp(transport, labels)),
-        ("Point doubling (2*G)", False,
-         lambda: test_point_double(transport, labels)),
-        ("Point addition (G + G = 2*G)", False,
-         lambda: test_point_add(transport, labels)),
-        ("Point at infinity (double)", False,
+        (f"Point doubling ({n_dbl} random + 1 NIST)",
+         lambda: test_point_double(transport, labels, rng, n_dbl)),
+        (f"Point addition ({n_add} random + 1 NIST)",
+         lambda: test_point_add(transport, labels, rng, n_add)),
+        (f"Jacobian doubling with random Z ({n_j2a})",
+         lambda: test_jacobian_to_affine(transport, labels, rng, n_j2a)),
+        ("Point at infinity (double)",
          lambda: test_point_at_infinity(transport, labels)),
-        ("Infinity + G = G (add)", False,
-         lambda: test_add_infinity_plus_g(transport, labels)),
-        ("Scalar mul (k=2, 2*G)", False,
-         lambda: test_scalar_mul_small(transport, labels)),
-        ("Scalar mul (k=3, 3*G)", False,
-         lambda: test_scalar_mul_k3(transport, labels)),
-        ("Scalar mul (full private key)", True,
-         lambda: test_scalar_mul_full(transport, labels)),
+        (f"Infinity + R = R ({n_inf} random)",
+         lambda: test_add_infinity_plus_random(transport, labels, rng, n_inf)),
+        (f"Scalar mul ({n_sca} random + {kat_count} NIST KATs + RFC 6979)",
+         lambda: test_scalar_mul_random(transport, labels, rng, n_sca, n_kat)),
     ]
 
-    for name, needs_full, test_fn in test_groups:
+    for name, test_fn in test_groups:
         print(f"\n--- {name} ---")
-        if needs_full and not run_full:
-            total_skipped += 1
-            print("  SKIP: use --full to run this test (takes hours)")
-            continue
         if transport_broken:
             total_skipped += 1
             print("  SKIP: transport broken after previous timeout")
@@ -552,7 +468,7 @@ def main():
     global VERBOSE
     os.chdir(PROJECT_ROOT)
 
-    seed = random.randint(0, 2**32 - 1)
+    seed = None
     run_full = False
     args = sys.argv[1:]
     i = 0
@@ -569,10 +485,27 @@ def main():
         else:
             i += 1
 
-    random.seed(seed)
+    if seed is None:
+        seed = secrets.randbits(64)
+    rng = random.Random(seed)
+    mode = "full" if run_full else "fast"
+    print(f"Mode: {mode}")
     print(f"Random seed: {seed} (reproduce with --seed {seed})")
 
-    # Build
+    # Oracle sanity: every NIST KAT must match `cryptography` before
+    # we spend any C64 time. A failure here means the test environment
+    # itself is broken (NIST file edited, library mismatch, ...).
+    print("Validating NIST KATs against cryptography oracle...")
+    kats = load_nist_scalar_mul_kats("p256")
+    for kat in kats:
+        x, y = scalar_mul_oracle(kat["d"], "p256")
+        if (x, y) != (kat["qx"], kat["qy"]):
+            print(f"FATAL: NIST KAT mismatch d={kat['d']:#x}")
+            sys.exit(2)
+    print(f"  p256: {len(kats)} KATs verified")
+    self_check(rng, "p256", 3)
+    print("  affine_add self-check OK")
+
     if not os.environ.get("C64_SKIP_BUILD"):
         print("Building...")
         subprocess.run(["make", "clean"], capture_output=True, cwd=PROJECT_ROOT)
@@ -586,10 +519,8 @@ def main():
         sys.exit(1)
     print(f"Built: {PRG_PATH}")
 
-    # Load labels
     labels = Labels.from_file(LABELS_PATH)
 
-    # Verify required labels
     required = [
         "ec_p1", "ec_p2", "ec_p3",
         "ec_t1", "ec_t2", "ec_t3",
@@ -608,7 +539,6 @@ def main():
         sys.exit(1)
     print(f"Labels loaded: {len(required)} required labels verified")
 
-    # Launch VICE with REU
     config = ViceConfig(prg_path=PRG_PATH, warp=True, ntsc=True, sound=False,
                         extra_args=["-reu", "-reusize", "512"])
 
@@ -618,8 +548,6 @@ def main():
 
         transport = inst.transport
 
-        # Wait for C64 initialization to complete (sentinel byte at $02A7)
-        # Init includes sqtab, REU multiply tables, and precompute tables.
         print("Waiting for init sentinel...")
         start = time.time()
         sentinel_ok = False
@@ -628,7 +556,6 @@ def main():
             if sentinel[0] == 0x42:
                 sentinel_ok = True
                 break
-            # Binary monitor pauses the CPU on each memory read; resume it.
             try:
                 transport.resume()
             except Exception:
@@ -640,15 +567,13 @@ def main():
             sys.exit(1)
         print(f"Init complete after {time.time()-start:.1f}s")
 
-        # Safety: write JMP $0339 at $0339 so CPU loops harmlessly
         write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
 
-        # Set fp_misc to point to ec_p256 for modular routines
         p256_addr = labels["ec_p256"]
         set_ptr(transport, labels["fp_misc"], p256_addr)
         print(f"Set fp_misc -> ec_p256 (${p256_addr:04X})")
 
-        passed, failed, skipped = run_tests(transport, labels, run_full)
+        passed, failed, skipped = run_tests(transport, labels, rng, run_full)
 
         mgr.release(inst)
 
@@ -657,6 +582,7 @@ def main():
     print(f"Results: {passed}/{total} passed, {failed} failed, {skipped} skipped")
     if skipped > 0:
         print(f"  ({skipped} test group(s) skipped)")
+    print(f"Mode: {mode}  Seed: {seed}")
     print(f"{'='*60}")
     sys.exit(0 if failed == 0 else 1)
 
