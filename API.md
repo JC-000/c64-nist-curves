@@ -273,11 +273,6 @@ require the relevant `ec_precompute_*` to have been called at boot.
   adding one.
 - **Scalars must be zero-padded** to 32 bytes for P-256 and 48 bytes for P-384,
   big-endian.
-- **`ec_point_double_384` infinity branch fills only one byte of `ec384_p3`
-  for the Z=0 input case** (known bug, documented in `CLAUDE.md`). Host code
-  that can pass a point at infinity to P-384 doubling must pre-zero `ec384_p3`
-  itself.
-
 ## 8. References
 
 - `CLAUDE.md` — architecture overview, re-entrancy contract, optimization
