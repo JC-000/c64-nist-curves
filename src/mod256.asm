@@ -710,6 +710,9 @@ sol_overflow:    !word 0
 ; fp_mod_mul - fp_r0 = ((fp_src1) * (fp_src2)) mod p256
 ;
 ; Calls fp_mul then fp_mod_reduce256.
+; Modulus contract: reduces mod the curve prime p256 via Solinas fast
+; reduction. IGNORES fp_misc -- the modulus is hard-wired. Use fp_mod_inv
+; if you need arbitrary-modulus arithmetic (e.g. mod ec_n256).
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_mod_mul:
@@ -721,6 +724,8 @@ fp_mod_mul:
 ; fp_mod_sqr - fp_r0 = ((fp_src1)^2) mod p256
 ;
 ; Calls fp_sqr then fp_mod_reduce256.
+; Modulus contract: reduces mod the curve prime p256 via Solinas fast
+; reduction. IGNORES fp_misc -- the modulus is hard-wired.
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_mod_sqr:

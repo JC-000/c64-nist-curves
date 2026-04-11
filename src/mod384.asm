@@ -712,6 +712,10 @@ sol384_overflow:    !word 0
 
 ; =============================================================================
 ; fp_mod_mul_384 - fp384_r0 = ((fp_src1) * (fp_src2)) mod p384
+;
+; Modulus contract: reduces mod the curve prime p384 via Solinas fast
+; reduction. IGNORES fp_misc -- the modulus is hard-wired. Use fp_mod_inv_384
+; if you need arbitrary-modulus arithmetic (e.g. mod ec_n384).
 ; =============================================================================
 fp_mod_mul_384:
         jsr fp_mul_384
@@ -720,6 +724,9 @@ fp_mod_mul_384:
 
 ; =============================================================================
 ; fp_mod_sqr_384 - fp384_r0 = ((fp_src1)^2) mod p384
+;
+; Modulus contract: reduces mod the curve prime p384 via Solinas fast
+; reduction. IGNORES fp_misc -- the modulus is hard-wired.
 ; =============================================================================
 fp_mod_sqr_384:
         jsr fp_sqr_384
