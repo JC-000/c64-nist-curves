@@ -126,6 +126,23 @@ def setup_point_add(transport, labels):
     write_bytes(transport, ec_p2 + 48, int_to_le_bytes(G2Y, 48))
 
 
+# Representative 384-bit scalar: P-384 group order minus a small constant.
+# Order n = 2**384 - 2**128 - ... (standard P-384 order). Using n - 7 gives a
+# near-full-length scalar exercising essentially all 96 comb iterations.
+P384_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52973
+SCALAR_MUL_K_384 = P384_ORDER - 7
+
+# Scratch buffer in cassette area (free RAM, won't be touched by point ops).
+SCALAR_MUL_BUF_384 = 0x033C
+
+
+def setup_scalar_mul_384(transport, labels):
+    """Write a representative 384-bit scalar (BE) and point ec_scalar_ptr at it."""
+    k_be = SCALAR_MUL_K_384.to_bytes(48, "big")
+    write_bytes(transport, SCALAR_MUL_BUF_384, k_be)
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_MUL_BUF_384)
+
+
 # ----------------------------------------------------------------------------
 # Benchmark plan
 # ----------------------------------------------------------------------------
@@ -143,6 +160,7 @@ BENCH_PLAN = [
     ("fp_mod_inv_384",         1, setup_field_a,      900.0),
     ("ec_point_double_384",    1, setup_point_double, 300.0),
     ("ec_point_add_384",       1, setup_point_add,    300.0),
+    ("ec_scalar_mul_384",      1, setup_scalar_mul_384, 3600.0),
 ]
 
 
@@ -171,6 +189,7 @@ def main():
         "bench_start", "bench_stop", "bench_ticks",
         "vic_blank", "vic_unblank",
         "ec_p384", "ec384_p1", "ec384_p2", "ec384_p3",
+        "ec_scalar_ptr",
     ]
     required += [name for (name, _l, _s, _t) in BENCH_PLAN]
 

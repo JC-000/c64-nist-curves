@@ -168,3 +168,22 @@ ec_anchor4_y:   !fill 32, 0
 ;                            cm_k[16..23] = K2,
 ;                            cm_k[24..31] = K3 (most significant 64 bits).
 cm_k:           !fill 32, 0
+
+; --- Lim-Lee 4-way fixed-base comb anchors for P-384.
+;     A_p (p in 1..4) = 2^(96*(p-1)) * G stored as affine (X then Y, each
+;     48 bytes, contiguous so a single base pointer can index both halves).
+ec_anchor1_384_x: !fill 48, 0
+ec_anchor1_384_y: !fill 48, 0
+ec_anchor2_384_x: !fill 48, 0
+ec_anchor2_384_y: !fill 48, 0
+ec_anchor3_384_x: !fill 48, 0
+ec_anchor3_384_y: !fill 48, 0
+ec_anchor4_384_x: !fill 48, 0
+ec_anchor4_384_y: !fill 48, 0
+
+; --- Lim-Lee comb working scalar for P-384 (48 bytes, little-endian
+;     transpose of the BE input). cm_k_384[0..11]   = K0 (LSBs),
+;                                   cm_k_384[12..23] = K1,
+;                                   cm_k_384[24..35] = K2,
+;                                   cm_k_384[36..47] = K3 (MSBs).
+cm_k_384:       !fill 48, 0
