@@ -100,6 +100,19 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 - P-384 point layout: X at offset 0, Y at offset 48, Z at offset 96 (144 bytes Jacobian)
 - ACME assembler syntax, 6502 CPU
 
+### Calling contract / re-entrancy
+Library routines are NOT re-entrant. The multiply DMA buffers
+(`mul_dma_lo`/`mul_dma_hi` at $4b00/$4c00), the `mul_cached_a`/
+`mul_src2_buf` scratch, and the `fp_src1`/`fp_src2`/`fp_dst`/`fp_misc`
+zero-page slots are all clobbered by every field operation and are
+shared between the P-256 and P-384 code paths. Sequential cross-curve
+use is fine, but the host program must serialize all library calls:
+do not invoke a field op (or anything that calls one, including
+point-op and scalar-mul routines) from an IRQ handler while another
+field op is running in mainline, or state will be corrupted. The
+simplest safe pattern is to mask IRQs around a crypto operation, or
+keep all library calls on a single thread of control.
+
 ### REU precompute table layout
 - P-256: bank 2, offset $0000, 16 entries x 64 bytes (X,Y only) = 1024 bytes
 - P-384: bank 2, offset $0400, 16 entries x 96 bytes (X,Y only) = 1536 bytes

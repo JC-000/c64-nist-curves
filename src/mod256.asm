@@ -710,6 +710,9 @@ sol_overflow:    !word 0
 ; fp_mod_mul - fp_r0 = ((fp_src1) * (fp_src2)) mod p256
 ;
 ; Calls fp_mul then fp_mod_reduce256.
+; Modulus contract: reduces mod the curve prime p256 via Solinas fast
+; reduction. IGNORES fp_misc -- the modulus is hard-wired. Use fp_mod_inv
+; if you need arbitrary-modulus arithmetic (e.g. mod ec_n256).
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_mod_mul:
@@ -721,6 +724,8 @@ fp_mod_mul:
 ; fp_mod_sqr - fp_r0 = ((fp_src1)^2) mod p256
 ;
 ; Calls fp_sqr then fp_mod_reduce256.
+; Modulus contract: reduces mod the curve prime p256 via Solinas fast
+; reduction. IGNORES fp_misc -- the modulus is hard-wired.
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_mod_sqr:
@@ -1018,28 +1023,28 @@ ec_set_modn:
         rts
 
 ; =============================================================================
-; ec_mulp - Modular multiply mod p, copy result to (fp_dst)
+; ec_mulp / ec_sqrp - Modular multiply / square mod p, copy result to (fp_dst)
 ;
-; Sets modulus to p256, calls fp_mod_mul, copies fp_r0 to (fp_dst).
+; Both routines share an internal .copy_result tail that spills fp_r0 into
+; (fp_dst). Wrapped in an !zone so .copy_result is local to this block and
+; does NOT leak into the public symbol table (it was previously exported as
+; ec_mulp_copy_result even though it is purely an internal fallthrough /
+; tail-jump target used only by ec_mulp and ec_sqrp themselves).
+;
 ; Clobbers: A, X, Y
 ; =============================================================================
+!zone ec_mulp_block {
 ec_mulp:
         jsr ec_set_modp
         jsr fp_mod_mul
-        jmp ec_mulp_copy_result
+        jmp .copy_result
 
-; =============================================================================
-; ec_sqrp - Modular square mod p, copy result to (fp_dst)
-;
-; Sets modulus to p256, calls fp_mod_sqr, copies fp_r0 to (fp_dst).
-; fp_src1 is the operand; fp_src2 is ignored (no aliasing needed).
-; Clobbers: A, X, Y
-; =============================================================================
 ec_sqrp:
+        ; fp_src1 is the operand; fp_src2 is ignored (no aliasing needed).
         jsr ec_set_modp
         jsr fp_mod_sqr
         ; fall through to copy helper
-ec_mulp_copy_result:
+.copy_result:
         ; Copy fp_r0 to (fp_dst)
         lda fp_src1
         pha
@@ -1055,3 +1060,4 @@ ec_mulp_copy_result:
         pla
         sta fp_src1
         rts
+}

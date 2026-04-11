@@ -50,6 +50,14 @@ ec_sc_byte:     !byte 0
 ec_sc_mask:     !byte 0
 
 ; --- fe_mul optimization buffers ---
+; NOT RE-ENTRANT. The buffers below (mul_cached_a, mul_src2_buf, mul_dma_lo,
+; mul_dma_hi) plus the fp_src1/fp_src2/fp_dst zero-page slots are SHARED
+; between all P-256 and P-384 field operations. Sequential calls across
+; curves are fine, but the host program MUST NOT interleave them - e.g.
+; calling fp_mod_mul_384 from an IRQ handler while fp_mod_mul is running
+; in mainline will corrupt the cached operand / DMA target state. Serialize
+; all calls into the library (mask IRQs around field ops or keep crypto on
+; a single thread of control).
 mul_cached_a:
         !byte 0                ; cached src1[i] for inlined multiply
 mul_src2_buf:
@@ -58,6 +66,7 @@ mul_src2_buf:
                                ; can over-read past j=31 into zeros for fast-skip)
 
 ; --- REU DMA target buffers (page-aligned for LDA abs,Y without penalty) ---
+; SHARED between P-256 and P-384 code paths - see re-entrancy note above.
         !align 255, 0          ; align to next page boundary
 mul_dma_lo:
         !fill 256, 0           ; DMA target: lo bytes of a*b for current a
