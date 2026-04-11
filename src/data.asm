@@ -144,8 +144,27 @@ ec_naf_len:     !word 0           ; 16-bit (can be up to 385)
 
 ; --- Affine 2G storage used during wNAF precompute (persists across the
 ;     precompute loop since ec_affine_x/ec_affine_y is clobbered by each
-;     jacobian_to_affine call).
+;     jacobian_to_affine call). P-384 still uses these; P-256 does not.
 ec_aff2g_256_x: !fill 32, 0
 ec_aff2g_256_y: !fill 32, 0
 ec_aff2g_384_x: !fill 48, 0
 ec_aff2g_384_y: !fill 48, 0
+
+; --- Lim-Lee 4-way fixed-base comb anchors for P-256.
+;     A_p (p in 1..4) = 2^(64*(p-1)) * G stored as affine (X then Y, each
+;     32 bytes, contiguous so a single base pointer can index both halves).
+ec_anchor1_x:   !fill 32, 0
+ec_anchor1_y:   !fill 32, 0
+ec_anchor2_x:   !fill 32, 0
+ec_anchor2_y:   !fill 32, 0
+ec_anchor3_x:   !fill 32, 0
+ec_anchor3_y:   !fill 32, 0
+ec_anchor4_x:   !fill 32, 0
+ec_anchor4_y:   !fill 32, 0
+
+; --- Lim-Lee comb working scalar (32 bytes, little-endian transpose of
+;     the BE input scalar). cm_k[0..7]   = K0 (least significant 64 bits),
+;                            cm_k[8..15]  = K1,
+;                            cm_k[16..23] = K2,
+;                            cm_k[24..31] = K3 (most significant 64 bits).
+cm_k:           !fill 32, 0

@@ -172,6 +172,26 @@ def setup_point_add(transport, labels):
     write_bytes(transport, ec_p2 + 32, int_to_le_bytes(G2Y, 32))
 
 
+# Representative 256-bit scalar: RFC 6979 sample-message private key.
+# (Same constant as TEST_PRIVKEY in test_points256.py.)
+SCALAR_MUL_K = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
+
+# Scratch buffer in cassette area (free RAM, won't be touched by point ops).
+SCALAR_MUL_BUF = 0x033C
+
+
+def setup_scalar_mul(transport, labels):
+    """Write a representative 256-bit scalar (BE) and point ec_scalar_ptr at it.
+
+    The Lim-Lee precompute table built at boot lives in REU bank 2 and is
+    not disturbed by reu_mul_init (which only writes bank 0), so it remains
+    valid here.
+    """
+    k_be = SCALAR_MUL_K.to_bytes(32, "big")
+    write_bytes(transport, SCALAR_MUL_BUF, k_be)
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_MUL_BUF)
+
+
 # ----------------------------------------------------------------------------
 # Benchmark plan
 # ----------------------------------------------------------------------------
@@ -190,6 +210,7 @@ BENCH_PLAN = [
     ("fp_mod_inv",         1, setup_field_a,      600.0),
     ("ec_point_double",    1, setup_point_double, 600.0),
     ("ec_point_add",       1, setup_point_add,    900.0),
+    ("ec_scalar_mul",      1, setup_scalar_mul,  3600.0),
 ]
 
 
@@ -219,6 +240,7 @@ def main():
         "bench_start", "bench_stop", "bench_ticks",
         "vic_blank", "vic_unblank",
         "ec_p256", "ec_p1", "ec_p2", "ec_p3",
+        "ec_scalar_ptr",
     ]
     # Routines to be benchmarked must exist.
     required += [name for (name, _l, _s, _t) in BENCH_PLAN]
