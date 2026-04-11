@@ -49,7 +49,7 @@ ec_point_double:
         sta fp_dst
         lda #>ec_t1
         sta fp_dst+1
-        jsr ec_mulp             ; t1 = Z1^2
+        jsr ec_sqrp             ; t1 = Z1^2
 
         ; t2 = X1 - t1
         lda #<ec_p1
@@ -138,7 +138,7 @@ ec_point_double:
         sta fp_dst
         lda #>ec_t3
         sta fp_dst+1
-        jsr ec_mulp             ; t3 = Y1^2
+        jsr ec_sqrp             ; t3 = Y1^2
 
         ; t4 = X1 * Y1^2
         lda #<ec_p1
@@ -198,7 +198,7 @@ ec_point_double:
         sta fp_dst
         lda #>ec_t4
         sta fp_dst+1
-        jsr ec_mulp             ; t4 = M^2
+        jsr ec_sqrp             ; t4 = M^2
 
         ; t5 = 2*S
         lda #<ec_t1
@@ -274,7 +274,7 @@ ec_point_double:
         sta fp_dst
         lda #>ec_t4
         sta fp_dst+1
-        jsr ec_mulp             ; t4 = Y1^4
+        jsr ec_sqrp             ; t4 = Y1^4
 
         ; 8*Y1^4: t6 = 2*t4, t4 = 2*t6, t6 = 2*t4
         lda #<ec_t4
@@ -428,7 +428,7 @@ ec_point_add:
         sta fp_dst
         lda #>ec_t1
         sta fp_dst+1
-        jsr ec_mulp             ; t1 = Z1^2
+        jsr ec_sqrp             ; t1 = Z1^2
 
         ; t2 = X2*Z1^2 = U2
         lda #<ec_p2
@@ -547,7 +547,7 @@ ec_point_add:
         sta fp_dst
         lda #>ec_t3
         sta fp_dst+1
-        jsr ec_mulp             ; t3 = H^2
+        jsr ec_sqrp             ; t3 = H^2
 
         ; t4 = H^3 = H*H^2
         lda #<ec_t1
@@ -593,7 +593,7 @@ ec_point_add:
         sta fp_dst
         lda #>ec_t3
         sta fp_dst+1
-        jsr ec_mulp             ; t3 = R^2
+        jsr ec_sqrp             ; t3 = R^2
 
         ; t3 = R^2 - H^3
         lda #<ec_t3

@@ -413,9 +413,13 @@ fp_mul:
 ;
 ; (fp_src1)^2 -> fp_wide (64 bytes)
 ;
-; Cross terms (i < j): compute a[i]*a[j] once, double, then accumulate.
-; Diagonal terms (i == i): compute a[i]^2 normally.
-; Same self-modifying accumulation as fp_mul.
+; Strategy (deferred doubling):
+;   1. Accumulate the undoubled cross-term sum S = sum_{i<j} a[i]*a[j]
+;      into fp_wide at positions i+j, using exactly the same self-modifying
+;      inner loop as fp_mul (no per-partial shifts, no 3-way carry).
+;      Only 31*32/2 = 496 byte-muls are performed (vs 1024 in fp_mul).
+;   2. Double fp_wide (64-byte ASL sweep) -> fp_wide holds 2*S.
+;   3. Add diagonal terms a[i]^2 at position 2*i (one DMA fetch per i).
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_sqr:
@@ -434,8 +438,14 @@ fp_sqr:
         sta mul_src2_buf,y
         dey
         bpl @copy_src
+        ; Ensure padding bytes are zero (init-time zeroed, but be safe)
+        lda #0
+        sta mul_src2_buf+32
+        sta mul_src2_buf+33
+        sta mul_src2_buf+34
 
-        ; 3. Cross terms: accumulate 2*a[i]*a[j] for all i < j
+        ; 3. Cross terms (UNDOUBLED): accumulate sum_{i<j} a[i]*a[j]
+        ;    into fp_wide at position (i+j). i runs 0..30.
         lda #0
         sta fp_mul_i
 @sqr_outer:
@@ -502,259 +512,177 @@ fp_sqr:
         sta @sqr_accum_ld2_d+2
         sta @sqr_accum_st2_d+2
 
-        ; X = j, starts at i+1, kept in register through all 4 bodies
+        ; X = j, starts at i+1, kept in register through all 4 bodies.
+        ; Base address for accumulation was patched to fp_wide+i above, so
+        ; fp_wide,X accesses fp_wide+i+j = fp_wide+2i+1 on the first iteration.
         ldx fp_mul_i
         inx
 
-        ; ===== UNROLLED 4x INNER LOOP =====
-        ; Zero-padded mul_src2_buf[32..] lets us safely over-read past j=31
-        ; (the beq causes the body to skip harmlessly).
-@sqr_inner:
-        ; --- Body A: process j ---
-        ldy mul_src2_buf,x
-        beq @sqr_next_j_a
-        lda mul_dma_lo,y
-        asl                     ; double lo (carry = bit 7 of lo)
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol                     ; double hi + carry (new carry = 17th bit)
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta fp_sqr_extra        ; save 17th bit
+        ; Quad count = ceil((32 - (i+1)) / 4) = ceil((31 - i) / 4)
+        ;            = floor((34 - i) / 4).
+        ; Bounds iterations of the 4x-unrolled inner loop so we don't waste
+        ; body executions past j=31. mul_src2_buf[32..34] is zero-padded so
+        ; any tail over-reads within the final quad take the beq fast-skip path.
+        lda #34
+        sec
+        sbc fp_mul_i
+        lsr
+        lsr
+        sta fp_sqr_pairs        ; reuses the old fp_sqr_extra byte slot
 
+        ; ===== UNROLLED 4x INNER LOOP (bounded by fp_sqr_pairs) =====
+@sqr_inner:
+        ; --- Body A ---
+        ldy mul_src2_buf,x
+        beq @sqr_next_j_first
         clc
 @sqr_accum_ld1:
         lda fp_wide,x           ; patched fp_wide+i,X
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @sqr_accum_st1:
         sta fp_wide,x
 @sqr_accum_ld2:
         lda fp_wide+1,x         ; patched fp_wide+i+1,X
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @sqr_accum_st2:
         sta fp_wide+1,x
-
-        lda #0
-        adc fp_sqr_extra        ; combined carry (0,1,2)
-        beq @sqr_nc_a
-        jmp @sqr_do_carry_a
-@sqr_nc_a:
-@sqr_next_j_a:
+        bcs @sqr_do_prop_a
+@sqr_next_j_first:
         inx
-        cpx #32
-        bcc @sqr_body_b
-        jmp @sqr_loop_exit
-@sqr_body_b:
+
         ; --- Body B ---
         ldy mul_src2_buf,x
-        beq @sqr_next_j_b
-        lda mul_dma_lo,y
-        asl
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta fp_sqr_extra
-
+        beq @sqr_next_j_second
         clc
 @sqr_accum_ld1_b:
         lda fp_wide,x
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @sqr_accum_st1_b:
         sta fp_wide,x
 @sqr_accum_ld2_b:
         lda fp_wide+1,x
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @sqr_accum_st2_b:
         sta fp_wide+1,x
-
-        lda #0
-        adc fp_sqr_extra
-        beq @sqr_nc_b
-        jmp @sqr_do_carry_b
-@sqr_nc_b:
-@sqr_next_j_b:
+        bcs @sqr_do_prop_b
+@sqr_next_j_second:
         inx
-        cpx #32
-        bcc @sqr_body_c
-        jmp @sqr_loop_exit
-@sqr_body_c:
+
         ; --- Body C ---
         ldy mul_src2_buf,x
-        beq @sqr_next_j_c
-        lda mul_dma_lo,y
-        asl
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta fp_sqr_extra
-
+        beq @sqr_next_j_third
         clc
 @sqr_accum_ld1_c:
         lda fp_wide,x
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @sqr_accum_st1_c:
         sta fp_wide,x
 @sqr_accum_ld2_c:
         lda fp_wide+1,x
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @sqr_accum_st2_c:
         sta fp_wide+1,x
-
-        lda #0
-        adc fp_sqr_extra
-        beq @sqr_nc_c
-        jmp @sqr_do_carry_c
-@sqr_nc_c:
-@sqr_next_j_c:
+        bcs @sqr_do_prop_c
+@sqr_next_j_third:
         inx
-        cpx #32
-        bcc @sqr_body_d
-        jmp @sqr_loop_exit
-@sqr_body_d:
+
         ; --- Body D ---
         ldy mul_src2_buf,x
-        beq @sqr_next_j_d
-        lda mul_dma_lo,y
-        asl
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta fp_sqr_extra
-
+        beq @sqr_next_j
         clc
 @sqr_accum_ld1_d:
         lda fp_wide,x
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @sqr_accum_st1_d:
         sta fp_wide,x
 @sqr_accum_ld2_d:
         lda fp_wide+1,x
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @sqr_accum_st2_d:
         sta fp_wide+1,x
-
-        lda #0
-        adc fp_sqr_extra
-        beq @sqr_nc_d
-        jmp @sqr_do_carry_d
-@sqr_nc_d:
-@sqr_next_j_d:
+        bcs @sqr_do_prop_d
+@sqr_next_j:
         inx
-        cpx #32
-        bcc @sqr_loop_continue
-        jmp @sqr_loop_exit
-@sqr_loop_continue:
+        dec fp_sqr_pairs
+        beq @sqr_skip_i
         jmp @sqr_inner
 
         ; --- Carry propagation blocks (rare path) ---
-        ; Add combined carry (A=1 or 2) to fp_wide[i+j+2], propagate further
-@sqr_do_carry_a:
+@sqr_do_prop_a:
         stx fp_mul_j
-        tay                     ; Y = carry value
-        txa                     ; A = j
+        lda fp_mul_i
         clc
-        adc fp_mul_i
+        adc fp_mul_j
         clc
         adc #2
-        tax                     ; X = i+j+2
-        tya
-        clc
-        adc fp_wide,x
-        sta fp_wide,x
-        bcc @sqr_carry_done_a
-@sqr_prop_a:
-        inx
+        tax
+@sqr_prop_carry_a:
         cpx #64
         bcs @sqr_carry_done_a
         inc fp_wide,x
-        beq @sqr_prop_a
+        bne @sqr_carry_done_a
+        inx
+        bne @sqr_prop_carry_a
 @sqr_carry_done_a:
         ldx fp_mul_j
-        jmp @sqr_next_j_a
+        jmp @sqr_next_j_first
 
-@sqr_do_carry_b:
+@sqr_do_prop_b:
         stx fp_mul_j
-        tay
-        txa
+        lda fp_mul_i
         clc
-        adc fp_mul_i
+        adc fp_mul_j
         clc
         adc #2
         tax
-        tya
-        clc
-        adc fp_wide,x
-        sta fp_wide,x
-        bcc @sqr_carry_done_b
-@sqr_prop_b:
-        inx
+@sqr_prop_carry_b:
         cpx #64
         bcs @sqr_carry_done_b
         inc fp_wide,x
-        beq @sqr_prop_b
+        bne @sqr_carry_done_b
+        inx
+        bne @sqr_prop_carry_b
 @sqr_carry_done_b:
         ldx fp_mul_j
-        jmp @sqr_next_j_b
+        jmp @sqr_next_j_second
 
-@sqr_do_carry_c:
+@sqr_do_prop_c:
         stx fp_mul_j
-        tay
-        txa
+        lda fp_mul_i
         clc
-        adc fp_mul_i
+        adc fp_mul_j
         clc
         adc #2
         tax
-        tya
-        clc
-        adc fp_wide,x
-        sta fp_wide,x
-        bcc @sqr_carry_done_c
-@sqr_prop_c:
-        inx
+@sqr_prop_carry_c:
         cpx #64
         bcs @sqr_carry_done_c
         inc fp_wide,x
-        beq @sqr_prop_c
+        bne @sqr_carry_done_c
+        inx
+        bne @sqr_prop_carry_c
 @sqr_carry_done_c:
         ldx fp_mul_j
-        jmp @sqr_next_j_c
+        jmp @sqr_next_j_third
 
-@sqr_do_carry_d:
+@sqr_do_prop_d:
         stx fp_mul_j
-        tay
-        txa
+        lda fp_mul_i
         clc
-        adc fp_mul_i
+        adc fp_mul_j
         clc
         adc #2
         tax
-        tya
-        clc
-        adc fp_wide,x
-        sta fp_wide,x
-        bcc @sqr_carry_done_d
-@sqr_prop_d:
-        inx
+@sqr_prop_carry_d:
         cpx #64
         bcs @sqr_carry_done_d
         inc fp_wide,x
-        beq @sqr_prop_d
+        bne @sqr_carry_done_d
+        inx
+        bne @sqr_prop_carry_d
 @sqr_carry_done_d:
         ldx fp_mul_j
-        jmp @sqr_next_j_d
-
-@sqr_loop_exit:
+        jmp @sqr_next_j
 
 @sqr_skip_i:
         inc fp_mul_i
@@ -764,7 +692,23 @@ fp_sqr:
         jmp @sqr_outer
 @sqr_cross_done:
 
-        ; 4. Add diagonal terms: a[i]^2 at position 2*i
+        ; 4. Double the accumulated cross-term sum: fp_wide <<= 1 (64 bytes).
+        ; Y indexes fp_wide[0..63] (INY does not touch C).
+        ; X counts down 64..1 as the loop counter (DEX does not touch C).
+        ; Together they preserve the rolling carry across all 64 rols.
+        clc
+        ldy #0
+        ldx #64
+@sqr_double:
+        lda fp_wide,y
+        rol
+        sta fp_wide,y
+        iny
+        dex
+        bne @sqr_double
+        ; any carry out of bit 63 is discarded (sum fits in 64 bytes)
+
+        ; 5. Add diagonal terms: a[i]^2 at position 2*i
         lda #0
         sta fp_mul_i
 @diag_outer:
@@ -823,5 +767,6 @@ fp_sqr:
 @sqr_done:
         rts
 
-; Scratch byte for squaring
-fp_sqr_extra:   !byte 0
+; Scratch byte for squaring (quad counter for fp_sqr inner loop)
+fp_sqr_pairs:   !byte 0
+fp_sqr_extra:   !byte 0         ; orphaned (kept so layout shift is zero)

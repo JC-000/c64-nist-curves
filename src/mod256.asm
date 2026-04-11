@@ -1026,6 +1026,20 @@ ec_set_modn:
 ec_mulp:
         jsr ec_set_modp
         jsr fp_mod_mul
+        jmp ec_mulp_copy_result
+
+; =============================================================================
+; ec_sqrp - Modular square mod p, copy result to (fp_dst)
+;
+; Sets modulus to p256, calls fp_mod_sqr, copies fp_r0 to (fp_dst).
+; fp_src1 is the operand; fp_src2 is ignored (no aliasing needed).
+; Clobbers: A, X, Y
+; =============================================================================
+ec_sqrp:
+        jsr ec_set_modp
+        jsr fp_mod_sqr
+        ; fall through to copy helper
+ec_mulp_copy_result:
         ; Copy fp_r0 to (fp_dst)
         lda fp_src1
         pha

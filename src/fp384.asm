@@ -398,6 +398,13 @@ fp_mul_384:
 ; fp_sqr_384 - 384-bit squaring with symmetry optimization, little-endian
 ;
 ; (fp_src1)^2 -> fp384_wide (96 bytes)
+;
+; Strategy (deferred doubling):
+;   1. Accumulate undoubled cross-term sum S = sum_{i<j} a[i]*a[j] into
+;      fp384_wide at positions i+j (mirrors fp_mul_384's inner loop exactly).
+;      Only 47*48/2 = 1128 byte-muls (vs 2304 in fp_mul_384).
+;   2. Double fp384_wide via a single 96-byte ASL sweep -> 2*S.
+;   3. Add diagonal terms a[i]^2 at position 2*i.
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_sqr_384:
@@ -409,15 +416,19 @@ fp_sqr_384:
         dex
         bpl @zero_wide
 
-        ; 2. Copy src1 to absolute buffer
+        ; 2. Copy src1 to absolute buffer (48 bytes, 3 zero-pad at [48..50])
         ldy #47
 @copy_src:
         lda (fp_src1),y
         sta mul_src2_buf_384,y
         dey
         bpl @copy_src
+        lda #0
+        sta mul_src2_buf_384+48
+        sta mul_src2_buf_384+49
+        sta mul_src2_buf_384+50
 
-        ; 3. Cross terms: accumulate 2*a[i]*a[j] for all i < j
+        ; 3. Cross terms (UNDOUBLED): sum_{i<j} a[i]*a[j] at position i+j
         lda #0
         sta fp_mul_i
 @sqr_outer:
@@ -483,14 +494,14 @@ fp_sqr_384:
         sta @sqr_accum_st2_d+2
 
         ; j starts at i+1, pinned in X
-        lda fp_mul_i
-        clc
-        adc #1
-        tax                    ; X = j = i+1
+        ldx fp_mul_i
+        inx                    ; X = j = i+1
 
-        ; Quad count = ceil((47-i)/4) = (50-i)/4 (integer div).
-        ; Indices 48..50 in mul_src2_buf_384 are padded zero so tail bodies
-        ; take the Y=0 fast-skip path.
+        ; Quad count = ceil((48 - (i+1)) / 4) = ceil((47 - i) / 4)
+        ;            = floor((50 - i) / 4).
+        ; Bounds iterations of the 4x-unrolled inner loop so we don't waste
+        ; body executions past j=47. mul_src2_buf_384[48..50] is zero-padded
+        ; so any tail over-reads in the final quad take the beq fast-skip path.
         lda #50
         sec
         sbc fp_mul_i
@@ -498,234 +509,159 @@ fp_sqr_384:
         lsr
         sta fp384_sqr_pairs
 
+        ; ===== UNROLLED 4x INNER LOOP (bounded by fp384_sqr_pairs) =====
 @sqr_inner:
-        ; === Body A ===
+        ; --- Body A ---
         ldy mul_src2_buf_384,x
-        bne @sqr_nonzero_j
-        jmp @sqr_next_j
-@sqr_nonzero_j:
-        ; Fetch + double in a single pass
-        lda mul_dma_lo,y
-        asl
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta poly_carry         ; ZP: save shift carry (was fp384_sqr_extra)
-        ; carry is already clear after adc #0 with lda #0
+        beq @sqr_next_j_first
+        clc
 @sqr_accum_ld1:
-        lda fp384_wide,x
-        adc poly_prod_lo
+        lda fp384_wide,x       ; patched base = fp384_wide + i
+        adc mul_dma_lo,y
 @sqr_accum_st1:
         sta fp384_wide,x
 @sqr_accum_ld2:
-        lda fp384_wide+1,x
-        adc poly_prod_hi
+        lda fp384_wide+1,x     ; patched base = fp384_wide + i + 1
+        adc mul_dma_hi,y
 @sqr_accum_st2:
         sta fp384_wide+1,x
-
-        lda #0
-        adc poly_carry         ; ZP (was fp384_sqr_extra)
-        beq @sqr_next_j
-
-        stx fp_mul_j
-        ldx fp_mul_i
-        tay
-        txa
-        clc
-        adc fp_mul_j
-        clc
-        adc #2
-        tax
-        tya
-        clc
-        adc fp384_wide,x
-        sta fp384_wide,x
-        bcc @sqr_prop1_done
-@sqr_prop1:
+        bcs @sqr_do_prop_a
+@sqr_next_j_first:
         inx
-        cpx #96
-        bcs @sqr_prop1_done
-        inc fp384_wide,x
-        beq @sqr_prop1
-@sqr_prop1_done:
-        ldx fp_mul_j
 
-@sqr_next_j:
-        inx                    ; j++
-
-        ; === Body B ===
+        ; --- Body B ---
         ldy mul_src2_buf_384,x
-        bne @sqr_nonzero_j_b
-        jmp @sqr_next_j_b
-@sqr_nonzero_j_b:
-        lda mul_dma_lo,y
-        asl
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta poly_carry         ; ZP: save shift carry
-        ; carry already clear from lda #0 / adc #0
+        beq @sqr_next_j_second
+        clc
 @sqr_accum_ld1_b:
         lda fp384_wide,x
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @sqr_accum_st1_b:
         sta fp384_wide,x
 @sqr_accum_ld2_b:
         lda fp384_wide+1,x
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @sqr_accum_st2_b:
         sta fp384_wide+1,x
-
-        lda #0
-        adc poly_carry         ; ZP (was fp384_sqr_extra)
-        beq @sqr_next_j_b
-
-        stx fp_mul_j
-        ldx fp_mul_i
-        tay
-        txa
-        clc
-        adc fp_mul_j
-        clc
-        adc #2
-        tax
-        tya
-        clc
-        adc fp384_wide,x
-        sta fp384_wide,x
-        bcc @sqr_prop2_done
-@sqr_prop2:
+        bcs @sqr_do_prop_b
+@sqr_next_j_second:
         inx
-        cpx #96
-        bcs @sqr_prop2_done
-        inc fp384_wide,x
-        beq @sqr_prop2
-@sqr_prop2_done:
-        ldx fp_mul_j
 
-@sqr_next_j_b:
-        inx                    ; j++
-
-        ; === Body C ===
+        ; --- Body C ---
         ldy mul_src2_buf_384,x
-        bne @sqr_nonzero_j_c
-        jmp @sqr_next_j_c
-@sqr_nonzero_j_c:
-        lda mul_dma_lo,y
-        asl
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta poly_carry         ; ZP: save shift carry
-        ; carry already clear from lda #0 / adc #0
+        beq @sqr_next_j_third
+        clc
 @sqr_accum_ld1_c:
         lda fp384_wide,x
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @sqr_accum_st1_c:
         sta fp384_wide,x
 @sqr_accum_ld2_c:
         lda fp384_wide+1,x
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @sqr_accum_st2_c:
         sta fp384_wide+1,x
-
-        lda #0
-        adc poly_carry         ; ZP (was fp384_sqr_extra)
-        beq @sqr_next_j_c
-
-        stx fp_mul_j
-        ldx fp_mul_i
-        tay
-        txa
-        clc
-        adc fp_mul_j
-        clc
-        adc #2
-        tax
-        tya
-        clc
-        adc fp384_wide,x
-        sta fp384_wide,x
-        bcc @sqr_prop3_done
-@sqr_prop3:
+        bcs @sqr_do_prop_c
+@sqr_next_j_third:
         inx
-        cpx #96
-        bcs @sqr_prop3_done
-        inc fp384_wide,x
-        beq @sqr_prop3
-@sqr_prop3_done:
-        ldx fp_mul_j
 
-@sqr_next_j_c:
-        inx                    ; j++
-
-        ; === Body D ===
+        ; --- Body D ---
         ldy mul_src2_buf_384,x
-        bne @sqr_nonzero_j_d
-        jmp @sqr_next_j_d
-@sqr_nonzero_j_d:
-        lda mul_dma_lo,y
-        asl
-        sta poly_prod_lo
-        lda mul_dma_hi,y
-        rol
-        sta poly_prod_hi
-        lda #0
-        adc #0
-        sta poly_carry         ; ZP: save shift carry
-        ; carry already clear from lda #0 / adc #0
+        beq @sqr_next_j
+        clc
 @sqr_accum_ld1_d:
         lda fp384_wide,x
-        adc poly_prod_lo
+        adc mul_dma_lo,y
 @sqr_accum_st1_d:
         sta fp384_wide,x
 @sqr_accum_ld2_d:
         lda fp384_wide+1,x
-        adc poly_prod_hi
+        adc mul_dma_hi,y
 @sqr_accum_st2_d:
         sta fp384_wide+1,x
+        bcs @sqr_do_prop_d
+@sqr_next_j:
+        inx
+        dec fp384_sqr_pairs
+        beq @sqr_skip_i
+        jmp @sqr_inner
 
-        lda #0
-        adc poly_carry         ; ZP (was fp384_sqr_extra)
-        beq @sqr_next_j_d
-
+        ; --- Carry propagation blocks (rare path) ---
+@sqr_do_prop_a:
         stx fp_mul_j
-        ldx fp_mul_i
-        tay
-        txa
+        lda fp_mul_i
         clc
         adc fp_mul_j
         clc
         adc #2
         tax
-        tya
-        clc
-        adc fp384_wide,x
-        sta fp384_wide,x
-        bcc @sqr_prop4_done
-@sqr_prop4:
-        inx
+@sqr_prop_carry_a:
         cpx #96
-        bcs @sqr_prop4_done
+        bcs @sqr_carry_done_a
         inc fp384_wide,x
-        beq @sqr_prop4
-@sqr_prop4_done:
+        bne @sqr_carry_done_a
+        inx
+        bne @sqr_prop_carry_a
+@sqr_carry_done_a:
         ldx fp_mul_j
+        jmp @sqr_next_j_first
 
-@sqr_next_j_d:
-        inx                    ; j++
-        dec fp384_sqr_pairs
-        beq @sqr_skip_i
-        jmp @sqr_inner
+@sqr_do_prop_b:
+        stx fp_mul_j
+        lda fp_mul_i
+        clc
+        adc fp_mul_j
+        clc
+        adc #2
+        tax
+@sqr_prop_carry_b:
+        cpx #96
+        bcs @sqr_carry_done_b
+        inc fp384_wide,x
+        bne @sqr_carry_done_b
+        inx
+        bne @sqr_prop_carry_b
+@sqr_carry_done_b:
+        ldx fp_mul_j
+        jmp @sqr_next_j_second
+
+@sqr_do_prop_c:
+        stx fp_mul_j
+        lda fp_mul_i
+        clc
+        adc fp_mul_j
+        clc
+        adc #2
+        tax
+@sqr_prop_carry_c:
+        cpx #96
+        bcs @sqr_carry_done_c
+        inc fp384_wide,x
+        bne @sqr_carry_done_c
+        inx
+        bne @sqr_prop_carry_c
+@sqr_carry_done_c:
+        ldx fp_mul_j
+        jmp @sqr_next_j_third
+
+@sqr_do_prop_d:
+        stx fp_mul_j
+        lda fp_mul_i
+        clc
+        adc fp_mul_j
+        clc
+        adc #2
+        tax
+@sqr_prop_carry_d:
+        cpx #96
+        bcs @sqr_carry_done_d
+        inc fp384_wide,x
+        bne @sqr_carry_done_d
+        inx
+        bne @sqr_prop_carry_d
+@sqr_carry_done_d:
+        ldx fp_mul_j
+        jmp @sqr_next_j
 
 @sqr_skip_i:
         inc fp_mul_i
@@ -735,7 +671,21 @@ fp_sqr_384:
         jmp @sqr_outer
 @sqr_cross_done:
 
-        ; 4. Add diagonal terms: a[i]^2 at position 2*i
+        ; 4. Double the cross-term sum: fp384_wide <<= 1 (96 bytes).
+        ; Y indexes (iny doesn't touch C), X counts down (dex doesn't touch C)
+        ; so the rolling carry survives across all 96 rols.
+        clc
+        ldy #0
+        ldx #96
+@sqr_double:
+        lda fp384_wide,y
+        rol
+        sta fp384_wide,y
+        iny
+        dex
+        bne @sqr_double
+
+        ; 5. Add diagonal terms: a[i]^2 at position 2*i
         lda #0
         sta fp_mul_i
 @diag_outer:
