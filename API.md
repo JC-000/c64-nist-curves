@@ -158,6 +158,28 @@ work or keep all library calls on a single thread of control. See the
 re-entrancy comment block at the top of `src/data.asm` for the canonical
 statement.
 
+### Persistent REU DMA descriptor state
+
+As a micro-optimization, `reu_mul_init` (and the point-level DMA
+restore hooks `.sm_reu_restore` / `.sm384w_restore_reu`) leave the
+REU descriptor registers in a specific state that `fp_mul` / `fp_sqr`
+rely on across all subsequent calls:
+
+| Register | Address | Value |
+|---|---|---|
+| C64 base low / high | `$DF02` / `$DF03` | `<mul_dma_lo` / `>mul_dma_lo` |
+| REU offset low | `$DF04` | `$00` |
+| Transfer length | `$DF07` / `$DF08` | `$00` / `$02` (512 bytes) |
+| Address control | `$DF0A` | `$00` (both increment) |
+
+The inner loop only rewrites `reu_reu_hi` (`$DF05`), `reu_reu_bank`
+(`$DF06`), and `reu_command` (`$DF01`) per row. **Host programs that
+issue their own REU DMA must either (a) leave these invariant registers
+untouched, or (b) restore them before the next call into any library
+routine that may invoke `fp_mul` / `fp_sqr` / any field op that
+multiplies.** Interleaving host REU traffic with library multiplies
+without honouring this contract will produce silent wrong answers.
+
 ## 5. Public API reference
 
 All symbols below are defined as globally-addressable labels in the file

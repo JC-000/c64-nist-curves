@@ -56,6 +56,15 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 
 ### Key optimizations
 - REU DMA multiply row caching (128KB lookup in REU)
+- Persistent REU DMA descriptor state: `reu_mul_init` pre-configures the
+  C64 base ($DF02/03 = mul_dma_lo), REU offset low ($DF04 = 0),
+  length ($DF07/08 = 512), and address-control ($DF0A = 0) ONCE at boot.
+  The per-row fetch inside fp_mul / fp_sqr (and the `_384` variants)
+  writes only three bytes per row: reu_reu_hi ($DF05), reu_reu_bank
+  ($DF06), reu_command ($DF01) — 20 cycles total per row fetch, which
+  works out to <1% of a full fp_mul. Point-level DMA routines
+  (`.sm_reu_restore` / `.sm384w_restore_reu`) restore this invariant
+  state on exit so the mul-fetch path never has to re-initialize it.
 - Self-modifying code for multiply accumulation addresses
 - 4x unrolled inner multiply loop with inlined REU DMA
 - Dedicated squaring with deferred doubling of cross terms (Wave 4e)
@@ -68,11 +77,19 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 ### Negative findings (do not re-attempt without a new angle)
 - **One-level subtractive Karatsuba at N=32** (Wave 4c, reverted). Three N=16
   leaves plus combine cost more than one monolithic N=32 multiply on this
-  codebase. The dominant cost is REU DMA setup inside the inner-loop: tripling
-  the number of leaves triples DMA setup overhead, which is not amortized by
-  the 25% saving in 8x8 multiplies at this size. Would require a radically
-  different DMA strategy (batched / persistent descriptors) or a larger N to
-  break even.
+  codebase. The dominant cost is NOT REU DMA setup — Wave 7b verified that
+  per-row DMA setup is already only 20 cycles per row / <1% of fp_mul, so
+  tripling row-fetches only adds ~2% overhead. The real bottleneck is the
+  4x-unrolled inner-loop accumulator body itself (the `ldy mul_src2_buf,x /
+  adc mul_dma_lo,y / adc mul_dma_hi,y / sta` chain per byte). Three N=16
+  sub-multiplies do 3*16*16 = 768 byte-muls plus ~N*3 combine adds; one
+  N=32 does 32*32 = 1024. Naively 25% fewer, but the combine chain (three
+  add-with-carry passes across 32-64 bytes) plus the sub-multiply call
+  overhead, extra zeroing, and loss of the outer-loop-zero fast-skip that
+  saves ~20% of monolithic N=32 time on sparse inputs together erase the
+  byte-mul savings. Pending re-attempts would need a materially different
+  approach (Toom-3, fused combine, or a DMA-batched fetch that amortizes
+  across multiple rows).
 - **CMO98 / Fay relative Jacobian doubling** (Wave 4d reverted for P-256;
   Wave 5c analysis confirmed unprofitable for P-384 — see
   `.research/wave5c_p384.txt`). CMO98's advertised "4M + 4S" J^m doubling
