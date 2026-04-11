@@ -12,9 +12,9 @@ Current PRG size: ~20.2 KB (20695 bytes post-Wave-7a), loaded at $0801.
 
 ## Test
 ```
-python3 tools/test_fp256.py          # P-256 field arithmetic tests
+python3 tools/test_fp256.py          # P-256 field arithmetic tests (field KAT + random)
 python3 tools/test_points256.py      # P-256 point operation tests (add --full for 10x samples)
-python3 tools/test_fp384.py          # P-384 field arithmetic tests
+python3 tools/test_fp384.py          # P-384 field arithmetic tests (field KAT + random)
 python3 tools/test_points384.py      # P-384 point operation tests (add --full for 10x samples)
 python3 tools/bench_p256.py          # P-256 primitive benchmarks (oracle-gated)
 python3 tools/bench_p384.py          # P-384 primitive benchmarks (oracle-gated)
@@ -22,16 +22,49 @@ python3 tools/bench_p384.py          # P-384 primitive benchmarks (oracle-gated)
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
 
 ### Oracle-driven testing model
-Field and point tests use an **external oracle** -- the `cryptography`
-Python package plus NIST CAVP KATs shipped under `tools/vectors/` -- to
-produce expected outputs. Test code never hard-codes values from a
-previous implementation run. Benchmarks run a one-shot correctness gate
-against the oracle before recording cycle counts for each routine; a
-routine that fails the gate is marked UNVERIFIED and its cycles are
-dropped. See `tools/vectors/README.md` for the invariant and refresh
-procedure. Random scalars are unseeded by default (`secrets.randbits`);
-`--seed N` reproduces a failure. `--full` on the point tests expands
-sample counts from 3 per routine to 10 and runs all 25 NIST KATs.
+All test suites use an **external oracle** -- the `cryptography`
+Python package plus NIST KAT files shipped under `tools/vectors/` --
+to produce expected outputs. Test code never hard-codes values from
+a previous implementation run. Benchmarks run a one-shot correctness
+gate against the oracle before recording cycle counts for each
+routine; a routine that fails the gate is marked UNVERIFIED and its
+cycles are dropped. Random scalars are unseeded by default
+(`secrets.token_bytes` / `secrets.randbelow`); `--seed N` reproduces
+a failure. `--full` on the point tests expands sample counts from 3
+per routine to 10 and runs all 25 NIST CAVP KATs. See
+`tools/vectors/README.md` for the full invariant and refresh
+procedure.
+
+The invariant enforced across `tools/vectors/`:
+
+1. **Shared constants.** P-256 and P-384 curve parameters live in
+   `tools/vectors/constants.py` (FIPS 186-5 D.1.2.3 / D.1.2.4) and
+   are imported by every test. They are never redefined inside the
+   test files. The module self-checks at load time that
+   `Gy^2 == Gx^3 + a*Gx + b mod p`. Both short names (`P256`,
+   `GX256`, ...) and prefixed names (`P256_P`, `P256_GX`, ...,
+   `CURVES`) are exported; they alias the same Python ints.
+2. **Oracles are external.** Scalar multiplication goes through
+   `loader.scalar_mul_oracle` which wraps the `cryptography` library.
+   Field-op expected values come from Python `int` `+ - * %` and
+   `pow(a, p-2, p)` -- interpreter primitives, not editable helpers.
+   The only hand-rolled helpers are the affine group law (needed
+   because `cryptography` does not expose affine add); `self_check`
+   cross-validates them against the oracle at startup.
+3. **Unseeded random inputs by default.** Field and scalar inputs
+   come from the OS CSPRNG. Each run exercises a fresh sample.
+4. **Two flavours of NIST-derived KATs** are checked in:
+   - `nist_p{256,384}_ecdh.rsp` -- 25 NIST CAVP KAS ECC CDH vectors
+     per curve. Consumed by the point tests and bench gates; each
+     vector pins a `(scalar, scalar * G)` pair to the P-256 / P-384
+     specification.
+   - `nist_p{256,384}_kat.rsp` -- field-arithmetic KAT bundles
+     (FIPS 186-5 curve params + `[KG k=N]` + `[EcPoint tcId=N]`
+     from Wycheproof "valid" records). Consumed by the field tests
+     via a `test_nist_kat_curve_equation` that composes the C64
+     `fp_mod_mul`, `fp_mod_add`, and `fp_mod_sub` routines to verify
+     `y^2 == x^3 - 3x + b mod p` for every KAT point -- a stub that
+     returns 0 cannot pass this.
 
 ### Init sentinel pattern (replaces wait_for_text race)
 The program writes `$42` to `$02A7` as the very last step of `start:` after all

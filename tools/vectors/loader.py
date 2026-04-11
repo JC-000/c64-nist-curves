@@ -13,6 +13,19 @@ defense. The invariant is:
       are short and mathematically unambiguous; every call is still
       cross-validated against cryptography whenever a scalar is available.
 
+Two .rsp flavours live under tools/vectors/ and each has its own
+parser in this file:
+
+    * `nist_p{256,384}_ecdh.rsp` -- NIST CAVP KAS ECC CDH vectors
+      (section headers like `[P-256]`, records `dIUT/QIUTx/QIUTy`).
+      Parsed by `load_rsp` / `load_ecdh_kats` / `load_nist_scalar_mul_kats`.
+    * `nist_p{256,384}_kat.rsp` -- field-arithmetic KAT bundle
+      (section headers like `[Curve = P-256]`, `[KG k=N]`, `[EcPoint N]`).
+      Parsed by `load_kat` and returned as a `KAT` dataclass. Consumed
+      by the field-arithmetic test suite to anchor `fp_mod_mul / add /
+      sub` via the curve equation `y^2 == x^3 - 3x + b mod p` on known
+      curve points.
+
 Never replace the `cryptography` oracle with a hand-rolled scalar_mul.
 Never hardcode expected outputs from a previous implementation run.
 """
@@ -20,15 +33,18 @@ Never hardcode expected outputs from a previous implementation run.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from .constants import CURVES, P256_P, P384_P  # noqa: F401
 
+VECTORS_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # ---------------------------------------------------------------------------
-# .rsp file parser (NIST CAVS format)
+# NIST CAVS .rsp parser (flat records, e.g. KAS ECC CDH)
 # ---------------------------------------------------------------------------
 
 def load_rsp(path: str) -> List[Dict[str, str]]:
@@ -109,6 +125,87 @@ def load_nist_scalar_mul_kats(curve: str) -> List[Dict[str, int]]:
     """Load the packaged NIST CAVP KAT set for a curve ('p256' or 'p384')."""
     section = {"p256": "P-256", "p384": "P-384"}[curve]
     return load_ecdh_kats(default_ecdh_path(curve), section)
+
+
+# ---------------------------------------------------------------------------
+# Field-KAT .rsp parser (sectioned curve + [KG k=N] / [EcPoint N] records)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class KAT:
+    """Loaded field-KAT file: curve parameters plus a list of (label, fields)."""
+
+    curve_name: str
+    params: Dict[str, int] = field(default_factory=dict)
+    records: List[Tuple[str, Dict[str, int]]] = field(default_factory=list)
+
+    def point_records(self) -> List[Tuple[str, int, int]]:
+        """All records that have x and y set, returned as (label, x, y)."""
+        out = []
+        for label, fields_ in self.records:
+            if "x" in fields_ and "y" in fields_:
+                out.append((label, fields_["x"], fields_["y"]))
+        return out
+
+
+def _parse_hex_value(raw: str) -> int:
+    raw = raw.strip()
+    if raw.startswith("0x") or raw.startswith("0X"):
+        return int(raw, 16)
+    return int(raw, 16)
+
+
+def load_kat(filename: str) -> KAT:
+    """Load a field-KAT .rsp file by filename (e.g. 'nist_p256_kat.rsp').
+
+    Distinct from `load_rsp` / `load_ecdh_kats` above: those parse flat
+    NIST CAVS records, this one handles the labelled-section layout
+    (`[Curve = P-256]` / `[KG k=1]` / `[EcPoint 0]`) used by the
+    field-arithmetic KAT files.
+    """
+    path = os.path.join(VECTORS_DIR, filename)
+    with open(path, "r") as f:
+        lines = f.readlines()
+
+    kat = KAT(curve_name="")
+    current_label: Optional[str] = None
+    current_fields: Dict[str, int] = {}
+
+    def flush():
+        nonlocal current_label, current_fields
+        if current_label is not None:
+            kat.records.append((current_label, current_fields))
+        current_label = None
+        current_fields = {}
+
+    for ln in lines:
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            if not s:
+                flush()
+            continue
+        if s.startswith("[") and s.endswith("]"):
+            flush()
+            body = s[1:-1].strip()
+            if body.startswith("Curve"):
+                _, _, val = body.partition("=")
+                kat.curve_name = val.strip()
+                current_label = None
+                current_fields = {}
+            else:
+                current_label = body
+                current_fields = {}
+            continue
+        if "=" in s:
+            k, _, v = s.partition("=")
+            k = k.strip()
+            val = _parse_hex_value(v)
+            if current_label is None:
+                kat.params[k] = val
+            else:
+                current_fields[k] = val
+    flush()
+    return kat
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +318,13 @@ def self_check(rng, curve: str = "p256", samples: int = 5) -> None:
             raise RuntimeError(
                 f"affine_add oracle self-check failed on {curve} k={k}"
             )
+
+
+if __name__ == "__main__":
+    # Smoke test: load both field-KAT files and print record counts.
+    for fn in ("nist_p256_kat.rsp", "nist_p384_kat.rsp"):
+        k = load_kat(fn)
+        print(
+            f"{fn}: curve={k.curve_name}, params={list(k.params)}, "
+            f"records={len(k.records)}, points={len(k.point_records())}"
+        )
