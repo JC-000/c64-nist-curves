@@ -22,18 +22,25 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - [ACME](https://sourceforge.net/projects/acme-crossass/) cross-assembler
 - [VICE](https://vice-emu.sourceforge.io/) emulator (for testing) with REU support
 - Python 3.10+ with [c64-test-harness](https://github.com/JC-000/c64-test-harness)
+- Python `cryptography` package (external oracle for point tests / benches)
 
 ## Build & Test
 
 ```bash
 make                              # build nist-curves.prg
-python3 tools/test_fp256.py       # 134 P-256 field arithmetic tests
-python3 tools/test_points256.py   # 8 P-256 point operation tests
-python3 tools/test_fp384.py       # 140 P-384 field arithmetic tests
-python3 tools/test_points384.py   # 8 P-384 point operation tests
-python3 tools/bench_p256.py       # P-256 primitive benchmarks
-python3 tools/bench_p384.py       # P-384 primitive benchmarks
+python3 tools/test_fp256.py       # P-256 field arithmetic (NIST KAT curve-eq + CSPRNG)
+python3 tools/test_points256.py   # P-256 point ops (add --full for 10x random samples)
+python3 tools/test_fp384.py       # P-384 field arithmetic (NIST KAT curve-eq + CSPRNG)
+python3 tools/test_points384.py   # P-384 point ops (add --full for 10x random samples)
+python3 tools/bench_p256.py       # P-256 benchmarks (oracle correctness gate)
+python3 tools/bench_p384.py       # P-384 benchmarks (oracle correctness gate)
 ```
+
+Point tests and benches validate every routine's output against an
+external oracle (`cryptography` Python package plus NIST CAVP KATs
+shipped in `tools/vectors/`). Benchmarks refuse to record cycles for
+any routine that fails the gate. See `tools/vectors/README.md` for the
+oracle invariant and refresh procedure.
 
 ## Benchmarks (NTSC, ~1.02 MHz, VIC blanked)
 

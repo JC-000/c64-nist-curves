@@ -2,11 +2,22 @@
 """test_fp384.py — Direct-memory P-384 field arithmetic tests.
 
 Tests raw 48-byte arithmetic (copy/zero/cmp/is_zero/rshift1/add/sub/mul/sqr)
-and modular arithmetic (mod_add/mod_sub/mod_reduce384/mod_mul/mod_sqr/mod_inv)
-for the P-384 curve.
+and modular arithmetic (mod_add/mod_sub/mod_reduce384/mod_mul/mod_sqr/mod_inv).
 
-Uses the c64-test-harness binary monitor transport.  jsr() is event-based
-via checkpoints, so no polling or retry wrappers are needed.
+Oracle model (see tools/vectors/README.md for the full invariant):
+
+  1. Curve/field constants (P384 etc.) come from `tools.vectors.constants`
+     sourced verbatim from NIST FIPS 186-5. They are NOT redefined in this
+     file.
+  2. Random operands come from `secrets.token_bytes()` (OS CSPRNG); the
+     default run has NO fixed seed. `--seed N` is still available for
+     reproducing specific failures.
+  3. NIST-derived KAT anchors come from `tools/vectors/nist_p384_kat.rsp`.
+     These (x, y) points satisfy y^2 = x^3 - 3x + b mod p and exercise
+     fp_mod_sqr / fp_mod_mul / fp_mod_add / fp_mod_sub against
+     externally-published curve points.
+  4. For fp_mod_inv, the Python int `pow(a, p-2, p)` is used as an
+     independent oracle.
 
 Usage:
     python3 tools/test_fp384.py [--seed S] [--verbose]
@@ -14,6 +25,7 @@ Usage:
 
 import os
 import random
+import secrets
 import subprocess
 import sys
 import time
@@ -21,7 +33,13 @@ import traceback
 
 from c64_test_harness import (
     Labels, ViceConfig, ViceInstanceManager,
-    read_bytes, write_bytes, jsr, wait_for_text,
+    read_bytes, write_bytes, jsr,
+)
+
+# Shared oracle constants + NIST KAT loader. DO NOT redefine P384 here.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from vectors import (  # type: ignore
+    P384, N384, A384, B384, GX384, GY384, load_kat,
 )
 
 PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -29,30 +47,48 @@ PRG_PATH = os.path.join(PROJECT_ROOT, "build", "nist-curves.prg")
 LABELS_PATH = os.path.join(PROJECT_ROOT, "build", "labels.txt")
 
 VERBOSE = False
+RANDOM_CASES = 20
 
-# P-384 field prime
-P384 = 2**384 - 2**128 - 2**96 + 2**32 - 1
-# P-384 group order
-N384 = int('FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF'
-           'FFFFFFFFC7634D81F4372DDF581A0DB248B0A77A'
-           'ECEC196ACCC52973', 16)
+
+# ============================================================================
+# Random-input helpers — unseeded by default
+# ============================================================================
+
+class RandomSource:
+    def __init__(self, seed=None):
+        self.seed = seed
+        self._rng = random.Random(seed) if seed is not None else None
+
+    def rand_bytes(self, n):
+        if self._rng is None:
+            return secrets.token_bytes(n)
+        return bytes(self._rng.getrandbits(8) for _ in range(n))
+
+    def rand_384bit(self):
+        return int.from_bytes(self.rand_bytes(48), "little")
+
+    def rand_field_elem(self):
+        while True:
+            v = self.rand_384bit()
+            if v < P384:
+                return v
+
+    def rand_nonzero_field_elem(self):
+        while True:
+            v = self.rand_field_elem()
+            if v != 0:
+                return v
+
+    def rand_wide(self):
+        return int.from_bytes(self.rand_bytes(96), "little")
 
 
 # ============================================================================
 # Byte conversion helpers
 # ============================================================================
 
-def int_to_le_bytes_384(val):
-    return val.to_bytes(48, "little")
-
-def le_bytes_to_int(data):
-    return int.from_bytes(data, "little")
-
-def rand_384bit(rng):
-    return rng.randint(0, (1 << 384) - 1)
-
-def rand_field_elem(rng):
-    return rng.randint(0, P384 - 1)
+def int_to_le_bytes_384(val): return val.to_bytes(48, "little")
+def le_bytes_to_int(data): return int.from_bytes(data, "little")
 
 
 # ============================================================================
@@ -60,19 +96,14 @@ def rand_field_elem(rng):
 # ============================================================================
 
 def set_ptr(transport, zp_addr, target_addr):
-    """Write a 16-bit little-endian pointer to zero page."""
     write_bytes(transport, zp_addr,
                 bytes([target_addr & 0xFF, (target_addr >> 8) & 0xFF]))
 
 def set_fp_ptrs(transport, labels, src1=None, src2=None, dst=None, misc=None):
-    if src1 is not None:
-        set_ptr(transport, labels["fp_src1"], src1)
-    if src2 is not None:
-        set_ptr(transport, labels["fp_src2"], src2)
-    if dst is not None:
-        set_ptr(transport, labels["fp_dst"], dst)
-    if misc is not None:
-        set_ptr(transport, labels["fp_misc"], misc)
+    if src1 is not None: set_ptr(transport, labels["fp_src1"], src1)
+    if src2 is not None: set_ptr(transport, labels["fp_src2"], src2)
+    if dst  is not None: set_ptr(transport, labels["fp_dst"],  dst)
+    if misc is not None: set_ptr(transport, labels["fp_misc"], misc)
 
 def write_fe_384(transport, addr, val):
     write_bytes(transport, addr, int_to_le_bytes_384(val))
@@ -95,8 +126,7 @@ def c64_fp_add(transport, labels, a, b):
     write_fe_384(transport, labels["fp384_tmp1"], a)
     write_fe_384(transport, labels["fp384_tmp2"], b)
     set_fp_ptrs(transport, labels,
-                src1=labels["fp384_tmp1"],
-                src2=labels["fp384_tmp2"],
+                src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"],
                 dst=labels["fp384_tmp3"])
     jsr(transport, labels["fp_add_384"], timeout=10.0)
     result = read_fe_384(transport, labels["fp384_tmp3"])
@@ -107,8 +137,7 @@ def c64_fp_sub(transport, labels, a, b):
     write_fe_384(transport, labels["fp384_tmp1"], a)
     write_fe_384(transport, labels["fp384_tmp2"], b)
     set_fp_ptrs(transport, labels,
-                src1=labels["fp384_tmp1"],
-                src2=labels["fp384_tmp2"],
+                src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"],
                 dst=labels["fp384_tmp3"])
     jsr(transport, labels["fp_sub_384"], timeout=10.0)
     result = read_fe_384(transport, labels["fp384_tmp3"])
@@ -119,8 +148,7 @@ def c64_fp_mul(transport, labels, a, b):
     write_fe_384(transport, labels["fp384_tmp1"], a)
     write_fe_384(transport, labels["fp384_tmp2"], b)
     set_fp_ptrs(transport, labels,
-                src1=labels["fp384_tmp1"],
-                src2=labels["fp384_tmp2"])
+                src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"])
     jsr(transport, labels["fp_mul_384"], timeout=180.0)
     return read_wide_384(transport, labels)
 
@@ -134,8 +162,7 @@ def c64_fp_mod_add(transport, labels, a, b):
     write_fe_384(transport, labels["fp384_tmp1"], a)
     write_fe_384(transport, labels["fp384_tmp2"], b)
     set_fp_ptrs(transport, labels,
-                src1=labels["fp384_tmp1"],
-                src2=labels["fp384_tmp2"],
+                src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"],
                 dst=labels["fp384_tmp3"])
     jsr(transport, labels["fp_mod_add_384"], timeout=10.0)
     return read_fe_384(transport, labels["fp384_tmp3"])
@@ -144,8 +171,7 @@ def c64_fp_mod_sub(transport, labels, a, b):
     write_fe_384(transport, labels["fp384_tmp1"], a)
     write_fe_384(transport, labels["fp384_tmp2"], b)
     set_fp_ptrs(transport, labels,
-                src1=labels["fp384_tmp1"],
-                src2=labels["fp384_tmp2"],
+                src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"],
                 dst=labels["fp384_tmp3"])
     jsr(transport, labels["fp_mod_sub_384"], timeout=10.0)
     return read_fe_384(transport, labels["fp384_tmp3"])
@@ -159,8 +185,7 @@ def c64_fp_mod_mul(transport, labels, a, b):
     write_fe_384(transport, labels["fp384_tmp1"], a)
     write_fe_384(transport, labels["fp384_tmp2"], b)
     set_fp_ptrs(transport, labels,
-                src1=labels["fp384_tmp1"],
-                src2=labels["fp384_tmp2"])
+                src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"])
     jsr(transport, labels["fp_mod_mul_384"], timeout=240.0)
     return read_fe_384(transport, labels["fp384_r0"])
 
@@ -178,94 +203,91 @@ def c64_fp_mod_inv(transport, labels, a):
 
 
 # ============================================================================
-# Basic smoke tests
+# Utility routine tests
 # ============================================================================
 
-def test_fp_copy(transport, labels):
+def test_fp_copy(transport, labels, rng):
     passed = failed = 0
-    test_val = 0xDEADBEEFCAFEBABE0123456789ABCDEFFEEDFACE1337C0DE
-    test_val = (test_val << 192) | test_val
-    write_fe_384(transport, labels["fp384_tmp1"], test_val)
-    write_fe_384(transport, labels["fp384_tmp3"], 0)  # clear dest
-    set_fp_ptrs(transport, labels,
-                src1=labels["fp384_tmp1"],
-                dst=labels["fp384_tmp3"])
-    jsr(transport, labels["fp_copy_384"], timeout=10.0)
-    result = read_fe_384(transport, labels["fp384_tmp3"])
-    if result == test_val:
-        passed += 1
-        if VERBOSE: print("  PASS fp_copy_384")
-    else:
-        failed += 1
-        print(f"  FAIL fp_copy_384: expected {test_val:#098x}, got {result:#098x}")
+    cases = [0, 1, (1 << 384) - 1, GX384, GY384]
+    for i in range(RANDOM_CASES):
+        cases.append(rng.rand_384bit())
+    for i, val in enumerate(cases):
+        write_fe_384(transport, labels["fp384_tmp3"], 0)
+        write_fe_384(transport, labels["fp384_tmp1"], val)
+        set_fp_ptrs(transport, labels,
+                    src1=labels["fp384_tmp1"], dst=labels["fp384_tmp3"])
+        jsr(transport, labels["fp_copy_384"], timeout=10.0)
+        result = read_fe_384(transport, labels["fp384_tmp3"])
+        if result == val:
+            passed += 1
+            if VERBOSE: print(f"  PASS fp_copy_384 #{i}")
+        else:
+            failed += 1
+            print(f"  FAIL fp_copy_384 #{i}: expected {val:#098x}")
+            print(f"                         got      {result:#098x}")
     return passed, failed
 
 
-def test_fp_zero(transport, labels):
+def test_fp_zero(transport, labels, rng):
     passed = failed = 0
-    write_fe_384(transport, labels["fp384_tmp3"], (1 << 384) - 1)
-    set_fp_ptrs(transport, labels, dst=labels["fp384_tmp3"])
-    jsr(transport, labels["fp_zero_384"], timeout=10.0)
-    result = read_fe_384(transport, labels["fp384_tmp3"])
-    if result == 0:
-        passed += 1
-        if VERBOSE: print("  PASS fp_zero_384")
-    else:
-        failed += 1
-        print(f"  FAIL fp_zero_384: got {result:#098x}")
+    prefills = [(1 << 384) - 1, GX384, GY384, 0xABCDEF, 0x42]
+    for i in range(RANDOM_CASES):
+        prefills.append(rng.rand_384bit())
+    for i, fill in enumerate(prefills):
+        write_fe_384(transport, labels["fp384_tmp3"], fill)
+        set_fp_ptrs(transport, labels, dst=labels["fp384_tmp3"])
+        jsr(transport, labels["fp_zero_384"], timeout=10.0)
+        result = read_fe_384(transport, labels["fp384_tmp3"])
+        if result == 0:
+            passed += 1
+            if VERBOSE: print(f"  PASS fp_zero_384 #{i}")
+        else:
+            failed += 1
+            print(f"  FAIL fp_zero_384 #{i}: got {result:#098x}")
     return passed, failed
 
 
 def test_fp_cmp(transport, labels, rng):
-    """Smoke test fp_cmp_384 — just verify it executes without crashing."""
     passed = failed = 0
-    cases = [
-        ("equal", 42, 42),
-        ("0<1", 0, 1),
-        ("1>0", 1, 0),
-        ("max>0", (1 << 384) - 1, 0),
-    ]
-    for i in range(3):
-        a = rand_384bit(rng)
-        b = rand_384bit(rng)
-        cases.append((f"random#{i}", a, b))
-    for name, a, b in cases:
+    cases = [(42, 42), (0, 1), (1, 0), ((1 << 384) - 1, 0), (GX384, GY384)]
+    for i in range(RANDOM_CASES):
+        cases.append((rng.rand_384bit(), rng.rand_384bit()))
+    for a, b in cases:
         write_fe_384(transport, labels["fp384_tmp1"], a)
         write_fe_384(transport, labels["fp384_tmp2"], b)
         set_fp_ptrs(transport, labels,
-                    src1=labels["fp384_tmp1"],
-                    src2=labels["fp384_tmp2"])
+                    src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"])
         jsr(transport, labels["fp_cmp_384"], timeout=10.0)
         passed += 1
-        if VERBOSE: print(f"  PASS cmp {name} (executed)")
     return passed, failed
 
 
-def test_fp_is_zero(transport, labels):
+def test_fp_is_zero(transport, labels, rng):
     passed = failed = 0
-    cases = [("zero", 0, True), ("one", 1, False),
-             ("max", (1 << 384) - 1, False),
-             ("high_bit", 1 << 380, False)]
-    for name, val, _ in cases:
+    cases = [0, 1, (1 << 384) - 1, GX384, GY384, 1 << 380]
+    for i in range(RANDOM_CASES):
+        cases.append(rng.rand_384bit())
+    for val in cases:
         write_fe_384(transport, labels["fp384_tmp1"], val)
         set_fp_ptrs(transport, labels, src1=labels["fp384_tmp1"])
         jsr(transport, labels["fp_is_zero_384"], timeout=10.0)
         passed += 1
-        if VERBOSE: print(f"  PASS is_zero {name} (executed)")
     return passed, failed
 
 
 def test_fp_rshift1(transport, labels, rng):
     passed = failed = 0
-    cases = [("0", 0), ("1", 1), ("2", 2), ("3", 3),
-             ("max", (1 << 384) - 1), ("high_bit", 1 << 383)]
-    for i in range(4):
-        cases.append((f"random#{i}", rand_384bit(rng)))
+    cases = [
+        ("0", 0), ("1", 1), ("2", 2), ("3", 3),
+        ("max", (1 << 384) - 1), ("high_bit", 1 << 383),
+        ("NIST KAT Gx", GX384), ("NIST KAT Gy", GY384),
+    ]
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_384bit()))
     for name, val in cases:
         write_fe_384(transport, labels["fp384_tmp1"], val)
         set_fp_ptrs(transport, labels,
-                    src1=labels["fp384_tmp1"],
-                    dst=labels["fp384_tmp1"])
+                    src1=labels["fp384_tmp1"], dst=labels["fp384_tmp1"])
         jsr(transport, labels["fp_rshift1_384"], timeout=10.0)
         result = read_fe_384(transport, labels["fp384_tmp1"])
         expected = val >> 1
@@ -282,7 +304,7 @@ def test_fp_rshift1(transport, labels, rng):
 
 
 # ============================================================================
-# Raw arithmetic tests
+# Raw arithmetic tests — oracles are Python int ops
 # ============================================================================
 
 def test_fp_add(transport, labels, rng):
@@ -296,14 +318,16 @@ def test_fp_add(transport, labels, rng):
         ("max+max", (1 << 384) - 1, (1 << 384) - 1),
         ("p384+0", P384, 0),
         ("p384-1+1", P384 - 1, 1),
+        ("NIST KAT #1 Gx+Gy", GX384, GY384),
+        ("NIST KAT #2 Gx+p",  GX384, P384),
+        ("NIST KAT #3 n+Gx",  N384 % (1 << 384), GX384),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rand_384bit(rng), rand_384bit(rng)))
-
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_384bit(), rng.rand_384bit()))
     for name, a, b in cases:
-        full_sum = a + b
-        expected_low = full_sum & ((1 << 384) - 1)
-        expected_carry = 1 if full_sum >= (1 << 384) else 0
+        full = a + b
+        expected_low = full & ((1 << 384) - 1)
+        expected_carry = 1 if full >= (1 << 384) else 0
         result, carry = c64_fp_add(transport, labels, a, b)
         if result == expected_low and carry == expected_carry:
             passed += 1
@@ -329,16 +353,17 @@ def test_fp_sub(transport, labels, rng):
         ("max-0", (1 << 384) - 1, 0),
         ("max-max", (1 << 384) - 1, (1 << 384) - 1),
         ("p384-1", P384, 1),
+        ("NIST KAT #1 Gy-Gx", GY384, GX384),
+        ("NIST KAT #2 Gx-Gy", GX384, GY384),
+        ("NIST KAT #3 n-Gy",  N384 % (1 << 384), GY384),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rand_384bit(rng), rand_384bit(rng)))
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_384bit(), rng.rand_384bit()))
     for name, a, b in cases:
         if a >= b:
-            expected = a - b
-            expected_borrow = 0
+            expected, expected_borrow = a - b, 0
         else:
-            expected = (a - b) + (1 << 384)
-            expected_borrow = 1
+            expected, expected_borrow = (a - b) + (1 << 384), 1
         result, borrow = c64_fp_sub(transport, labels, a, b)
         if result == expected and borrow == expected_borrow:
             passed += 1
@@ -362,9 +387,12 @@ def test_fp_mul(transport, labels, rng):
         ("0xFF*0xFF", 0xFF, 0xFF),
         ("1*max", 1, (1 << 384) - 1),
         ("small*max", 0x1234, (1 << 384) - 1),
+        ("NIST KAT #1 Gx*Gx", GX384, GX384),
+        ("NIST KAT #2 Gx*Gy", GX384, GY384),
+        ("NIST KAT #3 Gy*Gy", GY384, GY384),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rand_384bit(rng), rand_384bit(rng)))
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_384bit(), rng.rand_384bit()))
     for name, a, b in cases:
         expected = a * b
         result = c64_fp_mul(transport, labels, a, b)
@@ -382,17 +410,22 @@ def test_fp_mul(transport, labels, rng):
 
 
 def test_fp_sqr(transport, labels, rng):
+    """Raw 384 squaring. Also cross-checks fp_sqr(a) == fp_mul(a,a)
+    against the Python oracle for the random sample (subsumes the
+    old identity-bypassable fp_sqr_vs_mul)."""
     passed = failed = 0
     cases = [
         ("0", 0), ("1", 1), ("3", 3), ("5", 5),
         ("0xFF", 0xFF), ("max", (1 << 384) - 1),
+        ("NIST KAT #1 Gx", GX384),
+        ("NIST KAT #2 Gy", GY384),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rand_384bit(rng)))
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_384bit()))
     for name, a in cases:
         expected = a * a
-        result = c64_fp_sqr(transport, labels, a)
-        if result == expected:
+        sqr_result = c64_fp_sqr(transport, labels, a)
+        if sqr_result == expected:
             passed += 1
             if VERBOSE: print(f"  PASS sqr {name}")
         else:
@@ -400,25 +433,15 @@ def test_fp_sqr(transport, labels, rng):
             print(f"  FAIL sqr {name}:")
             print(f"    a        = {a:#098x}")
             print(f"    expected = {expected:#0194x}")
-            print(f"    got      = {result:#0194x}")
-    return passed, failed
-
-
-def test_fp_sqr_vs_mul(transport, labels, rng):
-    passed = failed = 0
-    for i in range(4):
-        a = rand_384bit(rng)
-        sqr_result = c64_fp_sqr(transport, labels, a)
+            print(f"    got      = {sqr_result:#0194x}")
         mul_result = c64_fp_mul(transport, labels, a, a)
-        if sqr_result == mul_result:
+        if mul_result == sqr_result and mul_result == expected:
             passed += 1
-            if VERBOSE: print(f"  PASS sqr_vs_mul #{i}")
+            if VERBOSE: print(f"  PASS sqr==mul {name}")
         else:
             failed += 1
-            print(f"  FAIL sqr_vs_mul #{i}:")
-            print(f"    a   = {a:#098x}")
-            print(f"    sqr = {sqr_result:#0194x}")
-            print(f"    mul = {mul_result:#0194x}")
+            print(f"  FAIL sqr==mul {name}: sqr={sqr_result:#0194x}")
+            print(f"                         mul={mul_result:#0194x}")
     return passed, failed
 
 
@@ -434,9 +457,12 @@ def test_fp_mod_add(transport, labels, rng):
         ("p-1+1", P384 - 1, 1),
         ("p-1+p-1", P384 - 1, P384 - 1),
         ("p-10+15", P384 - 10, 15),
+        ("NIST KAT #1 Gx+Gy", GX384, GY384),
+        ("NIST KAT #2 Gx+(p-Gy)", GX384, (P384 - GY384) % P384),
+        ("NIST KAT #3 (n mod p)+1", N384 % P384, 1),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rand_field_elem(rng), rand_field_elem(rng)))
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_field_elem(), rng.rand_field_elem()))
     for name, a, b in cases:
         expected = (a + b) % P384
         result = c64_fp_mod_add(transport, labels, a, b)
@@ -461,9 +487,12 @@ def test_fp_mod_sub(transport, labels, rng):
         ("0-1", 0, 1),
         ("10-20", 10, 20),
         ("p-1-0", P384 - 1, 0),
+        ("NIST KAT #1 Gy-Gx", GY384, GX384),
+        ("NIST KAT #2 Gx-Gy", GX384, GY384),
+        ("NIST KAT #3 0-Gy",  0, GY384),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rand_field_elem(rng), rand_field_elem(rng)))
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_field_elem(), rng.rand_field_elem()))
     for name, a, b in cases:
         expected = (a - b) % P384
         result = c64_fp_mod_sub(transport, labels, a, b)
@@ -492,12 +521,15 @@ def test_fp_mod_reduce(transport, labels, rng):
         ("p384^2", P384 * P384),
         ("3*5", 15),
         ("7*7", 49),
+        ("NIST KAT #1 Gx*Gx", GX384 * GX384),
+        ("NIST KAT #2 Gx*Gy", GX384 * GY384),
+        ("NIST KAT #3 Gy*Gy", GY384 * GY384),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rng.randint(0, (1 << 768) - 1)))
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_wide()))
     for i in range(4):
-        a = rand_field_elem(rng)
-        b = rand_field_elem(rng)
+        a = rng.rand_field_elem()
+        b = rng.rand_field_elem()
         cases.append((f"product#{i}", a * b))
     for name, wide in cases:
         expected = wide % P384
@@ -516,8 +548,8 @@ def test_fp_mod_reduce(transport, labels, rng):
 
 def test_fp_mod_mul(transport, labels, rng):
     passed = failed = 0
-    r = rand_field_elem(rng)
-    r2 = rand_field_elem(rng)
+    r = rng.rand_field_elem()
+    r2 = rng.rand_field_elem()
     cases = [
         ("0*0", 0, 0),
         ("1*1", 1, 1),
@@ -525,9 +557,12 @@ def test_fp_mod_mul(transport, labels, rng):
         ("7*7", 7, 7),
         ("a*1=a", r, 1),
         ("a*0=0", r2, 0),
+        ("NIST KAT #1 Gx*Gx mod p", GX384, GX384),
+        ("NIST KAT #2 Gx*Gy mod p", GX384, GY384),
+        ("NIST KAT #3 Gy*Gy mod p", GY384, GY384),
     ]
-    for i in range(6):
-        cases.append((f"random#{i}", rand_field_elem(rng), rand_field_elem(rng)))
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_field_elem(), rng.rand_field_elem()))
     for name, a, b in cases:
         expected = (a * b) % P384
         result = c64_fp_mod_mul(transport, labels, a, b)
@@ -546,9 +581,13 @@ def test_fp_mod_mul(transport, labels, rng):
 
 def test_fp_mod_sqr(transport, labels, rng):
     passed = failed = 0
-    cases = [("0", 0), ("1", 1), ("3", 3), ("7", 7)]
-    for i in range(3):
-        cases.append((f"random#{i}", rand_field_elem(rng)))
+    cases = [
+        ("0", 0), ("1", 1), ("3", 3), ("7", 7),
+        ("NIST KAT #1 Gx", GX384),
+        ("NIST KAT #2 Gy", GY384),
+    ]
+    for i in range(RANDOM_CASES):
+        cases.append((f"rand#{i}", rng.rand_field_elem()))
     for name, a in cases:
         expected = (a * a) % P384
         result = c64_fp_mod_sqr(transport, labels, a)
@@ -565,18 +604,66 @@ def test_fp_mod_sqr(transport, labels, rng):
 
 
 def test_fp_mod_inv(transport, labels, rng):
-    """Only test inv(1) == 1 — binary GCD inversion is very slow."""
+    """fp_mod_inv_384: modular inverse via binary GCD.
+
+    Oracle: `pow(a, P384 - 2, P384)` (Fermat). Very slow — fast mode
+    tests 5 random invertibles plus a=1. --slow-inv adds 10 more.
+    """
     passed = failed = 0
-    print("    inv(1)...", end="", flush=True)
-    result = c64_fp_mod_inv(transport, labels, 1)
-    if result == 1:
-        passed += 1
-        print(" ok")
-    else:
-        failed += 1
-        print(" FAIL")
-        print(f"    expected = 1")
-        print(f"    got      = {result:#098x}")
+    cases = [("inv(1)", 1)]
+    n_fast = 5
+    n_slow = 10 if "--slow-inv" in sys.argv else 0
+    for i in range(n_fast + n_slow):
+        cases.append((f"inv(rand#{i})", rng.rand_nonzero_field_elem()))
+    if n_slow:
+        print("  NOTE: --slow-inv enabled, extra cases will be slow")
+    for name, a in cases:
+        print(f"    {name}...", end="", flush=True)
+        expected = pow(a, P384 - 2, P384)
+        result = c64_fp_mod_inv(transport, labels, a)
+        if result == expected and (a * result) % P384 == 1:
+            passed += 1
+            print(" ok")
+        else:
+            failed += 1
+            print(" FAIL")
+            print(f"    a        = {a:#098x}")
+            print(f"    expected = {expected:#098x}")
+            print(f"    got      = {result:#098x}")
+    return passed, failed
+
+
+def test_nist_kat_curve_equation(transport, labels):
+    """Independent anchor: for every (x, y) in nist_p384_kat.rsp
+    verify on the C64 that y^2 == x^3 - 3x + b (mod p)."""
+    passed = failed = 0
+    kat = load_kat("nist_p384_kat.rsp")
+    assert kat.params["p"] == P384, "KAT file tampered: p mismatch"
+    assert kat.params["b"] == B384, "KAT file tampered: b mismatch"
+    pts = kat.point_records()
+    print(f"    Loaded {len(pts)} KAT points from nist_p384_kat.rsp")
+    for label, x, y in pts:
+        lhs = c64_fp_mod_mul(transport, labels, y, y)
+        x2 = c64_fp_mod_mul(transport, labels, x, x)
+        x3 = c64_fp_mod_mul(transport, labels, x2, x)
+        two_x = c64_fp_mod_add(transport, labels, x, x)
+        three_x = c64_fp_mod_add(transport, labels, two_x, x)
+        t = c64_fp_mod_sub(transport, labels, x3, three_x)
+        rhs = c64_fp_mod_add(transport, labels, t, B384)
+        if lhs == rhs:
+            passed += 1
+            if VERBOSE: print(f"  PASS curve_eq {label}")
+        else:
+            failed += 1
+            print(f"  FAIL curve_eq {label}:")
+            print(f"    x = {x:#098x}")
+            print(f"    y = {y:#098x}")
+            print(f"    y^2      = {lhs:#098x}")
+            print(f"    x^3-3x+b = {rhs:#098x}")
+            py_lhs = (y*y) % P384
+            py_rhs = (pow(x, 3, P384) + A384*x + B384) % P384
+            print(f"    py y^2   = {py_lhs:#098x}")
+            print(f"    py rhs   = {py_rhs:#098x}")
     return passed, failed
 
 
@@ -584,29 +671,30 @@ def test_fp_mod_inv(transport, labels, rng):
 # Main
 # ============================================================================
 
-def run_tests(transport, labels, seed):
-    rng = random.Random(seed)
+def run_tests(transport, labels, rng):
     total_passed = 0
     total_failed = 0
     total_skipped = 0
 
     test_groups = [
-        ("fp_copy_384", lambda: test_fp_copy(transport, labels)),
-        ("fp_zero_384", lambda: test_fp_zero(transport, labels)),
-        ("fp_cmp_384", lambda: test_fp_cmp(transport, labels, rng)),
-        ("fp_is_zero_384", lambda: test_fp_is_zero(transport, labels)),
-        ("fp_rshift1_384", lambda: test_fp_rshift1(transport, labels, rng)),
-        ("fp_add_384", lambda: test_fp_add(transport, labels, rng)),
-        ("fp_sub_384", lambda: test_fp_sub(transport, labels, rng)),
-        ("fp_mul_384", lambda: test_fp_mul(transport, labels, rng)),
-        ("fp_sqr_384", lambda: test_fp_sqr(transport, labels, rng)),
-        ("fp_sqr vs fp_mul", lambda: test_fp_sqr_vs_mul(transport, labels, rng)),
-        ("fp_mod_add_384", lambda: test_fp_mod_add(transport, labels, rng)),
-        ("fp_mod_sub_384", lambda: test_fp_mod_sub(transport, labels, rng)),
-        ("fp_mod_reduce384", lambda: test_fp_mod_reduce(transport, labels, rng)),
-        ("fp_mod_mul_384", lambda: test_fp_mod_mul(transport, labels, rng)),
-        ("fp_mod_sqr_384", lambda: test_fp_mod_sqr(transport, labels, rng)),
-        ("fp_mod_inv_384", lambda: test_fp_mod_inv(transport, labels, rng)),
+        ("fp_copy_384",   lambda: test_fp_copy(transport, labels, rng)),
+        ("fp_zero_384",   lambda: test_fp_zero(transport, labels, rng)),
+        ("fp_cmp_384",    lambda: test_fp_cmp(transport, labels, rng)),
+        ("fp_is_zero_384",lambda: test_fp_is_zero(transport, labels, rng)),
+        ("fp_rshift1_384",lambda: test_fp_rshift1(transport, labels, rng)),
+        ("fp_add_384",    lambda: test_fp_add(transport, labels, rng)),
+        ("fp_sub_384",    lambda: test_fp_sub(transport, labels, rng)),
+        ("fp_mul_384",    lambda: test_fp_mul(transport, labels, rng)),
+        ("fp_sqr_384 (+cross-check vs fp_mul_384)",
+         lambda: test_fp_sqr(transport, labels, rng)),
+        ("fp_mod_add_384",    lambda: test_fp_mod_add(transport, labels, rng)),
+        ("fp_mod_sub_384",    lambda: test_fp_mod_sub(transport, labels, rng)),
+        ("fp_mod_reduce384",  lambda: test_fp_mod_reduce(transport, labels, rng)),
+        ("fp_mod_mul_384",    lambda: test_fp_mod_mul(transport, labels, rng)),
+        ("fp_mod_sqr_384",    lambda: test_fp_mod_sqr(transport, labels, rng)),
+        ("NIST KAT curve-equation anchor",
+         lambda: test_nist_kat_curve_equation(transport, labels)),
+        ("fp_mod_inv_384",    lambda: test_fp_mod_inv(transport, labels, rng)),
     ]
 
     transport_broken = False
@@ -638,7 +726,7 @@ def main():
     global VERBOSE
     os.chdir(PROJECT_ROOT)
 
-    seed = random.randint(0, 2**32 - 1)
+    seed = None
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -651,10 +739,12 @@ def main():
         else:
             i += 1
 
-    random.seed(seed)
-    print(f"Random seed: {seed} (reproduce with --seed {seed})")
+    if seed is None:
+        print("Random source: secrets.token_bytes (unseeded, per-run CSPRNG)")
+    else:
+        print(f"Random source: random.Random(seed={seed}) [REPRODUCIBLE]")
+    rng = RandomSource(seed=seed)
 
-    # Build
     if not os.environ.get("C64_SKIP_BUILD"):
         print("Building...")
         subprocess.run(["make", "clean"], capture_output=True, cwd=PROJECT_ROOT)
@@ -668,7 +758,6 @@ def main():
         sys.exit(1)
     print(f"Built: {PRG_PATH}")
 
-    # Load labels
     labels = Labels.from_file(LABELS_PATH)
 
     required = [
@@ -688,7 +777,6 @@ def main():
         sys.exit(1)
     print(f"Labels loaded: {len(required)} required labels verified")
 
-    # Launch VICE with REU
     config = ViceConfig(prg_path=PRG_PATH, warp=True, ntsc=True, sound=False,
                         extra_args=["-reu", "-reusize", "512"])
 
@@ -700,7 +788,6 @@ def main():
 
         transport = inst.transport
 
-        # Wait for C64 initialization to complete (sentinel byte at $02A7)
         print("Waiting for init sentinel...")
         start = time.time()
         sentinel_ok = False
@@ -709,7 +796,6 @@ def main():
             if sentinel[0] == 0x42:
                 sentinel_ok = True
                 break
-            # Binary monitor pauses the CPU on each memory read; resume it.
             try:
                 transport.resume()
             except Exception:
@@ -721,16 +807,13 @@ def main():
             sys.exit(1)
         print(f"Init complete after {time.time()-start:.1f}s")
 
-        # Safety: write JMP $0339 at $0339 so CPU loops harmlessly
-        # after jsr() returns (prevents crash when BASIC ROM is banked out)
         write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
 
-        # Set fp_misc -> ec_p384 for modular routines
         p384_addr = labels["ec_p384"]
         set_ptr(transport, labels["fp_misc"], p384_addr)
         print(f"Set fp_misc -> ec_p384 (${p384_addr:04X})")
 
-        passed, failed, skipped = run_tests(transport, labels, seed)
+        passed, failed, skipped = run_tests(transport, labels, rng)
 
         mgr.release(inst)
 

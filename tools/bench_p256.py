@@ -12,6 +12,7 @@ Usage:
 import os
 import subprocess
 import sys
+import time
 
 from c64_test_harness import (
     Labels, ViceConfig, ViceInstanceManager,
@@ -21,6 +22,14 @@ from c64_test_harness import (
 PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 PRG_PATH = os.path.join(PROJECT_ROOT, "build", "nist-curves.prg")
 LABELS_PATH = os.path.join(PROJECT_ROOT, "build", "labels.txt")
+
+# Oracle imports: bench refuses to record cycles for a routine whose
+# single-call output does not match the external reference.
+sys.path.insert(0, PROJECT_ROOT)
+from tools.vectors import (  # noqa: E402
+    P256_P, affine_add, affine_double,
+    jacobian_to_affine, scalar_mul_oracle,
+)
 
 # NTSC C64: ~1.022727 MHz, 17045 cycles per jiffy (1/60 sec).
 NTSC_CYCLES_PER_JIFFY = 17045
@@ -96,15 +105,34 @@ def read_bench_ticks(transport, labels):
 
 
 def bench_routine(transport, labels, routine_label, loops, setup_fn=None,
-                  timeout=60.0):
+                  verify_fn=None, timeout=60.0):
     """Benchmark a single routine `loops` times.
 
     Returns (jiffies, cycles_per_call, ms_per_call).
     `setup_fn(transport, labels)` runs once before each timed batch to
     re-prime inputs that may have been mutated by the previous call.
+    `verify_fn(transport, labels)`, if provided, is called after a
+    single untimed invocation of the routine and must return True when
+    the routine's output matches the external oracle. Any failure
+    raises RuntimeError -- bench refuses to record cycles for an
+    unverified routine.
     """
     routine_addr = labels[routine_label]
     trampoline = build_loop_trampoline(routine_addr, loops)
+
+    # --- correctness gate -------------------------------------------------
+    # Re-prime inputs, call the routine once directly (not in the loop),
+    # and compare against the oracle. Only if this passes do we proceed
+    # to the timed loop.
+    if verify_fn is not None:
+        if setup_fn is not None:
+            setup_fn(transport, labels)
+        jsr(transport, routine_addr, timeout=max(timeout, 10.0))
+        if not verify_fn(transport, labels):
+            raise RuntimeError(
+                f"correctness gate FAILED for {routine_label}: "
+                f"output does not match oracle"
+            )
 
     if setup_fn is not None:
         setup_fn(transport, labels)
@@ -180,6 +208,96 @@ SCALAR_MUL_K = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F672
 SCALAR_MUL_BUF = 0x033C
 
 
+# ----------------------------------------------------------------------------
+# Correctness verifiers (oracle gates)
+# ----------------------------------------------------------------------------
+
+def _read_le(transport, addr, length):
+    return int.from_bytes(read_bytes(transport, addr, length), "little")
+
+
+def verify_fp_add(transport, labels):
+    # fp_add writes 32 bytes; carry is dropped (caller's responsibility).
+    got = _read_le(transport, labels["fp_tmp3"], 32)
+    return got == ((OPERAND_A + OPERAND_B) & ((1 << 256) - 1))
+
+
+def verify_fp_sub(transport, labels):
+    got = _read_le(transport, labels["fp_tmp3"], 32)
+    return got == ((OPERAND_A - OPERAND_B) & ((1 << 256) - 1))
+
+
+def verify_fp_mul(transport, labels):
+    # fp_mul writes the 64-byte product to fp_wide, NOT fp_dst.
+    got = _read_le(transport, labels["fp_wide"], 64)
+    return got == OPERAND_A * OPERAND_B
+
+
+def verify_fp_sqr(transport, labels):
+    got = _read_le(transport, labels["fp_wide"], 64)
+    return got == OPERAND_A * OPERAND_A
+
+
+def verify_fp_mod_add(transport, labels):
+    got = _read_le(transport, labels["fp_tmp3"], 32)
+    return got == (OPERAND_A + OPERAND_B) % P256
+
+
+def verify_fp_mod_sub(transport, labels):
+    got = _read_le(transport, labels["fp_tmp3"], 32)
+    return got == (OPERAND_A - OPERAND_B) % P256
+
+
+def verify_fp_mod_reduce(transport, labels):
+    # fp_mod_reduce256 reads fp_wide; writes fp_r0 (32 bytes).
+    got = _read_le(transport, labels["fp_r0"], 32)
+    wide = (OPERAND_A * OPERAND_B) & ((1 << 512) - 1)
+    return got == wide % P256
+
+
+def verify_fp_mod_mul(transport, labels):
+    # fp_mod_mul writes fp_r0 (via fp_mod_reduce256), NOT fp_dst.
+    got = _read_le(transport, labels["fp_r0"], 32)
+    return got == (OPERAND_A * OPERAND_B) % P256
+
+
+def verify_fp_mod_sqr(transport, labels):
+    got = _read_le(transport, labels["fp_r0"], 32)
+    return got == (OPERAND_A * OPERAND_A) % P256
+
+
+def verify_fp_mod_inv(transport, labels):
+    got = _read_le(transport, labels["fp_r0"], 32)
+    return got == pow(OPERAND_A, -1, P256)
+
+
+def verify_point_double(transport, labels):
+    jx = _read_le(transport, labels["ec_p3"], 32)
+    jy = _read_le(transport, labels["ec_p3"] + 32, 32)
+    jz = _read_le(transport, labels["ec_p3"] + 64, 32)
+    ax, ay = jacobian_to_affine(jx, jy, jz, "p256")
+    expected = affine_double((GX, GY), "p256")
+    return (ax, ay) == expected
+
+
+def verify_point_add(transport, labels):
+    jx = _read_le(transport, labels["ec_p3"], 32)
+    jy = _read_le(transport, labels["ec_p3"] + 32, 32)
+    jz = _read_le(transport, labels["ec_p3"] + 64, 32)
+    ax, ay = jacobian_to_affine(jx, jy, jz, "p256")
+    expected = affine_add((GX, GY), (G2X, G2Y), "p256")
+    return (ax, ay) == expected
+
+
+def verify_scalar_mul(transport, labels):
+    jx = _read_le(transport, labels["ec_p3"], 32)
+    jy = _read_le(transport, labels["ec_p3"] + 32, 32)
+    jz = _read_le(transport, labels["ec_p3"] + 64, 32)
+    ax, ay = jacobian_to_affine(jx, jy, jz, "p256")
+    expected = scalar_mul_oracle(SCALAR_MUL_K, "p256")
+    return (ax, ay) == expected
+
+
 def setup_scalar_mul(transport, labels):
     """Write a representative 256-bit scalar (BE) and point ec_scalar_ptr at it.
 
@@ -196,21 +314,21 @@ def setup_scalar_mul(transport, labels):
 # Benchmark plan
 # ----------------------------------------------------------------------------
 
-# (routine_label, loops, setup_fn, timeout_seconds)
+# (routine_label, loops, setup_fn, verify_fn, timeout_seconds)
 BENCH_PLAN = [
-    ("fp_add",           100, setup_field_ab,      30.0),
-    ("fp_sub",           100, setup_field_ab,      30.0),
-    ("fp_mul",            20, setup_field_ab,     120.0),
-    ("fp_sqr",            20, setup_field_a,      120.0),
-    ("fp_mod_add",       100, setup_field_ab,      30.0),
-    ("fp_mod_sub",       100, setup_field_ab,      30.0),
-    ("fp_mod_reduce256",  20, setup_reduce,        60.0),
-    ("fp_mod_mul",        10, setup_field_ab,     120.0),
-    ("fp_mod_sqr",        10, setup_field_a,      120.0),
-    ("fp_mod_inv",         1, setup_field_a,      600.0),
-    ("ec_point_double",    1, setup_point_double, 600.0),
-    ("ec_point_add",       1, setup_point_add,    900.0),
-    ("ec_scalar_mul",      1, setup_scalar_mul,  3600.0),
+    ("fp_add",           100, setup_field_ab,     verify_fp_add,         30.0),
+    ("fp_sub",           100, setup_field_ab,     verify_fp_sub,         30.0),
+    ("fp_mul",            20, setup_field_ab,     verify_fp_mul,        120.0),
+    ("fp_sqr",            20, setup_field_a,      verify_fp_sqr,        120.0),
+    ("fp_mod_add",       100, setup_field_ab,     verify_fp_mod_add,     30.0),
+    ("fp_mod_sub",       100, setup_field_ab,     verify_fp_mod_sub,     30.0),
+    ("fp_mod_reduce256",  20, setup_reduce,       verify_fp_mod_reduce,  60.0),
+    ("fp_mod_mul",        10, setup_field_ab,     verify_fp_mod_mul,    120.0),
+    ("fp_mod_sqr",        10, setup_field_a,      verify_fp_mod_sqr,    120.0),
+    ("fp_mod_inv",         1, setup_field_a,      verify_fp_mod_inv,    600.0),
+    ("ec_point_double",    1, setup_point_double, verify_point_double,  600.0),
+    ("ec_point_add",       1, setup_point_add,    verify_point_add,     900.0),
+    ("ec_scalar_mul",      1, setup_scalar_mul,   verify_scalar_mul,   3600.0),
 ]
 
 
@@ -243,7 +361,7 @@ def main():
         "ec_scalar_ptr",
     ]
     # Routines to be benchmarked must exist.
-    required += [name for (name, _l, _s, _t) in BENCH_PLAN]
+    required += [name for (name, _l, _s, _v, _t) in BENCH_PLAN]
 
     missing = [n for n in required if labels.address(n) is None]
     if missing:
@@ -283,13 +401,21 @@ def main():
 
         # Run benchmarks
         print()
-        print("Running benchmarks...")
+        print("Running benchmarks (oracle correctness gate enabled)...")
         results = []
-        for name, loops, setup_fn, timeout in BENCH_PLAN:
-            print(f"  {name} (x{loops})...", flush=True)
-            jiffies, cycles, ms = bench_routine(
-                transport, labels, name, loops, setup_fn=setup_fn,
-                timeout=timeout)
+        unverified = []
+        for name, loops, setup_fn, verify_fn, timeout in BENCH_PLAN:
+            print(f"  {name} (x{loops})...", flush=True, end=" ")
+            try:
+                jiffies, cycles, ms = bench_routine(
+                    transport, labels, name, loops,
+                    setup_fn=setup_fn, verify_fn=verify_fn, timeout=timeout)
+            except RuntimeError as e:
+                print("UNVERIFIED")
+                print(f"    {e}")
+                unverified.append(name)
+                continue
+            print("verified OK")
             results.append((name, loops, jiffies, cycles, ms))
 
         mgr.release(inst)
@@ -309,6 +435,12 @@ def main():
     for name, loops, jiffies, cycles, ms in results:
         print(f"{name:<20} {loops:>6} {jiffies:>9} {cycles:>13} {ms:>12.3f}")
     print(bar)
+    if unverified:
+        print()
+        print(f"UNVERIFIED ROUTINES ({len(unverified)}): {', '.join(unverified)}")
+        print("These routines failed the oracle correctness gate and")
+        print("their cycle counts were NOT recorded.")
+        sys.exit(1)
     sys.exit(0)
 
 
