@@ -999,6 +999,15 @@ ec_set_modn_384:
 ec_mulp_384:
         jsr ec_set_modp_384
         jsr fp_mod_mul_384
+        jmp ec_mulp_384_copy_result
+
+; =============================================================================
+; ec_sqrp_384 - Modular square mod p (P-384), copy result to (fp_dst)
+; =============================================================================
+ec_sqrp_384:
+        jsr ec_set_modp_384
+        jsr fp_mod_sqr_384
+ec_mulp_384_copy_result:
         lda fp_src1
         pha
         lda fp_src1+1

@@ -8,7 +8,7 @@ P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 C
 make clean && make
 ```
 Assembler: ACME. Output: build/nist-curves.prg + build/labels.txt (VICE symbol table).
-Current PRG size: ~18.1 KB, loaded at $0801.
+Current PRG size: ~18.9 KB (19373 bytes post-Wave-4), loaded at $0801.
 
 ## Test
 ```
@@ -58,11 +58,26 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 - REU DMA multiply row caching (128KB lookup in REU)
 - Self-modifying code for multiply accumulation addresses
 - 4x unrolled inner multiply loop with inlined REU DMA
-- Dedicated squaring with symmetry exploitation
+- Dedicated squaring with deferred doubling of cross terms (Wave 4e)
+- Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill (Wave 4b)
 - Solinas fast reduction with self-modifying dispatch and register-resident accumulator
-- 4-bit windowed scalar multiplication with REU-resident precompute table
+- Width-5 signed wNAF scalar multiplication with REU-resident precompute table (Wave 4a)
 - Unrolled binary GCD shift loops for modular inversion
 - VIC-II screen blanking (+20-25% CPU)
+
+### Negative findings (do not re-attempt without a new angle)
+- **One-level subtractive Karatsuba at N=32** (Wave 4c, reverted). Three N=16
+  leaves plus combine cost more than one monolithic N=32 multiply on this
+  codebase. The dominant cost is REU DMA setup inside the inner-loop: tripling
+  the number of leaves triples DMA setup overhead, which is not amortized by
+  the 25% saving in 8x8 multiplies at this size. Would require a radically
+  different DMA strategy (batched / persistent descriptors) or a larger N to
+  break even.
+- **CMO98 / Fay relative Jacobian doubling** (Wave 4d, reverted). The formula
+  saves 2S per doubling but needs S/M comfortably below 1. Wave 4e pushed
+  P-256 S/M to ~0.94, which does not leave enough headroom for the added
+  bookkeeping M's. P-384 at S/M=0.86 gives ~3% headroom and is a plausible
+  but still uncertain follow-up: P-384 CMO J^m doubling is pending.
 
 ### Conventions
 - Scalars (private keys, nonces) are big-endian for compatibility with standards

@@ -53,7 +53,9 @@ ec_sc_mask:     !byte 0
 mul_cached_a:
         !byte 0                ; cached src1[i] for inlined multiply
 mul_src2_buf:
-        !fill 32, 0            ; absolute copy of src2 for fast indexed access
+        !fill 35, 0            ; absolute copy of src2 for fast indexed access
+                               ; (32 bytes + 3 pad zeros so fp_sqr 4x-unroll
+                               ; can over-read past j=31 into zeros for fast-skip)
 
 ; --- REU DMA target buffers (page-aligned for LDA abs,Y without penalty) ---
         !align 255, 0          ; align to next page boundary
@@ -129,3 +131,21 @@ ec384_precomp_i: !byte 0          ; precompute loop counter
 ; --- P-384 Solinas reduction scratch ---
 fp384_red_tmp:
         !fill 49, 0
+
+; --- wNAF-5 scratch (shared between P-256 and P-384 scalar mul) ---
+; ec_naf_k: working scalar, little-endian, with headroom byte.
+;   P-256 uses bytes 0..32 (33 bytes); P-384 uses bytes 0..48 (49 bytes).
+; ec_naf_digits: signed 5-bit wNAF digits in {-15,-13,...,-1,0,1,...,15}.
+;   Stored as two's-complement bytes. Up to 385 digits for P-384.
+; ec_naf_len: number of digits actually produced.
+ec_naf_k:       !fill 52, 0
+ec_naf_digits:  !fill 400, 0
+ec_naf_len:     !word 0           ; 16-bit (can be up to 385)
+
+; --- Affine 2G storage used during wNAF precompute (persists across the
+;     precompute loop since ec_affine_x/ec_affine_y is clobbered by each
+;     jacobian_to_affine call).
+ec_aff2g_256_x: !fill 32, 0
+ec_aff2g_256_y: !fill 32, 0
+ec_aff2g_384_x: !fill 48, 0
+ec_aff2g_384_y: !fill 48, 0
