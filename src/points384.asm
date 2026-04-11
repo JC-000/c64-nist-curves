@@ -527,12 +527,13 @@ ec_point_add_384:
 
 .add384_set_inf:
         ; H==0, R!=0: inverse points, result = infinity
-        ldy #143
+        ; Count down through $00 via BNE (BPL would fail on $8F bit 7).
+        ldy #144
         lda #0
 .add384_sinf:
-        sta ec384_p3,y
         dey
-        bpl .add384_sinf
+        sta ec384_p3,y
+        bne .add384_sinf
         rts
 
 .add384_h_nonzero:

@@ -8,7 +8,7 @@ P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 C
 make clean && make
 ```
 Assembler: ACME. Output: build/nist-curves.prg + build/labels.txt (VICE symbol table).
-Current PRG size: ~18.9 KB (19373 bytes post-Wave-4), loaded at $0801.
+Current PRG size: ~19.6 KB (20055 bytes post-Wave-5), loaded at $0801.
 
 ## Test
 ```
@@ -61,7 +61,7 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 - Dedicated squaring with deferred doubling of cross terms (Wave 4e)
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill (Wave 4b)
 - Solinas fast reduction with self-modifying dispatch and register-resident accumulator
-- Width-5 signed wNAF scalar multiplication with REU-resident precompute table (Wave 4a)
+- h=4 Lim-Lee fixed-base comb for P-256 and P-384 scalar_mul with REU-resident anchor table (Wave 5a/5b)
 - Unrolled binary GCD shift loops for modular inversion
 - VIC-II screen blanking (+20-25% CPU)
 
@@ -107,8 +107,10 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
-- `ec_point_double_384`'s infinity branch uses `LDY #143 / DEY / BPL loop` to zero
-  `ec384_p3`. Because `$8F` has bit 7 set, BPL never branches on the first
-  iteration, so only one byte gets written. Workaround: tests pre-zero
-  `ec384_p3` from Python. Fix would be to change the loop to
-  `LDY #144 / DEY / STA ec384_p3,Y / BNE loop` (count down through $00 via BNE).
+- None outstanding. The `LDY #143 / BPL` infinity-fill bug family (BPL
+  never branches on the first iteration because `$8F` bit 7 is set, so
+  only one byte got written) was fixed in Wave 5 across all sites in
+  `ec_point_double_384` and `ec_point_add_384`. The fix pattern is
+  `LDY #144 / DEY / STA ec384_p3,Y / BNE loop` (count down through $00
+  via BNE). `ec_point_add_384` and `ec_jacobian_to_affine_384` no longer
+  require the Python-side pre-zero workaround.
