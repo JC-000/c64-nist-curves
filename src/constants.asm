@@ -1,7 +1,13 @@
 ; =============================================================================
-; constants.asm - System equates, zero page, hardware addresses
+; constants.asm - System equates, hardware addresses
 ; For P-256 and P-384 NIST curve optimization
+;
+; Zero-page allocation lives in zp_config.asm (consumer-tunable). Hardware
+; addresses below are fixed by the C64 platform and must not be changed.
 ; =============================================================================
+
+; --- Zero-page allocation (consumer-tunable) ---
+!source "zp_config.asm"
 
 ; --- Kernal routines ---
 chrout          = $ffd2         ; output character
@@ -14,39 +20,12 @@ vic_bg          = $d021         ; background color
 cia1_ta_lo      = $dc04         ; CIA #1 timer A low byte
 cia1_ta_hi      = $dc05         ; CIA #1 timer A high byte
 cia1_cra        = $dc0e         ; CIA #1 control register A
-proc_port       = $01           ; processor port (ROM banking)
 
 ; --- System addresses ---
 screen_ram      = $0400         ; screen memory (40x25)
 color_ram       = $d800         ; color memory
 cassette_buf    = $0334         ; cassette buffer (safe scratch area)
 jiffy_clock     = $00a0         ; 3-byte jiffy clock (MSB)
-
-; --- Zero page variables ---
-; General purpose pointers
-zp_ptr1         = $fb           ; 2-byte pointer
-zp_ptr2         = $fd           ; 2-byte pointer
-zp_tmp1         = $02           ; temp byte
-zp_tmp2         = $03           ; temp byte
-
-; Field arithmetic working variables (shared by P-256 and P-384)
-fp_src1         = $22           ; 2-byte pointer to operand 1
-fp_src2         = $24           ; 2-byte pointer to operand 2
-fp_dst          = $26           ; 2-byte pointer to destination
-fp_misc         = $28           ; 2-byte misc pointer (modulus)
-fp_carry        = $2a           ; carry/borrow byte
-fp_loop         = $2b           ; loop counter
-fp_mul_i        = $2c           ; multiply outer index
-fp_mul_j        = $2d           ; multiply inner index
-
-; Scalar multiplication working variables
-ec_scalar_ptr   = $3b           ; ZP pointer to 32-byte scalar k
-
-; mul_8x8 working variables
-poly_i          = $1a           ; inner loop counter
-poly_j          = $1b           ; outer loop counter
-poly_carry      = $1c           ; carry byte
-poly_tmp        = $1d           ; temp
 
 ; --- REU (Ram Expansion Unit) registers ---
 reu_status      = $df00         ; status register
