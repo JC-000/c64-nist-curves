@@ -11,7 +11,7 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - RFC 6979 test vector validation
 - Optimizations ported from [c64-x25519](https://github.com/JC-000/c64-x25519):
   REU DMA multiply tables, self-modifying code, loop unrolling, dedicated squaring
-- h=4 Lim-Lee fixed-base comb scalar multiplication with REU-resident anchor table
+- h=8 Lim-Lee fixed-base comb scalar multiplication with 256-entry REU-resident anchor table (Wave 7a)
 - Deferred-doubling squaring (half as many doubling passes over cross terms)
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill
 - Unrolled binary GCD shift loops for modular inversion
@@ -51,14 +51,17 @@ python3 tools/bench_p384.py       # P-384 primitive benchmarks
 | fp_mod_inv (binary GCD)     |       716.667 |      1550.000 |         2.16x |
 | ec_point_double (Jacobian)  |       533.333 |       950.000 |         1.78x |
 | ec_point_add (Jacobian)     |       633.333 |      1100.000 |         1.74x |
-| ec_scalar_mul (k=RFC 6979)  |       89866.7 |      264566.7 |         2.95x |
+| ec_scalar_mul (k=RFC 6979)  |       46733.3 |      131433.3 |         2.81x |
 
 S/M ratio after Wave 4e: P-256 fp_mod_sqr / fp_mod_mul = 0.94; P-384 = 0.86.
 
-Wave 5 Lim-Lee comb replaced the width-5 wNAF scalar_mul on both curves:
-P-256 `ec_scalar_mul` dropped from 206.4M cycles (201.85 s) to 91.9M cycles
-(89.87 s), a -55.5% improvement on the RFC 6979 sample-message private key.
-P-384 `ec_scalar_mul_384` is now benchmarked at 270.6M cycles (264.57 s).
+Wave 7a doubled the Lim-Lee comb from h=4 to h=8 (256-entry table) on both
+curves: P-256 `ec_scalar_mul` drops from 91.9M cycles (89.87 s) to 47.8M
+cycles (46.73 s), a further **-48.0%** on top of Wave 5. P-384
+`ec_scalar_mul_384` drops from 270.6M (264.57 s) to 134.4M (131.43 s),
+**-50.3%**. Cumulatively versus the wNAF-5 baseline both curves are now
+~4.3-5.0x faster in scalar multiply. Boot time grows by ~90 seconds to
+build the 16 KB / 24 KB precompute tables in REU bank 2.
 
 ## Wave 4 optimization round
 
@@ -112,12 +115,28 @@ Wave 5 replaced the width-5 wNAF scalar multiplier on both curves with a
   206,431,995 cycles to 91,906,640 cycles (-55.5%) on the RFC 6979
   sample-message private key. 64 doublings + ~60 mixed adds replace
   256 doublings + ~51 adds.
-- **Wave 5b — Lim-Lee comb for P-384.** `ec_scalar_mul_384` now
-  benchmarks at 270,572,330 cycles (264.57 s). Same algorithmic shape
-  as 5a, adapted to the 384-bit scalar split into four 96-bit
-  sub-scalars.
+- **Wave 5b — Lim-Lee comb for P-384.** `ec_scalar_mul_384` drops from
+  the wNAF-5 baseline to 270,572,330 cycles. Same algorithmic shape as
+  5a, adapted to the 384-bit scalar split into four 96-bit sub-scalars.
 - **Wave 5c — CMO98 / Fay negative finding (P-384).** See Wave 4d/5c
   bullet above; documented in `.research/wave5c_p384.txt`.
+
+## Wave 7a optimization round
+
+Wave 7a doubles the Lim-Lee comb width from h=4 to h=8 on both curves.
+The precompute table grows from 16 entries to 256 entries in REU bank 2:
+
+- **P-256:** `ec_scalar_mul` drops from 91,906,640 cycles to 47,794,180
+  cycles (-48.0%) on the RFC 6979 sample-message private key. The comb
+  runs 32 iterations (1 double + up to 1 mixed add each) instead of 64.
+  The precompute table occupies REU bank 2 `$0000`..`$3FFF` (16 KB).
+- **P-384:** `ec_scalar_mul_384` drops from 270,572,330 cycles to
+  134,416,870 cycles (-50.3%). 48 iterations instead of 96. The
+  precompute table occupies REU bank 2 `$4000`..`$9F9F` (24 KB).
+- **Boot cost:** building the 256-entry tables adds roughly 89 seconds
+  of init time (measured via the P-384 bench tool: 17.6 s h=4 baseline
+  to 106.3 s h=8). Within budget; deliberate trade for a one-shot
+  per-process cost in exchange for ~2x per-call scalar_mul speedup.
 
 ## Status
 
@@ -126,7 +145,7 @@ Wave 5 replaced the width-5 wNAF scalar multiplier on both curves with a
 - [x] Point operations (Jacobian coordinates)
 - [x] P-384 implementation
 - [x] Benchmarking suite
-- [x] Lim-Lee fixed-base comb (h=4) scalar multiplication on both curves
+- [x] Lim-Lee fixed-base comb scalar multiplication on both curves (h=4 Wave 5, upgraded to h=8 Wave 7a)
 - [x] Comprehensive test suite (290 tests)
 - [ ] Fermat inversion (addition chain): implemented for P-256 in
       `src/inv256.asm` but 41x slower than binary GCD, retained for reference
