@@ -73,11 +73,25 @@ See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
   the 25% saving in 8x8 multiplies at this size. Would require a radically
   different DMA strategy (batched / persistent descriptors) or a larger N to
   break even.
-- **CMO98 / Fay relative Jacobian doubling** (Wave 4d, reverted). The formula
-  saves 2S per doubling but needs S/M comfortably below 1. Wave 4e pushed
-  P-256 S/M to ~0.94, which does not leave enough headroom for the added
-  bookkeeping M's. P-384 at S/M=0.86 gives ~3% headroom and is a plausible
-  but still uncertain follow-up: P-384 CMO J^m doubling is pending.
+- **CMO98 / Fay relative Jacobian doubling** (Wave 4d reverted for P-256;
+  Wave 5c analysis confirmed unprofitable for P-384 — see
+  `.research/wave5c_p384.txt`). CMO98's advertised "4M + 4S" J^m doubling
+  is measured against plain Jacobian doubling at 4M + 6S. But both
+  ec_point_double (P-256) and ec_point_double_384 (P-384) already use
+  the a=-3 short-Weierstrass trick ((X-Z^2)(X+Z^2) = X^2 - Z^4), which
+  gets standalone Jacobian doubling to exactly 4M + 4S on its own. CMO98
+  is tied in operation count, and worse in constants because it still
+  needs an aZ^4 carry update (+1M) which the a=-3 trick avoids entirely.
+  No headroom to exploit regardless of S/M ratio — the 2S saving the
+  paper quotes is versus non-a=-3 Jacobian, not versus the trick form
+  already in use here. Fay 2014 relative/co-Z is a scalar_mul-level
+  fused DoubleAdd restructure (not a drop-in doubling replacement) and
+  is only applicable to window schemes where each step is exactly one
+  double followed by one add; the Wave 5a/5b Lim-Lee comb runs
+  back-to-back doubling chains of length h=4 with a single add per
+  chain, where Meloni reuse is unavailable for most doublings. A
+  plausible future angle only if the comb loop is ever restructured
+  around a fused DoubleAdd primitive.
 
 ### Conventions
 - Scalars (private keys, nonces) are big-endian for compatibility with standards
