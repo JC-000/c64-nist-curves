@@ -222,25 +222,24 @@ def test_point_add_384(transport, labels):
 
 
 def test_point_at_infinity_384(transport, labels):
-    """Set ec384_p1 Z=0, call ec_point_double_384, verify result all zeros.
+    """Set ec384_p1 Z=0, call ec_point_double_384, verify ec384_p3 is all zeros.
 
-    NOTE: The current ec_point_double_384 infinity fill loop uses
-        LDY #$8F ; ... ; DEY ; BPL loop
-    which fails because $8F has bit 7 set -> BPL never branches. This means
-    the routine does not zero out ec384_p3 on the infinity path; it simply
-    leaves whatever was there. We pre-zero ec384_p3 from Python before the
-    call so the check is meaningful, and verify the routine doesn't OVERWRITE
-    ec384_p3 with a bogus doubling result. A true assembly fix would replace
-    the loop with e.g. LDY #144 / (DEY) / BNE ... going to zero via BNE.
+    This validates that the infinity-branch zero-fill in ec_point_double_384
+    correctly writes all 144 bytes of ec384_p3. Historically this was broken
+    (the loop used LDY #$8F / DEY / BPL, which never branched because $8F
+    has bit 7 set) and tests had to pre-zero ec384_p3 as a workaround. Wave 5b
+    fixed the fill loop, so we now pre-fill ec384_p3 with non-zero garbage
+    and require the routine to overwrite it with zeros.
     """
     passed = failed = 0
 
     print("  Setting ec384_p1 to point at infinity (Z=0)...")
     write_jacobian_point(transport, labels["ec384_p1"], 42, 99, 0)
 
-    # Pre-zero ec384_p3 so we can verify the routine does NOT perform a full
-    # doubling (writing computed coords over the zero buffer).
-    zero_point(transport, labels["ec384_p3"], 144)
+    # Pre-fill ec384_p3 with non-zero garbage so the post-call zero check
+    # genuinely verifies that ec_point_double_384's infinity branch wrote
+    # 144 zero bytes (rather than simply leaving an already-zero buffer).
+    write_bytes(transport, labels["ec384_p3"], b"\xAA" * 144)
 
     write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
 
