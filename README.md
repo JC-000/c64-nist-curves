@@ -17,12 +17,15 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - Unrolled binary GCD shift loops for modular inversion
 - Self-modifying dispatch in Solinas reduction
 
+- Ultimate 64 Elite hardware benchmarking via DMA trampoline (16 / 48 MHz turbo)
+
 ## Requirements
 
 - [ACME](https://sourceforge.net/projects/acme-crossass/) cross-assembler
 - [VICE](https://vice-emu.sourceforge.io/) emulator (for testing) with REU support
 - Python 3.10+ with [c64-test-harness](https://github.com/JC-000/c64-test-harness)
 - Python `cryptography` package (external oracle for point tests / benches)
+- [Ultimate 64 Elite](https://ultimate64.com/) (optional, for hardware benchmarking)
 
 ## Build & Test
 
@@ -34,7 +37,13 @@ python3 tools/test_fp384.py       # P-384 field arithmetic (NIST KAT curve-eq + 
 python3 tools/test_points384.py   # P-384 point ops (add --full for 10x random samples)
 python3 tools/bench_p256.py       # P-256 benchmarks (oracle correctness gate)
 python3 tools/bench_p384.py       # P-384 benchmarks (oracle correctness gate)
+python3 tools/bench_p256_u64.py   # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
+python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 ```
+
+U64 benchmarks require `U64_HOST` set or the device at the default address.
+They use `DeviceLock` for cross-process serialization and oracle-gate every
+routine identically to the VICE benches.
 
 Point tests and benches validate every routine's output against an
 external oracle (`cryptography` Python package plus NIST CAVP KATs
@@ -61,6 +70,26 @@ oracle invariant and refresh procedure.
 | ec_scalar_mul (k=RFC 6979)  |       46733.3 |      131433.3 |         2.81x |
 
 S/M ratio after Wave 4e: P-256 fp_mod_sqr / fp_mod_mul = 0.94; P-384 = 0.86.
+
+### Ultimate 64 Elite turbo benchmarks (VIC blanked)
+
+Measured on U64E firmware 3.14d at 16 MHz and 48 MHz. Cycle counts reflect
+REU DMA contention at turbo speeds — the CPU outruns the REU memory bus,
+so DMA-heavy routines scale sub-linearly.
+
+| Routine                     | P-256 @16 MHz | P-256 @48 MHz | P-384 @16 MHz | P-384 @48 MHz |
+|-----------------------------|---------------|---------------|---------------|---------------|
+| fp_mul                      |     8,948 cyc |     6,178 cyc |    15,447 cyc |     9,960 cyc |
+| fp_sqr                      |    12,819 cyc |    10,522 cyc |    20,294 cyc |    16,210 cyc |
+| fp_mod_mul                  |     9,374 cyc |     6,320 cyc |    15,873 cyc |    10,102 cyc |
+| fp_mod_sqr                  |    13,209 cyc |    10,670 cyc |    20,720 cyc |    16,370 cyc |
+| fp_mod_inv (binary GCD)     |    51,135 cyc |    17,045 cyc |   102,270 cyc |    34,090 cyc |
+| ec_point_double (Jacobian)  |    68,180 cyc |    51,135 cyc |   136,360 cyc |    85,225 cyc |
+| ec_point_add (Jacobian)     |    85,225 cyc |    68,180 cyc |   136,360 cyc |   102,270 cyc |
+| ec_scalar_mul (h=8 comb)    | 6,323,695 cyc | 4,636,240 cyc |16,005,255 cyc |11,130,385 cyc |
+
+At 48 MHz, P-256 `ec_scalar_mul` completes in ~4.5 s wall-clock (vs ~47 s
+at stock 1 MHz). P-384 `ec_scalar_mul_384` completes in ~10.9 s (vs ~131 s).
 
 Wave 7a doubled the Lim-Lee comb from h=4 to h=8 (256-entry table) on both
 curves: P-256 `ec_scalar_mul` drops from 91.9M cycles (89.87 s) to 47.8M

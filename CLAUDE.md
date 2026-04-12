@@ -18,6 +18,8 @@ python3 tools/test_fp384.py          # P-384 field arithmetic tests (field KAT +
 python3 tools/test_points384.py      # P-384 point operation tests (add --full for 10x samples)
 python3 tools/bench_p256.py          # P-256 primitive benchmarks (oracle-gated)
 python3 tools/bench_p384.py          # P-384 primitive benchmarks (oracle-gated)
+python3 tools/bench_p256_u64.py      # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
+python3 tools/bench_p384_u64.py      # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
 
@@ -97,7 +99,17 @@ All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry
 | data.asm | Buffers, point storage, page-aligned DMA targets |
 
 ### Benchmarks
-See `tools/bench_p256.py` and `tools/bench_p384.py`. Results in README.md.
+VICE: `tools/bench_p256.py` and `tools/bench_p384.py` (use `jsr()`, VICE-only).
+Ultimate 64 Elite: `tools/bench_p256_u64.py` and `tools/bench_p384_u64.py`
+(DMA trampoline at $C000, atomic single-byte hijack via shim at $0800,
+`DeviceLock` for cross-process safety). Shared helpers in `tools/bench_u64_common.py`.
+Results in README.md.
+
+U64 bench architecture: boot at 48 MHz for fast init (~5s), poll $02A7
+sentinel, switch to target speed, install trampoline, single-byte hijack
+($0836: $35→$00 turns `JMP $0835` into `JMP $0800`→shim→$C000). Done
+sentinel at $02A8. Full reboot between speed changes (REU DMA state
+gets stale otherwise).
 
 ### Key optimizations
 - REU DMA multiply row caching (128KB lookup in REU)
