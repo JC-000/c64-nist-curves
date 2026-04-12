@@ -7,8 +7,10 @@ P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 C
 ```
 make clean && make
 ```
-Assembler: ACME. Output: build/nist-curves.prg + build/labels.txt (VICE symbol table).
-Current PRG size: ~20.2 KB (20695 bytes post-Wave-7a), loaded at $0801.
+Assembler: ca65/ld65 (cc65 toolchain). Multi-object build: each .s file compiles
+to a separate .o, linked by ld65 with `src/c64.cfg`. Output: build/nist-curves.prg
++ build/labels.txt (VICE symbol table, post-processed from ld65 `-Ln` format).
+Current PRG size: ~20.2 KB (20672 bytes), loaded at $0801.
 
 ## Test
 ```
@@ -84,19 +86,22 @@ All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry
 ### Source files (src/)
 | File | Purpose |
 |------|---------|
-| main.asm | Entry point, VIC blanking, REU DMA init, precompute table generation, benchmarking |
-| constants.asm | Zero-page allocations, hardware addresses |
-| mul_8x8.asm | Quarter-square 8x8->16 multiply tables |
-| fp256.asm | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
-| mod256.asm | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
-| curve256.asm | P-256 parameters + RFC 6979 test vectors (little-endian) |
-| points256.asm | P-256 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
-| inv256.asm | P-256 Fermat inversion via addition chain (reference only; 41x slower than binary GCD) |
-| fp384.asm | 48-byte field arithmetic (add/sub/mul/sqr) for P-384 |
-| mod384.asm | P-384 Solinas reduction, modular ops, binary GCD inverse, P-384 prime |
-| curve384.asm | P-384 parameters + test vectors (little-endian) |
-| points384.asm | P-384 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
-| data.asm | Buffers, point storage, page-aligned DMA targets |
+| main.s | Entry point, VIC blanking, REU DMA init, precompute table generation, benchmarking |
+| constants.s | Hardware addresses, REU registers |
+| zp_config.s | Zero-page allocations (consumer-tunable) |
+| mul_8x8.s | Quarter-square 8x8->16 multiply tables |
+| fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
+| mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
+| curve256.s | P-256 parameters + RFC 6979 test vectors (little-endian) |
+| points256.s | P-256 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
+| inv256.s | P-256 Fermat inversion via addition chain (reference only; 41x slower than binary GCD) |
+| fp384.s | 48-byte field arithmetic (add/sub/mul/sqr) for P-384 |
+| mod384.s | P-384 Solinas reduction, modular ops, binary GCD inverse, P-384 prime |
+| curve384.s | P-384 parameters + test vectors (little-endian) |
+| points384.s | P-384 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
+| data.s | Buffers, point storage, page-aligned DMA targets |
+| c64.cfg | ld65 linker configuration (memory regions, segment placement) |
+| exports.inc | Cross-module .import/.export dependency map |
 
 ### Benchmarks
 VICE: `tools/bench_p256.py` and `tools/bench_p384.py` (use `jsr()`, VICE-only).
@@ -172,7 +177,9 @@ gets stale otherwise).
 - Field elements, curve parameters, and coordinates are little-endian
 - P-256 point layout: X at offset 0, Y at offset 32, Z at offset 64 (96 bytes Jacobian)
 - P-384 point layout: X at offset 0, Y at offset 48, Z at offset 96 (144 bytes Jacobian)
-- ACME assembler syntax, 6502 CPU
+- ca65 assembler syntax (cc65 toolchain), 6502 CPU
+- Multi-object build: each module is a separate compilation unit with explicit .import/.export
+- Linker config: src/c64.cfg (segment placement, page alignment, PRG header)
 
 ### Calling contract / re-entrancy
 Library routines are NOT re-entrant. The multiply DMA buffers

@@ -21,7 +21,7 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 
 ## Requirements
 
-- [ACME](https://sourceforge.net/projects/acme-crossass/) cross-assembler
+- [cc65](https://cc65.github.io/) toolchain (ca65 assembler + ld65 linker)
 - [VICE](https://vice-emu.sourceforge.io/) emulator (for testing) with REU support
 - Python 3.10+ with [c64-test-harness](https://github.com/JC-000/c64-test-harness)
 - Python `cryptography` package (external oracle for point tests / benches)
