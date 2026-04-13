@@ -19,8 +19,8 @@ Commodore 64 plus a RAM Expansion Unit (REU):
   over a REU-resident 256-entry precompute table (Wave 7a; h=4 landed in Wave 5)
 - Jacobian-to-affine conversion for result export
 
-Target platform: 6502 @ 1 MHz with a 1764 / 1750 / compatible REU. Source is
-ACME assembler syntax (`acme -f cbm`).
+Target platform: 6502 @ 1 MHz with a 1764 / 1750 / compatible REU.
+Source is ca65/ld65 assembly for the cc65 toolchain; build via `make clean && make`. See README.md for toolchain install notes.
 
 Byte-order conventions:
 
@@ -36,14 +36,14 @@ counterpart with the same contract except the operand width.
 ## 2. Memory footprint
 
 The library currently assumes the fixed load layout below. Relocating the data
-buffers requires editing the labels in `src/data.asm`; relocating the zero-page
-slots only requires editing `src/zp_config.asm`.
+buffers requires editing the labels in `src/data.s`; relocating the zero-page
+slots only requires editing `src/zp_config.s`.
 
 | Region | Address range | Purpose |
 |---|---|---|
-| PRG code | `$0801`-`$58FF` (approx.) | BASIC stub, boot code, math routines. Current PRG size: 20695 bytes (post-Wave-7a). |
-| P-256 field buffers | `$4608`-`$49E9` | `fp_wide`, `fp_tmp1..4`, `fp_r0..3`, `fp_inv_*` (see `data.asm`). |
-| P-256 point buffers | `$47CA`-`$49E9` | `ec_p1`, `ec_p2`, `ec_p3`, `ec_t1..6`, `ec_affine_x/y`. Overlap in table above reflects contiguous placement in `data.asm`. |
+| PRG code | `$0801`-`$58FF` (approx.) | BASIC stub, boot code, math routines. Current PRG size: 20672 bytes (post-ca65-migration, post-Wave-8a-closure). |
+| P-256 field buffers | `$4608`-`$49E9` | `fp_wide`, `fp_tmp1..4`, `fp_r0..3`, `fp_inv_*` (see `data.s`). |
+| P-256 point buffers | `$47CA`-`$49E9` | `ec_p1`, `ec_p2`, `ec_p3`, `ec_t1..6`, `ec_affine_x/y`. Overlap in table above reflects contiguous placement in `data.s`. |
 | `mul_cached_a` / `mul_src2_buf` / reduction scratch | `$49EA`-`$4AFF` (approx.) | Shared multiply scratch and Solinas accumulator. |
 | `mul_dma_lo` (page-aligned) | `$4B00`-`$4BFF` | REU DMA target: low bytes of the current multiply row. |
 | `mul_dma_hi` | `$4C00`-`$4CFF` | REU DMA target: high bytes of the current multiply row. |
@@ -51,7 +51,7 @@ slots only requires editing `src/zp_config.asm`.
 | Lim-Lee anchors + working scalar (P-256) | approx. `$5367`-`$5586` | `ec_anchor1..8_x/y` (8 * 64 bytes), `cm_k` (32). Wave 7a h=8 doubled the anchor storage. |
 | Lim-Lee anchors + working scalar (P-384) | approx. `$5587`-`$58F6` | `ec_anchor1..8_384_x/y` (8 * 96 bytes), `cm_k_384` (48). |
 | Quarter-square multiply tables | `$7800`-`$7BFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. |
-| Zero-page | ~16 bytes, see `zp_config.asm` | `$02`-`$03`, `$1A`-`$1D`, `$22`-`$2D`, `$3B`, `$FB`-`$FE` by default. |
+| Zero-page | ~16 bytes, see `zp_config.s` | `$02`-`$03`, `$1A`-`$1D`, `$22`-`$2D`, `$3B`, `$FB`-`$FE` by default. |
 | REU bank 0-1 | `$00_0000`-`$01_FFFF` | 128 KB full 8x8 -> 16 multiply table, built once by `reu_mul_init`. |
 | REU bank 2, offset `$0000`-`$3FFF` | 16 KB | P-256 Lim-Lee comb precompute (256 entries x 64 bytes, X + Y only). Wave 7a h=8. |
 | REU bank 2, offset `$4000`-`$9F9F` | 24 KB | P-384 Lim-Lee comb precompute (256 entries x 96 bytes). Wave 7a h=8. |
@@ -63,8 +63,8 @@ any given build. The address ranges above are derived from the current
 ## 3. Initialization sequence (required)
 
 The host program must perform the following calls, in order, before any field
-or point routine is used. All of them are defined in `main.asm` / `points256.asm`
-/ `points384.asm` and are public labels.
+or point routine is used. All of them are defined in `main.s` / `points256.s`
+/ `points384.s` and are public labels.
 
 1. **Bank out BASIC ROM** (optional but recommended) so `$A000`-`$BFFF` is RAM:
 
@@ -98,7 +98,7 @@ If your host program only uses one curve, you may omit that curve's
 
 ### Test-harness sentinel (optional)
 
-`main.asm`'s `start` routine writes `$42` to `$02A7` as the final step of
+`main.s`'s `start` routine writes `$42` to `$02A7` as the final step of
 initialization. The Python test harness polls this byte to detect "ready"
 without racing the KERNAL `READY.` prompt. Consumer programs do not need to
 emit this sentinel, but repurposing `$02A7` is safe only after the harness has
@@ -146,7 +146,7 @@ Scalars must be zero-padded up to the curve's full field width.
 ### Clobbers
 
 All public routines clobber `A`, `X`, `Y`. They also clobber the shared
-scratch buffers listed in `src/data.asm` (`fp_wide`, `fp_tmp1..4`, `fp_r0..3`,
+scratch buffers listed in `src/data.s` (`fp_wide`, `fp_tmp1..4`, `fp_r0..3`,
 `fp_inv_*`, `ec_t1..6`, and their `_384` counterparts), plus
 `mul_cached_a` / `mul_src2_buf` / `mul_dma_lo` / `mul_dma_hi` / `fp_red_tmp`.
 
@@ -159,7 +159,7 @@ curves are fine, but the host must never interleave library calls —
 in particular, it must not invoke any field or point routine from an IRQ
 handler while the mainline is already inside one. Mask IRQs around crypto
 work or keep all library calls on a single thread of control. See the
-re-entrancy comment block at the top of `src/data.asm` for the canonical
+re-entrancy comment block at the top of `src/data.s` for the canonical
 statement.
 
 ### Persistent REU DMA descriptor state
@@ -191,7 +191,7 @@ listed in the "Source" column. `_384` variants take 48-byte operands
 and use the P-384 modulus / buffers; in every other respect they behave
 identically to the P-256 version.
 
-### 5.1 Raw field arithmetic (`fp256.asm`, `fp384.asm`)
+### 5.1 Raw field arithmetic (`fp256.s`, `fp384.s`)
 
 | Name | Source | Inputs | Output | Notes |
 |---|---|---|---|---|
@@ -205,7 +205,7 @@ identically to the P-256 version.
 | `fp_mul` / `fp_mul_384` | fp256/fp384 | `fp_src1`, `fp_src2` | `fp_wide` / `fp384_wide` := src1 * src2 (double-width) | Uses REU DMA multiply table. |
 | `fp_sqr` / `fp_sqr_384` | fp256/fp384 | `fp_src1` | `fp_wide` / `fp384_wide` := src1^2 | Deferred-doubling squaring. |
 
-### 5.2 Modular field arithmetic (`mod256.asm`, `mod384.asm`)
+### 5.2 Modular field arithmetic (`mod256.s`, `mod384.s`)
 
 | Name | Source | Inputs | Output | Notes |
 |---|---|---|---|---|
@@ -221,7 +221,7 @@ identically to the P-256 version.
 | `ec_mulp` / `ec_mulp_384` | mod256/mod384 | `fp_src1`, `fp_src2`, `fp_dst` | `(fp_dst)` := (src1 * src2) mod p | Wrapper: `ec_set_modp` + `fp_mod_mul` + copy `fp_r0` to `(fp_dst)`. Preserves `fp_src1`. |
 | `ec_sqrp` / `ec_sqrp_384` | mod256/mod384 | `fp_src1`, `fp_dst` | `(fp_dst)` := src1^2 mod p | Wrapper as above using `fp_mod_sqr`. |
 
-### 5.3 Point operations (`points256.asm`, `points384.asm`)
+### 5.3 Point operations (`points256.s`, `points384.s`)
 
 | Name | Source | Inputs | Output | Notes |
 |---|---|---|---|---|
@@ -282,15 +282,15 @@ require the relevant `ec_precompute_*` to have been called at boot.
 - **Not re-entrant.** The library shares global scratch and ZP slots across
   all field and point routines; callers must serialize all library calls and
   never invoke them from an IRQ handler that can preempt mainline crypto work.
-  See the comment block in `src/data.asm` and section 4 above.
+  See the comment block in `src/data.s` and section 4 above.
 - **Shared P-256 / P-384 scratch.** Sequential cross-curve calls are fine, but
   there is no support for running a P-256 multiply "in parallel" with a P-384
   multiply.
 - **Data buffers live at fixed absolute addresses.** Relocating them requires
-  editing `src/data.asm` and re-assembling. The code / ZP layout is somewhat
+  editing `src/data.s` and re-assembling. The code / ZP layout is somewhat
   more flexible: code is position-independent within the PRG and ZP slots can
-  be renamed via `src/zp_config.asm`.
-- **Zero-page footprint is ~16 bytes.** See `src/zp_config.asm` for the
+  be renamed via `src/zp_config.s`.
+- **Zero-page footprint is ~16 bytes.** See `src/zp_config.s` for the
   complete, editable list of slots. The hardware-fixed `proc_port` at `$01`
   is the only slot that cannot be moved.
 - **`ec_scalar_mul` is fixed-base only.** Only `k * G` (the curve generator)
@@ -299,11 +299,173 @@ require the relevant `ec_precompute_*` to have been called at boot.
   adding one.
 - **Scalars must be zero-padded** to 32 bytes for P-256 and 48 bytes for P-384,
   big-endian.
-## 8. References
+
+## 8. Consumer integration
+
+This library targets C64 programs assembled with `ca65` and linked with
+`ld65` (the cc65 toolchain). Consumers on the legacy ACME assembler must
+migrate their project to ca65 first — see the cc65 documentation at
+https://cc65.github.io/ for the toolchain, and this repository's
+`f95d7f5` commit ("Migrate assembler from ACME to ca65") for a worked
+example of the migration patterns we applied to our own source.
+
+### 8.1 Importing the library
+
+Recommended import mechanism: **git submodule**, pinned to a specific
+release tag.
+
+```
+git submodule add https://github.com/JC-000/c64-nist-curves \
+    lib/c64-nist-curves
+git -C lib/c64-nist-curves checkout v0.1.0
+git commit -m "Import c64-nist-curves v0.1.0 as submodule"
+```
+
+Bumping to a later release:
+
+```
+git -C lib/c64-nist-curves fetch --tags
+git -C lib/c64-nist-curves checkout v0.1.1    # or whichever tag
+git add lib/c64-nist-curves
+git commit -m "Bump c64-nist-curves to v0.1.1"
+```
+
+Consumers should pin to a specific tag rather than tracking `master`
+or any wave branch — see §8.5 for the version-stability policy.
+
+### 8.2 Building against the library
+
+Your consumer project's Makefile must compile the library's `.s` files
+alongside your own source, then link the resulting `.o` objects into
+your PRG. A minimal Makefile fragment, assuming the library is
+submoduled at `lib/c64-nist-curves`:
+
+```make
+LIB          = lib/c64-nist-curves
+LIB_SRC      = $(LIB)/src
+LIB_BUILD    = $(BUILD_DIR)/lib/c64-nist-curves
+
+# IMPORTANT: main is OMITTED from the library module list. main.s is
+# the test / bench driver for the library's own PRG and must not be
+# linked into a consumer PRG (the consumer provides its own main).
+LIB_MODULES = constants zp_config lib_version mul_8x8 \
+              fp256 mod256 curve256 points256 inv256 \
+              fp384 mod384 curve384 points384 \
+              data
+
+LIB_OBJECTS = $(addprefix $(LIB_BUILD)/,$(addsuffix .o,$(LIB_MODULES)))
+
+$(LIB_BUILD)/%.o: $(LIB_SRC)/%.s | $(LIB_BUILD)
+	ca65 --cpu 6502 -I $(LIB_SRC) -o $@ $<
+
+$(LIB_BUILD):
+	mkdir -p $@
+
+# Consumer PRG links its own objects plus the library objects.
+consumer.prg: $(CONSUMER_OBJECTS) $(LIB_OBJECTS) consumer.cfg
+	ld65 -o consumer.prg -C consumer.cfg $(CONSUMER_OBJECTS) $(LIB_OBJECTS)
+```
+
+The consumer's linker config (`consumer.cfg`) must preserve the segment
+placement the library expects — in particular, the two multiply-table
+pages `mul_dma_lo` at $4B00 and `mul_dma_hi` at $4C00 must remain
+page-aligned and within the C64's RAM region. See `src/c64.cfg` in this
+repository for the canonical memory map; the simplest path is to start
+from a copy of `src/c64.cfg` and extend it with consumer segments.
+
+### 8.3 Memory-layout constraints
+
+The library owns specific absolute addresses in the C64 memory map and
+in the REU banks. Consumer programs must accommodate these without
+overlap:
+
+| Resource | Library-owned | Consumer restriction |
+|---|---|---|
+| C64 page $4B (`mul_dma_lo`) | $4B00–$4BFF | Do not use; page-aligned DMA target |
+| C64 page $4C (`mul_dma_hi`) | $4C00–$4CFF | Do not use |
+| C64 pages ~$46–$58 | field / point buffers, Lim-Lee anchors | See §2 for the full map |
+| C64 pages $78–$7B | Quarter-square multiply tables (`sqtab_lo/hi`) | Do not use |
+| C64 zero-page | ~16 slots; see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
+| REU bank 0 / bank 1 | Full 128 KB multiply table | Do not write; initialized by `reu_mul_init` |
+| REU bank 2, $0000–$3FFF | P-256 Lim-Lee anchors (16 KB, 256 × 64) | Do not write |
+| REU bank 2, $4000–$9F9F | P-384 Lim-Lee anchors (24 KB, 256 × 96) | Do not write |
+| REU bank 2, $9FA0–$FFFF | Unused (~24 KB free) | Safe for consumer use |
+| REU banks 3+ (if present) | Unused by library | Safe for consumer use |
+
+Relocating library-owned C64 data addresses requires editing `src/data.s`
+and reassembling. ZP slots can be relocated via `src/zp_config.s`. REU
+bank assignments are currently hard-coded in the library source and
+would require a deeper refactor to change.
+
+Programs using only one curve may skip the other's `ec_precompute_*`
+call (§8.4), recovering its 16–24 KB of REU bank 2 for consumer use.
+
+### 8.4 Initialization sequence
+
+Follow the call sequence documented in §3 — any deviation (skipping
+`sqtab_init`, calling `ec_scalar_mul` before `ec_precompute_256`, etc.)
+will produce silent wrong answers or infinite loops.
+
+Boot cost on a stock C64, in warp mode:
+
+| Step | Cost |
+|---|---|
+| `sqtab_init` | <1 s |
+| `reu_mul_init` | ~4 s |
+| `ec_precompute_256` | ~25 s |
+| `ec_precompute_384` | ~80 s |
+| **Total (both curves)** | **~110 s** |
+
+Programs using only one curve may omit the other's `ec_precompute_*`
+call. Programs using neither curve's scalar_mul (e.g. only raw field
+arithmetic or point double/add on caller-supplied points) may omit both
+`ec_precompute_*` calls and save the full ~100 s precompute cost, at
+the price of losing `ec_scalar_mul` and `ec_scalar_mul_384`.
+
+### 8.5 Version compatibility checks
+
+The library exports three integer constants for assembly-time version
+checks, defined in `src/lib_version.s`:
+
+```asm
+.import LIB_VERSION_MAJOR, LIB_VERSION_MINOR, LIB_VERSION_PATCH
+
+.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 1
+    .error "c64-nist-curves v0.1.0 or newer is required"
+.endif
+```
+
+The library is currently in the v0.x pre-stable series. Version policy:
+
+- **PATCH** bumps (v0.1.0 → v0.1.1) ship bugfixes or performance
+  improvements with no public API changes. Always safe to adopt.
+- **MINOR** bumps (v0.1.x → v0.2.0) may add public symbols (new entry
+  points, new constants) but will not remove or rename existing ones.
+  Additive changes; safe to adopt if your consumer's `.import` list is
+  a subset of what the new version exports.
+- **MAJOR** bumps (v0.x → v1.0) are reserved for the first stability
+  commitment. After v1.0.0, MAJOR bumps indicate breaking API changes
+  and will be documented in CHANGELOG.md with migration notes.
+
+Consumers should pin to a specific tag rather than tracking the
+mainline branch. The `src/lib_version.s` constants are the authoritative
+source; the `VERSION` file at the repository root is a convenience
+mirror for non-ca65 tooling (CI scripts, Makefile version variables).
+
+### 8.6 Reference integrations
+
+The `c64-https` and `c64-wireguard` projects are planned reference
+integrations. As of v0.1.0, both are still on the legacy ACME
+toolchain and pending migration to ca65; once that migration lands
+and they adopt this library, this section will be updated with
+pointers to their integration patches as worked examples of the
+patterns described in §8.1–8.5.
+
+## 9. References
 
 - `CLAUDE.md` — architecture overview, re-entrancy contract, optimization
   history, and known issues.
 - `README.md` — benchmark results and current performance numbers.
-- `src/zp_config.asm` — editable zero-page allocation.
-- `src/data.asm` — data-segment layout, including all shared scratch buffers.
+- `src/zp_config.s` — editable zero-page allocation.
+- `src/data.s` — data-segment layout, including all shared scratch buffers.
 - `build/labels.txt` — authoritative VICE symbol table with current addresses.
