@@ -171,6 +171,41 @@ gets stale otherwise).
   chain, where Meloni reuse is unavailable for most doublings. A
   plausible future angle only if the comb loop is ever restructured
   around a fused DoubleAdd primitive.
+- **Removal of the `beq mul_src2_buf=0` fast-path in fp_mul/fp_sqr inner
+  loops** (Wave 8a, reverted). The 4x-unrolled mul inner loop has a
+  `beq @next_j_*` immediately after `ldy mul_src2_buf,x` which skips the
+  ~25-cycle accumulator body when the multiplier byte is zero. A
+  random-dense input analysis says the `beq` is net-negative (2-cycle
+  fall-through tax × 255/256 beats 25-cycle save × 1/256). Wave 8a removed
+  it accordingly, tests passed (1074/1074), and the primitive bench confirmed
+  the expected ~2% fp_mul / fp_mod_mul speedup. **But `ec_point_double`
+  regressed +5-6% and `ec_point_add` regressed +10-15% on both curves.**
+  Root cause: point-op fp_mul callers feed sparse intermediate Jacobian
+  coordinates (Z starts at 1 so Z^2/Z^3 carry many zero high bytes; the
+  a=-3 trick `(X-Z^2)(X+Z^2)` produces bytes that often cancel to zero;
+  Lim-Lee comb precompute entries have non-uniform entropy). The `beq` was
+  skipping ~5-30 real accumulator cycles per fp_mul call on point ops, not
+  the <0.1 expected from random dense input. The original fast-path was
+  load-bearing for the compound-caller workload; the random-input primitive
+  audit was blind to that. Task #16 A/B confirmed: reverting just Part 1
+  does not restore point ops; Part 2 alone accounts for the full regression.
+  See `.research/wave8a.txt` for the full A/B data. Do not re-remove the
+  `beq` without a refined fast-path (e.g. a mini-body that only advances
+  the loop counter) that preserves the sparse-input skip, and only after
+  A/B-benching compound callers in addition to primitives.
+
+### Jacobian addition naming
+
+`ec_point_add` (src/points256.s) and `ec_point_add_384` (src/points384.s) are
+**mixed Jacobian+affine addition** routines (7M + 4S), NOT full
+Jacobian+Jacobian adds. The second operand P2 is treated as affine with Z2
+implicitly 1; the function body never reads a Z2 byte. The Lim-Lee comb
+evaluate loop relies on this — table entries are stored X,Y only in REU
+bank 2, fetched into P2, and folded via ec_point_add without any Z=1 fill
+step. The name is retained for historical continuity but the body is a
+mixed-add formula. The only place a real Z=1 fill happens is the comb
+*seeding* branch (first non-zero column when the accumulator is still ∞,
+src/points256.s:1393-1400 and src/points384.s:1318-1325).
 
 ### Conventions
 - Scalars (private keys, nonces) are big-endian for compatibility with standards
