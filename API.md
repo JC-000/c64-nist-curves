@@ -461,6 +461,13 @@ and they adopt this library, this section will be updated with
 pointers to their integration patches as worked examples of the
 patterns described in §8.1–8.5.
 
+### 8.7 Releases
+
+Tagged releases are published at
+https://github.com/JC-000/c64-nist-curves/releases. Consumers
+should pin to a specific `vMAJOR.MINOR.PATCH` tag (as shown in §8.1)
+and consult `CHANGELOG.md` for the per-release notes before bumping.
+
 ## 9. References
 
 - `CLAUDE.md` — architecture overview, re-entrancy contract, optimization

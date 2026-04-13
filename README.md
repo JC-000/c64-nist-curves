@@ -182,6 +182,6 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 - [x] P-384 implementation
 - [x] Benchmarking suite
 - [x] Lim-Lee fixed-base comb scalar multiplication on both curves (h=4 Wave 5, upgraded to h=8 Wave 7a)
-- [x] Comprehensive test suite (290 tests)
-- [ ] Fermat inversion (addition chain): implemented for P-256 in
-      `src/inv256.asm` but 41x slower than binary GCD, retained for reference
+- [x] Comprehensive test suite (1074 tests)
+- [x] Fermat inversion (addition chain): implemented for P-256 in
+      `src/inv256.s` but 41x slower than binary GCD, retained for reference
