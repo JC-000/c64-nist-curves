@@ -182,6 +182,22 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 - [x] P-384 implementation
 - [x] Benchmarking suite
 - [x] Lim-Lee fixed-base comb scalar multiplication on both curves (h=4 Wave 5, upgraded to h=8 Wave 7a)
-- [x] Comprehensive test suite (1074 tests)
+- [x] Comprehensive test suite (1074 oracle-verified vectors across fp256, points256 --full, fp384, points384 --full)
 - [x] Fermat inversion (addition chain): implemented for P-256 in
-      `src/inv256.s` but 41x slower than binary GCD, retained for reference
+      `src/inv256.s` but 41x slower than binary GCD, retained for reference only
+
+## Releases
+
+- **v0.1.0** (2026-04-13) — First audited, tagged release. 1074 oracle-verified test vectors across P-256 and P-384 field / point / scalar-mul. See [`CHANGELOG.md`](CHANGELOG.md) for the full release notes and wave history.
+
+## Integration as a library
+
+Downstream C64 programs can import `c64-nist-curves` as a git submodule pinned to a release tag, then link against the library's `.s` modules from their own `ca65/ld65` build. See [`API.md` §8 "Consumer integration"](API.md#8-consumer-integration) for the full integration reference, including:
+
+- How to add the library as a git submodule and pin to a tag
+- A consumer Makefile fragment that links the library modules (omitting `main.s`, which is the library's own test driver)
+- Memory-layout constraints the consumer must honour (C64 buffer addresses, zero-page slots, REU bank assignments)
+- Required initialization sequence (`sqtab_init`, `reu_mul_init`, `ec_precompute_256`, `ec_precompute_384`)
+- Assembly-time version compatibility checks via the `LIB_VERSION_*` equates exported from `src/lib_version.s`
+
+Planned consumer projects: `c64-https` and `c64-wireguard` will adopt this library once both are migrated from ACME to the ca65 toolchain.
