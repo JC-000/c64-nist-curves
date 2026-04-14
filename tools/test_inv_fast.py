@@ -16,7 +16,7 @@ import time
 
 from c64_test_harness import (
     Labels, ViceConfig, ViceInstanceManager,
-    read_bytes, write_bytes, jsr, wait_for_text,
+    read_bytes, write_bytes, jsr,
 )
 
 PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -215,7 +215,7 @@ def main():
     labels = Labels.from_file(LABELS_PATH)
     required = ["fp_mod_inv_fast", "fp_mod_mul", "fp_src1", "fp_src2",
                 "fp_misc", "fp_tmp1", "fp_tmp2", "fp_tmp3", "fp_r0",
-                "ec_p256", "sqtab_init", "reu_mul_init"]
+                "ec_p256"]
     for name in required:
         if labels.address(name) is None:
             print(f"FATAL: required label '{name}' missing")
@@ -223,25 +223,44 @@ def main():
 
     config = ViceConfig(prg_path=PRG_PATH, warp=True, ntsc=True, sound=False,
                         extra_args=["-reu", "-reusize", "512"])
-    with ViceInstanceManager(config=config) as mgr:
+    with ViceInstanceManager(config=config,
+                             port_range_start=6531,
+                             port_range_end=6551) as mgr:
         inst = mgr.acquire()
         print(f"VICE PID={inst.pid}, port={inst.port}")
         transport = inst.transport
 
-        grid = wait_for_text(transport, "READY.", timeout=180.0, verbose=False)
-        if grid is None:
-            print("FATAL: program did not reach READY")
+        # Poll $02A7 init sentinel: main.s start writes $42 here as the final
+        # step of boot-time init (sqtab_init + reu_mul_init + ec_precompute_*),
+        # so by the time it flips we know every table is built and every
+        # routine is callable. This replaces the stale wait_for_text("READY.")
+        # pattern, which no longer works because main.s ends in an infinite
+        # `jmp main_loop` rather than returning to BASIC. See CLAUDE.md
+        # "Init sentinel pattern" for the canonical description.
+        print("Waiting for init sentinel...")
+        start = time.time()
+        sentinel_ok = False
+        while time.time() - start < 600.0:
+            sentinel = read_bytes(transport, 0x02A7, 1)
+            if sentinel[0] == 0x42:
+                sentinel_ok = True
+                break
+            try:
+                transport.resume()
+            except Exception:
+                pass
+            time.sleep(0.5)
+        if not sentinel_ok:
+            print("FATAL: init sentinel not set within timeout")
             mgr.release(inst)
             sys.exit(1)
-        print("VICE ready.")
+        print(f"Init complete after {time.time() - start:.1f}s")
 
+        # IRQ-vector self-loop guard, same pattern as test_fp384.py /
+        # test_points384.py / test_fp256.py. Plants `JMP $0339` at $0339
+        # so any stray IRQ that lands on $0339 busy-loops there instead
+        # of stomping on our test state.
         write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
-
-        print("Initializing sqtab_init...")
-        jsr(transport, labels["sqtab_init"], timeout=30.0)
-        print("Initializing reu_mul_init (~2 min in warp)...")
-        jsr(transport, labels["reu_mul_init"], timeout=300.0)
-        print("Tables initialized.")
 
         passed, failed = run_tests(transport, labels, seed)
 

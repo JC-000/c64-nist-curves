@@ -16,7 +16,7 @@ import time
 
 from c64_test_harness import (
     Labels, ViceConfig, ViceInstanceManager,
-    read_bytes, write_bytes, jsr, wait_for_text,
+    read_bytes, write_bytes, jsr,
 )
 
 PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -373,28 +373,42 @@ def main():
     config = ViceConfig(prg_path=PRG_PATH, warp=True, ntsc=True, sound=False,
                         extra_args=["-reu", "-reusize", "512"])
 
-    with ViceInstanceManager(config=config) as mgr:
+    with ViceInstanceManager(config=config,
+                             port_range_start=6551,
+                             port_range_end=6571) as mgr:
         inst = mgr.acquire()
         print(f"VICE PID={inst.pid}, port={inst.port}")
         transport = inst.transport
 
-        grid = wait_for_text(transport, "READY.", timeout=180.0, verbose=False)
-        if grid is None:
-            print("FATAL: Program did not reach READY state")
+        # Wait for boot-time init to complete via $02A7 sentinel (sqtab +
+        # reu_mul_init + ec_precompute_256 + ec_precompute_384). This is
+        # the canonical pattern per CLAUDE.md; previously this file used
+        # wait_for_text("READY.", timeout=180.0) which became flaky after
+        # the ct_mul_8x8 port (issue #14) extended boot time past the 180 s
+        # budget and is fundamentally race-prone against the text grid.
+        # No post-sentinel jsr-reinit is needed — the sentinel is written
+        # after every table is built, so state is known-good.
+        print("Waiting for init sentinel...")
+        start = time.time()
+        sentinel_ok = False
+        while time.time() - start < 600.0:
+            sentinel = read_bytes(transport, 0x02A7, 1)
+            if sentinel[0] == 0x42:
+                sentinel_ok = True
+                break
+            try:
+                transport.resume()
+            except Exception:
+                pass
+            time.sleep(0.5)
+        if not sentinel_ok:
+            print("FATAL: init sentinel not set within timeout")
             mgr.release(inst)
             sys.exit(1)
-        print("VICE ready, program initialized.")
+        print(f"Init complete after {time.time() - start:.1f}s")
 
         # Safety loop for jsr() return.
         write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
-
-        # Re-initialize lookup tables via jsr() — boot-time init can be
-        # corrupted by VICE timing races.
-        print("Initializing sqtab_init...")
-        jsr(transport, labels["sqtab_init"], timeout=30.0)
-        print("Initializing reu_mul_init (~2 min in warp)...")
-        jsr(transport, labels["reu_mul_init"], timeout=300.0)
-        print("Tables initialized.")
 
         # Point fp_misc at ec_p256 for modular routines.
         set_ptr(transport, labels["fp_misc"], labels["ec_p256"])

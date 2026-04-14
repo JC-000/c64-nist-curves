@@ -79,7 +79,9 @@ or point routine is used. All of them are defined in `main.s` / `points256.s`
 
 3. **`jsr reu_mul_init`** — fills REU banks 0-1 with the full 128 KB 8x8 -> 16
    multiply table and pre-configures the REU DMA registers. Required for any
-   multiply. Takes ~4 seconds on a real C64.
+   multiply. Takes ~7 seconds on a real C64 (~4 s of prior baseline plus
+   ~2.8 s added by the constant-time `mul_8x8` port of issue #14; the boot
+   cost is a one-time tax, no runtime call path is affected).
 
 4. **`jsr ec_precompute_256`** — builds the 16 KB Lim-Lee anchor / comb table in
    REU bank 2 at offset `$0000` (256 entries * 64 bytes, h=8). Required before
@@ -411,10 +413,10 @@ Boot cost on a stock C64, in warp mode:
 | Step | Cost |
 |---|---|
 | `sqtab_init` | <1 s |
-| `reu_mul_init` | ~4 s |
+| `reu_mul_init` | ~7 s (~4 s of prior baseline + ~2.8 s from the constant-time `mul_8x8` port, issue #14) |
 | `ec_precompute_256` | ~25 s |
 | `ec_precompute_384` | ~80 s |
-| **Total (both curves)** | **~110 s** |
+| **Total (both curves)** | **~113 s** |
 
 Programs using only one curve may omit the other's `ec_precompute_*`
 call. Programs using neither curve's scalar_mul (e.g. only raw field

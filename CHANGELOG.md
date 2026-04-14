@@ -10,6 +10,74 @@ releases track `MAJOR.MINOR.PATCH` and are the supported consumption
 points for downstream projects (see `API.md` §8 for the integration
 contract).
 
+## [Unreleased]
+
+### Added
+
+- **`tools/ct_mul_brute_check.py`** — brute-force correctness check for
+  the constant-time `mul_8x8`. Exercises all 65 536 `(a, b)` pairs in
+  `[0, 255]²` against Python `a * b` and asserts byte equality of the
+  16-bit product. Used as the primary validation for the issue #14
+  remediation (see below). Uses the canonical `$02A7` init sentinel
+  pattern + a 256-byte inner-loop shim at `$C000` for batched reads,
+  so the 65 536-pair sweep completes in ~2.5 s of warp-mode runtime
+  after the one-time init.
+
+### Fixed
+
+- **Issue #14 (constant-time bug in `mul_8x8`)** — the quarter-square
+  8×8→16 multiply primitive at `src/mul_8x8.s` had two secret-dependent
+  branches (`bcs :+` at the |a−b| sign test, `beq @s0` at the sum-page
+  dispatch) that would leak the high bit of `a−b` and the carry of
+  `a+b` via branch-timing on any caller passing secret operands. Both
+  branches removed via a branchless port of `ct_mul_8x8` from
+  `c64-ChaCha20-Poly1305` v0.3.0 (`src/lib/poly1305_lib.s`, design memo
+  `docs/design/ct_mul_8x8.md`). The new implementation uses a sign-mask
+  trick for `|a−b|` (`lda #0 / sbc #0` produces `$00` / `$FF` then
+  `eor` + `sec / sbc`) and SMC-patches the high byte of two `lda abs,x`
+  loads for the sum-page dispatch. All table loads use page-aligned
+  bases (`sqtab_lo` at `$7800`, `sqtab_hi` at `$7a00`) so `abs,x` and
+  `abs,y` are always 4-cy with no page-cross penalty. Body is
+  straight-line with no conditional branches.
+
+  In this project `mul_8x8` has exactly one caller — `reu_mul_init` at
+  boot, which walks `(a, b) ∈ [0, 255]²` once to build the REU DMA
+  multiply-table cache — so no runtime field or point op is affected.
+  All `fp_*` / `ec_*` cycle counts are flat within measurement noise.
+  Boot-time impact: +2.8 M cy (≈ +2.8 s on a real C64, lost in the
+  ~120 s warp-mode init noise under VICE).
+
+  Per-call cost: 86 cy body + 6 cy caller-side `jsr` = 92 cy at the
+  call site (up from ~46–50 cy for the old branchy body). The
+  adaptation from the reference's SMC-baked entry to this project's
+  register calling convention keeps `a` live in Y across the sum
+  block, so the diff block recovers it with a 2-cy `tya` instead of
+  a 3-cy `lda mul_a` round-trip — saving 2 cy versus a naive port.
+  Validated by a new brute-force test tool
+  (`tools/ct_mul_brute_check.py`) that exercises all 65 536 `(a, b)`
+  pairs and asserts byte equality against Python `a * b`. All
+  existing tests (fp256, fp384, points256 --full, points384 --full,
+  ct_mul_brute_check, test_inv_fast) pass.
+
+- **`tools/test_inv_fast.py`** was failing on both baseline and
+  post-fix because it used the stale `wait_for_text("READY.")`
+  boot-wait pattern; `src/main.s`'s `start:` ends in an infinite
+  `jmp main_loop`, so BASIC never regains control and the `READY.`
+  prompt never appears. Ported to the canonical `$02A7` init sentinel
+  pattern (per CLAUDE.md "Init sentinel pattern" section, same shape
+  as `test_fp384.py` / `test_points384.py`). 10/10 `fp_mod_inv_fast`
+  tests now pass.
+
+- **`tools/bench_p256.py`** had the same stale
+  `wait_for_text("READY.")` pattern. It was working by luck on
+  short-init runs but became unreliable once the issue #14 boot-cost
+  increase pushed total init past the 180 s text-wait budget. Ported
+  to the sentinel pattern to match `bench_p384.py`. Also dropped the
+  post-wait `sqtab_init` / `reu_mul_init` re-invocation — the sentinel
+  is written after every table build, so the re-init was both
+  redundant and would have doubled boot cost under the slower
+  ct_mul_8x8.
+
 ## [0.1.0] — 2026-04-13
 
 First audited, tagged release. Establishes a consumable library state for
