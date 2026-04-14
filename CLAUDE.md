@@ -89,7 +89,7 @@ All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry
 | main.s | Entry point, VIC blanking, REU DMA init, precompute table generation, benchmarking |
 | constants.s | Hardware addresses, REU registers |
 | zp_config.s | Zero-page allocations (consumer-tunable) |
-| mul_8x8.s | Quarter-square 8x8->16 multiply tables |
+| mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`) |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
 | curve256.s | P-256 parameters + RFC 6979 test vectors (little-endian) |
@@ -238,7 +238,26 @@ keep all library calls on a single thread of control.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
-- None outstanding. The `LDY #143 / BPL` infinity-fill bug family (BPL
+- None outstanding. Issue #14 (constant-time bug in `mul_8x8`) was
+  remediated via Option B: the quarter-square primitive in `src/mul_8x8.s`
+  was replaced with a branchless, SMC-dispatched implementation ported
+  from `c64-ChaCha20-Poly1305` v0.3.0 `ct_mul_8x8`. The old body had two
+  secret-dependent branches (`bcs :+` at |a-b|, `beq @s0` at sum-page
+  dispatch); both were removed. In this project `mul_8x8` has only a
+  single caller — `reu_mul_init` at boot — which walks `(a,b)` over the
+  full `[0,255]^2` enumeration once, so the CT bug was theoretical only
+  (no secret inputs ever reach the routine). The fix was taken anyway
+  to prevent downstream confusion if a future consumer hot-paths it.
+  Per-call cost: 86 cy body + 6 cy jsr = 92 cy at the call site, ~+42 cy
+  vs the old ~46-50 cy average. Runtime impact: zero — no runtime field
+  or point op calls `mul_8x8`. Boot-time impact: +2.8 M cy ≈ +2.8 s on
+  a real C64 (lost in the ~120 s warp-mode init noise under VICE).
+  `tools/test_inv_fast.py` and `tools/bench_p256.py` were ported from
+  the stale `wait_for_text("READY.")` boot-wait pattern to the `$02A7`
+  init sentinel pattern as collateral cleanup — both were broken on
+  baseline because `main.s` ends in an infinite `jmp main_loop` and
+  BASIC never regains control. See CHANGELOG.md "[Unreleased]".
+- The `LDY #143 / BPL` infinity-fill bug family (BPL
   never branches on the first iteration because `$8F` bit 7 is set, so
   only one byte got written) was fixed in Wave 5 across all sites in
   `ec_point_double_384` and `ec_point_add_384`. The fix pattern is
