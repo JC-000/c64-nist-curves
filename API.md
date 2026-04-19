@@ -37,7 +37,10 @@ counterpart with the same contract except the operand width.
 
 The library currently assumes the fixed load layout below. Relocating the data
 buffers requires editing the labels in `src/data.s`; relocating the zero-page
-slots only requires editing `src/zp_config.s`.
+slots can be done either by editing `src/zp_config.s` or, without modifying
+the library source, by pre-defining the ZP symbol in the consumer's build
+(every equate in `zp_config.s` is wrapped in `.ifndef NAME ... .endif`, so a
+host-supplied definition wins).
 
 | Region | Address range | Purpose |
 |---|---|---|
@@ -395,9 +398,12 @@ overlap:
 | REU banks 3+ (if present) | Unused by library | Safe for consumer use |
 
 Relocating library-owned C64 data addresses requires editing `src/data.s`
-and reassembling. ZP slots can be relocated via `src/zp_config.s`. REU
-bank assignments are currently hard-coded in the library source and
-would require a deeper refactor to change.
+and reassembling. ZP slots can be relocated via `src/zp_config.s`, or
+overridden from the consumer's own source without editing the library
+(every slot in `zp_config.s` is `.ifndef`-guarded — pre-define the symbol
+before the library assembles and the host choice wins). REU bank
+assignments are currently hard-coded in the library source and would
+require a deeper refactor to change.
 
 Programs using only one curve may skip the other's `ec_precompute_*`
 call (§8.4), recovering its 16–24 KB of REU bank 2 for consumer use.
