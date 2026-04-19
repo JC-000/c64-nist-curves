@@ -29,32 +29,68 @@
 .segment "ZEROPAGE"
 
 ; --- Immovable (hardware) ---
-proc_port       := $01           ; processor port (ROM banking)
+.ifndef proc_port
+  proc_port  = $01                      ; processor port (ROM banking)
+.endif
 
 ; --- General-purpose pointers / temps ---
-zp_tmp1         := $02           ; temp byte
-zp_tmp2         := $03           ; temp byte
-zp_ptr1         := $fb           ; 2-byte pointer
-zp_ptr2         := $fd           ; 2-byte pointer
+.ifndef zp_tmp1
+  zp_tmp1  = $02                        ; temp byte
+.endif
+.ifndef zp_tmp2
+  zp_tmp2  = $03                        ; temp byte
+.endif
+.ifndef zp_ptr1
+  zp_ptr1  = $fb                        ; 2-byte pointer
+.endif
+.ifndef zp_ptr2
+  zp_ptr2  = $fd                        ; 2-byte pointer
+.endif
 
 ; --- Field arithmetic working variables (shared by P-256 and P-384) ---
-fp_src1         := $22           ; 2-byte pointer to operand 1
-fp_src2         := $24           ; 2-byte pointer to operand 2
-fp_dst          := $26           ; 2-byte pointer to destination
-fp_misc         := $28           ; 2-byte misc pointer (modulus)
-fp_carry        := $2a           ; carry/borrow byte
-fp_loop         := $2b           ; loop counter
-fp_mul_i        := $2c           ; multiply outer index
-fp_mul_j        := $2d           ; multiply inner index
+.ifndef fp_src1
+  fp_src1  = $22                        ; 2-byte pointer to operand 1
+.endif
+.ifndef fp_src2
+  fp_src2  = $24                        ; 2-byte pointer to operand 2
+.endif
+.ifndef fp_dst
+  fp_dst  = $26                         ; 2-byte pointer to destination
+.endif
+.ifndef fp_misc
+  fp_misc  = $28                        ; 2-byte misc pointer (modulus)
+.endif
+.ifndef fp_carry
+  fp_carry  = $2a                       ; carry/borrow byte
+.endif
+.ifndef fp_loop
+  fp_loop  = $2b                        ; loop counter
+.endif
+.ifndef fp_mul_i
+  fp_mul_i  = $2c                       ; multiply outer index
+.endif
+.ifndef fp_mul_j
+  fp_mul_j  = $2d                       ; multiply inner index
+.endif
 
 ; --- Scalar multiplication working variables ---
-ec_scalar_ptr   := $3b           ; ZP pointer to 32-byte scalar k
+.ifndef ec_scalar_ptr
+  ec_scalar_ptr  = $3b                  ; ZP pointer to 32-byte scalar k
+.endif
 
 ; --- mul_8x8 working variables ---
-poly_i          := $1a           ; inner loop counter
-poly_j          := $1b           ; outer loop counter
-poly_carry      := $1c           ; carry byte
-poly_tmp        := $1d           ; temp
+.ifndef poly_i
+  poly_i  = $1a                         ; inner loop counter
+.endif
+.ifndef poly_j
+  poly_j  = $1b                         ; outer loop counter
+.endif
+.ifndef poly_carry
+  poly_carry  = $1c                     ; carry byte
+.endif
+.ifndef poly_tmp
+  poly_tmp  = $1d                       ; temp
+.endif
 
 ; --- Exports ---
 .exportzp proc_port, zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
