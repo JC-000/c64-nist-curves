@@ -20,7 +20,7 @@
 ; --- Exports ---
 .export ec_p384, ec_n384
 .export fp_mod_add_384, fp_mod_sub_384, fp_mod_reduce384
-.export fp_mod_mul_384, fp_mod_sqr_384, fp_mod_inv_384, fp_chk_one_384
+.export fp_mod_mul_384, fp_mod_mul_n_384, fp_mod_sqr_384, fp_mod_inv_384, fp_chk_one_384
 .export ec_set_modp_384, ec_set_modn_384, ec_mulp_384, ec_sqrp_384
 
 .segment "CODE"
@@ -731,6 +731,101 @@ fp_mod_mul_384:
         jsr fp_mul_384
         jsr fp_mod_reduce384
         rts
+
+; =============================================================================
+; fp_mod_mul_n_384 - (fp_dst) = ((fp_src1) * (fp_src2)) mod ec_n384
+;
+; Hardcoded to the P-384 group order n. Does NOT use fp_misc.
+; Assumes inputs a, b in [0, n-1] so that (a*b) < n * 2^384 and thus the
+; top half of the 768-bit product is strictly < n before the reduction
+; loop begins. Uses bit-serial top-down reduction (384 iterations).
+;
+; Contract:
+;   input:  fp_src1, fp_src2, fp_dst set by caller; a,b in [0,n-1].
+;   output: result at (fp_dst), 48 bytes LE.
+;   clobbers: fp384_wide (as scratch), A, X, Y.
+; =============================================================================
+fp_mod_mul_n_384:
+        jsr fp_mul_384          ; fp384_wide[0..95] = a * b
+
+        ; Bit-serial reduction: treat fp384_wide[48..95] as running remainder.
+        ; Runs 384 iterations via a 2-byte counter (1 page + 128).
+        lda #0
+        sta modn384_carry
+        ; counter = 384 = $0180
+        lda #<384
+        sta modn384_iter_lo
+        lda #>384
+        sta modn384_iter_hi
+@loop:
+        ; Shift whole 96-byte fp384_wide left by 1. Use DEC counter rather
+        ; than CPX — CPX clobbers C and would break carry propagation across
+        ; ROLs. DEC affects only N,Z (not C).
+        clc
+        ldx #0
+        lda #96
+        sta modn384_cnt
+@shl_loop:
+        rol fp384_wide,x
+        inx
+        dec modn384_cnt
+        bne @shl_loop
+        rol modn384_carry       ; capture spill from bit 767
+
+        ; Decide: subtract n from r = fp384_wide[48..95] ?
+        lda modn384_carry
+        bne @do_sub             ; overflow past 2^384: definitely >= n
+
+        ; Compare r to n (MSB-first, 48 bytes).
+        ldy #47
+@cmp_loop:
+        lda fp384_wide+48,y
+        cmp ec_n384,y
+        bcc @no_sub
+        bne @do_sub
+        dey
+        bpl @cmp_loop
+        ; r == n -> subtract
+@do_sub:
+        sec
+        ldy #0
+        ldx #48
+@sub_loop:
+        lda fp384_wide+48,y
+        sbc ec_n384,y
+        sta fp384_wide+48,y
+        iny
+        dex                     ; DEX preserves C so borrow propagates
+        bne @sub_loop
+        lda modn384_carry
+        sbc #0
+        sta modn384_carry
+@no_sub:
+        ; Decrement 16-bit counter; loop until zero.
+        lda modn384_iter_lo
+        bne @dec_lo
+        dec modn384_iter_hi
+@dec_lo:
+        dec modn384_iter_lo
+        lda modn384_iter_lo
+        ora modn384_iter_hi
+        beq @done
+        jmp @loop
+@done:
+
+        ; Copy r = fp384_wide[48..95] to (fp_dst).
+        ldy #47
+@copy_loop:
+        lda fp384_wide+48,y
+        sta (fp_dst),y
+        dey
+        bpl @copy_loop
+        rts
+
+modn384_carry:      .byte 0
+modn384_iter_lo:    .byte 0
+modn384_iter_hi:    .byte 0
+modn384_cnt:        .byte 0
 
 ; =============================================================================
 ; fp_mod_sqr_384 - fp384_r0 = ((fp_src1)^2) mod p384

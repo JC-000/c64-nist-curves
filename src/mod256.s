@@ -15,7 +15,7 @@
 ; Exports
 .export ec_p256, ec_n256
 .export fp_mod_add, fp_mod_sub, fp_mod_reduce256
-.export fp_mod_mul, fp_mod_sqr, fp_mod_inv, fp_chk_one
+.export fp_mod_mul, fp_mod_mul_n, fp_mod_sqr, fp_mod_inv, fp_chk_one
 .export ec_set_modp, ec_set_modn, ec_mulp, ec_sqrp
 
 ; =============================================================================
@@ -601,6 +601,89 @@ fp_mod_mul:
         jsr fp_mul
         jsr fp_mod_reduce256
         rts
+
+; =============================================================================
+; fp_mod_mul_n - (fp_dst) = ((fp_src1) * (fp_src2)) mod ec_n256
+;
+; Hardcoded to the P-256 group order n. Does NOT use fp_misc.
+; Assumes inputs a, b in [0, n-1] so that (a*b) < n * 2^256 and thus the
+; top half of the 512-bit product is strictly < n before the reduction
+; loop begins. Uses bit-serial top-down reduction (256 iterations).
+;
+; Contract:
+;   input:  fp_src1, fp_src2, fp_dst set by caller; a,b in [0,n-1].
+;   output: result at (fp_dst), 32 bytes LE.
+;   clobbers: fp_wide (as scratch), A, X, Y.
+; =============================================================================
+fp_mod_mul_n:
+        jsr fp_mul              ; fp_wide[0..63] = a * b
+
+        ; Bit-serial reduction: treat fp_wide[32..63] as running remainder r.
+        ; For i = 255 downto 0:
+        ;   r = (r << 1) | bit_i(low half)   (via one 64-byte shift-left)
+        ;   if r >= n (including carry-out): r -= n
+        lda #0
+        sta modn_carry
+        sta modn_iter           ; iteration counter (wraps after 256)
+@loop:
+        ; Shift whole 64-byte fp_wide left by 1. Carry must propagate from
+        ; byte N-1 into byte N via ROL, so no C-clobbering instruction (CPX,
+        ; CMP, ADC, SBC) can appear between ROLs. DEC/INX/INY preserve C.
+        clc
+        ldx #0
+        lda #64
+        sta modn_cnt
+@shl_loop:
+        rol fp_wide,x
+        inx
+        dec modn_cnt
+        bne @shl_loop
+        rol modn_carry          ; capture spill from bit 511
+
+        ; Decide: subtract n from r = fp_wide[32..63] ?
+        lda modn_carry
+        bne @do_sub             ; overflow past 2^256: definitely >= n
+
+        ; Compare r to n (MSB-first, 32 bytes)
+        ldy #31
+@cmp_loop:
+        lda fp_wide+32,y
+        cmp ec_n256,y
+        bcc @no_sub
+        bne @do_sub
+        dey
+        bpl @cmp_loop
+        ; r == n -> subtract
+@do_sub:
+        sec
+        ldy #0
+        ldx #32
+@sub_loop:
+        lda fp_wide+32,y
+        sbc ec_n256,y
+        sta fp_wide+32,y
+        iny
+        dex                     ; DEX preserves C so borrow propagates
+        bne @sub_loop
+        lda modn_carry
+        sbc #0
+        sta modn_carry
+@no_sub:
+        inc modn_iter
+        bne @loop               ; wraps 0 -> 255 -> ... -> 0, i.e. 256 iters
+
+        ; Copy r = fp_wide[32..63] to (fp_dst).
+        ldy #31
+@copy_loop:
+        lda fp_wide+32,y
+        sta (fp_dst),y
+        dey
+        bpl @copy_loop
+        rts
+
+modn_carry:     .byte 0
+modn_iter:      .byte 0
+modn_cnt:       .byte 0
 
 ; =============================================================================
 ; fp_mod_sqr - fp_r0 = ((fp_src1)^2) mod p256

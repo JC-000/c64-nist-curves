@@ -13,7 +13,7 @@
 
 ; --- Exports ---
 .export ec_point_double, ec_point_add
-.export ec_precompute_256, ec_scalar_mul
+.export ec_precompute_256, ec_scalar_mul, ec_scalar_mul_var
 .export ec_jacobian_to_affine
 
 ; --- ZP imports ---
@@ -41,6 +41,7 @@
 .import ec_anchor5_y, ec_anchor6_y, ec_anchor7_y, ec_anchor8_y
 .import cm_k, mul_dma_lo
 .import ec_sc_byte, ec_sc_mask
+.import ec_base_x, ec_base_y
 
 ; --- constants imports ---
 .import reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi
@@ -1446,6 +1447,161 @@ cm_idx:         .byte 0
 cm_r_inf:       .byte 0
 cm_seeded:      .byte 0         ; precompute helper
 cm_anch_idx:    .byte 0         ; precompute helper
+
+; =============================================================================
+; ec_scalar_mul_var: variable-base scalar multiplication (left-to-right
+;   double-and-add over 256 bits; non-constant-time, for ECDSA verify).
+; Input:  ec_scalar_ptr -> 32-byte BE scalar
+;         ec_base_x, ec_base_y -> 32-byte LE affine base point
+; Output: ec_p3 (Jacobian, 96 B)
+; NOT re-entrant. Serialize with all other field/point ops.
+; =============================================================================
+ec_scalar_mul_var:
+        jsr ec_set_modp
+
+        ; Transpose BE scalar into LE internal buffer var_k.
+        ;   var_k[0]  = scalar[31]  (LSB)
+        ;   var_k[31] = scalar[0]   (MSB)
+        ldy #31
+        ldx #0
+@vxpose:
+        lda (ec_scalar_ptr),y
+        sta var_k,x
+        inx
+        dey
+        bpl @vxpose
+
+        ; Init walking state. Bit 255 is var_k[31] bit 7.
+        lda #31
+        sta var_byte_off
+        lda #$80
+        sta var_bit_mask
+        lda #0
+        sta var_loop_ctr_lo     ; 256 iterations encoded as hi=1/lo=0
+        lda #1
+        sta var_loop_ctr_hi
+        lda #1
+        sta var_r_inf           ; R = infinity
+
+@v_loop:
+        ; --- Double R unless infinity ---
+        lda var_r_inf
+        bne @v_skip_double
+        jsr ec_point_double
+        ldy #95
+@v_dcp:
+        lda ec_p3,y
+        sta ec_p1,y
+        dey
+        bpl @v_dcp
+@v_skip_double:
+
+        ; --- Test current bit of scalar ---
+        ldx var_byte_off
+        lda var_k,x
+        and var_bit_mask
+        beq @v_bit_is_zero
+
+        ; Bit set: need to add base point to R.
+        ; Stage P2 = (base_x, base_y) for the (possibly) coming add.
+        ldy #31
+@v_cpbx:
+        lda ec_base_x,y
+        sta ec_p2,y
+        dey
+        bpl @v_cpbx
+        ldy #31
+@v_cpby:
+        lda ec_base_y,y
+        sta ec_p2+32,y
+        dey
+        bpl @v_cpby
+
+        lda var_r_inf
+        beq @v_real_add
+
+        ; First set bit: seed R = (base_x, base_y, 1).
+        ldy #31
+@v_seedx:
+        lda ec_base_x,y
+        sta ec_p1,y
+        dey
+        bpl @v_seedx
+        ldy #31
+@v_seedy:
+        lda ec_base_y,y
+        sta ec_p1+32,y
+        dey
+        bpl @v_seedy
+        ; Z = 1 (LE: byte 0 = 1, rest = 0)
+        ldy #31
+        lda #0
+@v_seedz:
+        sta ec_p1+64,y
+        dey
+        bpl @v_seedz
+        lda #1
+        sta ec_p1+64
+        lda #0
+        sta var_r_inf
+        jmp @v_bit_done
+
+@v_real_add:
+        jsr ec_point_add
+        ldy #95
+@v_acp:
+        lda ec_p3,y
+        sta ec_p1,y
+        dey
+        bpl @v_acp
+
+@v_bit_is_zero:
+@v_bit_done:
+        ; --- Advance to next-lower bit ---
+        lsr var_bit_mask
+        bne @v_after_advance
+        lda #$80
+        sta var_bit_mask
+        dec var_byte_off
+@v_after_advance:
+
+        ; --- 256-iteration counter (hi=1/lo=0 decrementing to 0) ---
+        dec var_loop_ctr_lo
+        bne @v_loop_trampoline
+        dec var_loop_ctr_hi
+        bne @v_loop_trampoline
+        jmp @v_loop_done
+@v_loop_trampoline:
+        jmp @v_loop
+
+@v_loop_done:
+        ; --- Done. If R still infinity, return zero; else copy ec_p1 -> ec_p3. ---
+        lda var_r_inf
+        beq @v_copy_out
+        ldy #95
+        lda #0
+@v_zinf:
+        sta ec_p3,y
+        dey
+        bpl @v_zinf
+        rts
+
+@v_copy_out:
+        ldy #95
+@v_finc:
+        lda ec_p1,y
+        sta ec_p3,y
+        dey
+        bpl @v_finc
+        rts
+
+; --- ec_scalar_mul_var state vars (locally scoped; distinct from cm_*) ---
+var_k:           .res 32
+var_byte_off:    .byte 0
+var_bit_mask:    .byte 0
+var_loop_ctr_lo: .byte 0
+var_loop_ctr_hi: .byte 0
+var_r_inf:       .byte 0
 
 ; =============================================================================
 ; ec_jacobian_to_affine: convert ec_p3 (Jacobian) to affine (x,y)

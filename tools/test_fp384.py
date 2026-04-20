@@ -189,6 +189,17 @@ def c64_fp_mod_mul(transport, labels, a, b):
     jsr(transport, labels["fp_mod_mul_384"], timeout=240.0)
     return read_fe_384(transport, labels["fp384_r0"])
 
+def c64_fp_mod_mul_n(transport, labels, a, b):
+    write_fe_384(transport, labels["fp384_tmp1"], a)
+    write_fe_384(transport, labels["fp384_tmp2"], b)
+    # Sentinel-fill dst so a no-op implementation is detectable.
+    write_fe_384(transport, labels["fp384_tmp3"], 0xDEADBEEFCAFEBABE)
+    set_fp_ptrs(transport, labels,
+                src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"],
+                dst=labels["fp384_tmp3"])
+    jsr(transport, labels["fp_mod_mul_n_384"], timeout=300.0)
+    return read_fe_384(transport, labels["fp384_tmp3"])
+
 def c64_fp_mod_sqr(transport, labels, a):
     write_fe_384(transport, labels["fp384_tmp1"], a)
     set_fp_ptrs(transport, labels, src1=labels["fp384_tmp1"])
@@ -579,6 +590,51 @@ def test_fp_mod_mul(transport, labels, rng):
     return passed, failed
 
 
+def test_fp_mod_mul_n(transport, labels, rng):
+    """fp_mod_mul_n_384: (a*b) mod n384 (group order).
+
+    Oracle: Python `(a * b) % N384`. Inputs sampled from [0, N384-1].
+    Required for ECDSA verify on P-384; the default fp_mod_mul_384 is
+    hardcoded to P-384 Solinas and cannot compute mod-n products.
+    """
+    passed = failed = 0
+    cases = [
+        ("0*0", 0, 0),
+        ("0*1", 0, 1),
+        ("1*0", 1, 0),
+        ("1*1", 1, 1),
+        ("3*5", 3, 5),
+        ("n-1*1", N384 - 1, 1),
+        ("1*n-1", 1, N384 - 1),
+        ("n-1*n-1", N384 - 1, N384 - 1),
+    ]
+    n_rand = 10 if "--full" in sys.argv else 3
+    for i in range(n_rand):
+        while True:
+            a = rng.rand_384bit()
+            if a < N384:
+                break
+        while True:
+            b = rng.rand_384bit()
+            if b < N384:
+                break
+        cases.append((f"rand#{i}", a, b))
+    for name, a, b in cases:
+        expected = (a * b) % N384
+        result = c64_fp_mod_mul_n(transport, labels, a, b)
+        if result == expected:
+            passed += 1
+            if VERBOSE: print(f"  PASS mod_mul_n {name}")
+        else:
+            failed += 1
+            print(f"  FAIL mod_mul_n {name}:")
+            print(f"    a        = {a:#098x}")
+            print(f"    b        = {b:#098x}")
+            print(f"    expected = {expected:#098x}")
+            print(f"    got      = {result:#098x}")
+    return passed, failed
+
+
 def test_fp_mod_sqr(transport, labels, rng):
     passed = failed = 0
     cases = [
@@ -691,6 +747,8 @@ def run_tests(transport, labels, rng):
         ("fp_mod_sub_384",    lambda: test_fp_mod_sub(transport, labels, rng)),
         ("fp_mod_reduce384",  lambda: test_fp_mod_reduce(transport, labels, rng)),
         ("fp_mod_mul_384",    lambda: test_fp_mod_mul(transport, labels, rng)),
+        ("fp_mod_mul_n_384 (group order)",
+         lambda: test_fp_mod_mul_n(transport, labels, rng)),
         ("fp_mod_sqr_384",    lambda: test_fp_mod_sqr(transport, labels, rng)),
         ("NIST KAT curve-equation anchor",
          lambda: test_nist_kat_curve_equation(transport, labels)),
@@ -766,7 +824,8 @@ def main():
         "fp_add_384", "fp_sub_384", "fp_rshift1_384",
         "fp_mul_384", "fp_sqr_384",
         "fp_mod_add_384", "fp_mod_sub_384", "fp_mod_reduce384",
-        "fp_mod_mul_384", "fp_mod_sqr_384", "fp_mod_inv_384",
+        "fp_mod_mul_384", "fp_mod_mul_n_384", "fp_mod_sqr_384", "fp_mod_inv_384",
+        "ec_n384",
         "fp384_tmp1", "fp384_tmp2", "fp384_tmp3", "fp384_tmp4",
         "fp384_wide", "fp384_r0", "ec_p384",
         "sqtab_init", "reu_mul_init",

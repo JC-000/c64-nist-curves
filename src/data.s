@@ -74,6 +74,20 @@ ec_affine_x:    .res 32, 0
 .export ec_affine_y
 ec_affine_y:    .res 32, 0
 
+; --- Variable-base scalar-mul input (affine, 32 bytes each, LE).
+;     Consumed by ec_scalar_mul_var (ECDSA-verify building block).
+.export ec_base_x
+ec_base_x:      .res 32, 0
+.export ec_base_y
+ec_base_y:      .res 32, 0
+
+; --- P-384 variable-base scalar-mul input (affine, 48 bytes each, LE).
+;     Consumed by ec_scalar_mul_var_384 (ECDSA-verify building block).
+.export ec_base384_x
+ec_base384_x:   .res 48, 0
+.export ec_base384_y
+ec_base384_y:   .res 48, 0
+
 ; --- Scalar multiply state ---
 .export ec_sc_byte
 ec_sc_byte:     .byte 0
@@ -300,3 +314,83 @@ ec_anchor8_384_y: .res 48, 0
 ;     cm_k_384[0..5] = K0 (LSBs), ..., cm_k_384[42..47] = K7 (MSBs).
 .export cm_k_384
 cm_k_384:       .res 48, 0
+
+; --- ECDSA verify scratch (P-256). All 32-byte little-endian unless noted.
+;     Consumed only by ecdsa_verify_256 in src/ecdsa256.s.
+.export ecdsa_r
+ecdsa_r:        .res 32, 0      ; LE r (byte-reversed from BE input)
+.export ecdsa_s
+ecdsa_s:        .res 32, 0      ; LE s
+.export ecdsa_h
+ecdsa_h:        .res 32, 0      ; LE message hash
+.export ecdsa_qx
+ecdsa_qx:       .res 32, 0      ; LE public-key affine X
+.export ecdsa_qy
+ecdsa_qy:       .res 32, 0      ; LE public-key affine Y
+.export ecdsa_w
+ecdsa_w:        .res 32, 0      ; LE w = s^-1 mod n
+.export ecdsa_u1
+ecdsa_u1:       .res 32, 0      ; LE u1 = h*w mod n
+.export ecdsa_u2
+ecdsa_u2:       .res 32, 0      ; LE u2 = r*w mod n
+.export ecdsa_u1_be
+ecdsa_u1_be:    .res 32, 0      ; BE u1 (scalar_mul input)
+.export ecdsa_u2_be
+ecdsa_u2_be:    .res 32, 0      ; BE u2 (scalar_mul_var input)
+.export ecdsa_u1g_x
+ecdsa_u1g_x:    .res 32, 0      ; LE affine X of u1*G
+.export ecdsa_u1g_y
+ecdsa_u1g_y:    .res 32, 0      ; LE affine Y of u1*G
+
+; --- fp_reverse32 staging buffer (one 32-byte scratch). Owned by ecdsa256.s.
+.export fp_rev_buf
+fp_rev_buf:     .res 32, 0
+
+; --- ECDSA verify scratch (P-384). All 48-byte little-endian unless noted.
+;     Consumed only by ecdsa_verify_384 in src/ecdsa384.s.
+.export ecdsa384_r
+ecdsa384_r:     .res 48, 0      ; LE r (byte-reversed from BE input)
+.export ecdsa384_s
+ecdsa384_s:     .res 48, 0      ; LE s
+.export ecdsa384_h
+ecdsa384_h:     .res 48, 0      ; LE message hash
+.export ecdsa384_qx
+ecdsa384_qx:    .res 48, 0      ; LE public-key affine X
+.export ecdsa384_qy
+ecdsa384_qy:    .res 48, 0      ; LE public-key affine Y
+.export ecdsa384_w
+ecdsa384_w:     .res 48, 0      ; LE w = s^-1 mod n
+.export ecdsa384_u1
+ecdsa384_u1:    .res 48, 0      ; LE u1 = h*w mod n
+.export ecdsa384_u2
+ecdsa384_u2:    .res 48, 0      ; LE u2 = r*w mod n
+.export ecdsa384_u1_be
+ecdsa384_u1_be: .res 48, 0      ; BE u1 (scalar_mul input)
+.export ecdsa384_u2_be
+ecdsa384_u2_be: .res 48, 0      ; BE u2 (scalar_mul_var input)
+.export ecdsa384_u1g_x
+ecdsa384_u1g_x: .res 48, 0      ; LE affine X of u1*G
+.export ecdsa384_u1g_y
+ecdsa384_u1g_y: .res 48, 0      ; LE affine Y of u1*G
+
+; --- fp_reverse48 staging buffer (one 48-byte scratch). Owned by ecdsa384.s.
+.export fp_rev_buf_384
+fp_rev_buf_384: .res 48, 0
+
+; --- ECDSA verify test-driver staging buffers.
+;     The c64-test-harness jsr() helper cannot pass register arguments, so
+;     the 160-/240-byte BE input struct for ecdsa_verify_{256,384} is
+;     staged here by the Python test driver; the trampoline in main.s
+;     loads A/X with a pointer to the buffer and invokes the verify
+;     routine, capturing the returned C flag into the matching result
+;     byte (0 = valid, 1 = invalid). Buffers are test-only; production
+;     consumers pass their own pointer directly to ecdsa_verify_*.
+.export ecdsa_inputs_256
+ecdsa_inputs_256:       .res 160, 0     ; r|s|h|Qx|Qy each 32 B BE
+.export ecdsa_result_256
+ecdsa_result_256:       .byte 0
+
+.export ecdsa_inputs_384
+ecdsa_inputs_384:       .res 240, 0     ; r|s|h|Qx|Qy each 48 B BE
+.export ecdsa_result_384
+ecdsa_result_384:       .byte 0

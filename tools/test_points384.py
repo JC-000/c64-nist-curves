@@ -40,6 +40,7 @@ from tools.vectors import (  # noqa: E402
     scalar_mul_oracle,
     self_check,
 )
+from tools.vectors.loader import INFINITY, is_infinity  # noqa: E402
 
 VERBOSE = False
 
@@ -118,6 +119,23 @@ def c64_scalar_mul(transport, labels, k):
     write_bytes(transport, SCALAR_BUF, int_to_be_bytes(k, 48))
     set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
     jsr(transport, labels["ec_scalar_mul_384"], timeout=3600.0)
+    jx, jy, jz = read_jacobian_point(transport, labels["ec384_p3"])
+    return jacobian_to_affine(jx, jy, jz, "p384")
+
+
+def c64_scalar_mul_var(transport, labels, k, bx, by):
+    """Drive ec_scalar_mul_var_384 (variable-base double-and-add, P-384).
+
+    BE scalar into scratch buffer, ec_scalar_ptr wired, base point
+    staged into ec_base384_x / ec_base384_y, Jacobian result read from
+    ec384_p3 and Python-side j2a handles Z=0/infinity cleanly.
+    """
+    SCALAR_BUF = 0x033C
+    write_bytes(transport, SCALAR_BUF, int_to_be_bytes(k, 48))
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
+    write_field_elem(transport, labels["ec_base384_x"], bx)
+    write_field_elem(transport, labels["ec_base384_y"], by)
+    jsr(transport, labels["ec_scalar_mul_var_384"], timeout=10800.0)
     jx, jy, jz = read_jacobian_point(transport, labels["ec384_p3"])
     return jacobian_to_affine(jx, jy, jz, "p384")
 
@@ -305,6 +323,100 @@ def test_add_infinity_plus_random_384(transport, labels, rng, n_random):
     return passed, failed
 
 
+def test_scalar_mul_var_384(transport, labels, rng, n_random):
+    """ec_scalar_mul_var_384 (variable-base double-and-add) vs oracle.
+
+    Random (n_P, k) pairs: P = n_P*G via oracle, expected = (k*n_P mod n)*G.
+    Edge cases: k=1, k=2, k=n-1, k=0, k=n.
+    """
+    passed = failed = 0
+
+    kats = load_nist_scalar_mul_kats("p384")
+    anchor = kats[0]
+    Px, Py = anchor["qx"], anchor["qy"]
+
+    edge_cases = [
+        (1,           "k=1"),
+        (2,           "k=2"),
+        (N384 - 1,    "k=n-1"),
+        (0,           "k=0 (infinity)"),
+        (N384,        "k=n (infinity)"),
+    ]
+
+    def run_case(k, Px_, Py_, label):
+        nonlocal passed, failed
+        print(f"  scalar_mul_var_384 {label}...")
+        t0 = time.time()
+        got = c64_scalar_mul_var(transport, labels, k, Px_, Py_)
+        dt = time.time() - t0
+        k_mod = k % N384
+        if k_mod == 0:
+            expected = INFINITY
+        else:
+            R = INFINITY
+            for i in range(k_mod.bit_length() - 1, -1, -1):
+                R = affine_add(R, R, "p384")
+                if (k_mod >> i) & 1:
+                    R = affine_add(R, (Px_, Py_), "p384")
+            expected = R
+        if got == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): {label}")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): {label} k={k:#x}")
+            print(f"    Px={Px_:#098x}")
+            print(f"    Py={Py_:#098x}")
+            print(f"    expected={expected}")
+            print(f"    got     ={got}")
+
+    for k, label in edge_cases:
+        run_case(k, Px, Py, label + " on NIST KAT[0]")
+
+    got1 = c64_scalar_mul_var(transport, labels, 1, Px, Py)
+    if got1 == (Px, Py):
+        passed += 1
+        print("  PASS: k=1 returns (Px, Py) verbatim")
+    else:
+        failed += 1
+        print(f"  FAIL: k=1 identity: got {got1}")
+
+    neg_y = (-Py) % P384
+    got_neg = c64_scalar_mul_var(transport, labels, N384 - 1, Px, Py)
+    if got_neg == (Px, neg_y):
+        passed += 1
+        print("  PASS: k=n-1 returns (Px, -Py mod p)")
+    else:
+        failed += 1
+        print(f"  FAIL: k=n-1 identity: got {got_neg}")
+
+    for i in range(n_random):
+        nP = rng.randrange(2, N384 - 1)
+        Px_, Py_ = scalar_mul_oracle(nP, "p384")
+        k = rng.randrange(1, N384 - 1)
+        kP_scalar = (k * nP) % N384
+        if kP_scalar == 0:
+            expected = INFINITY
+        else:
+            expected = scalar_mul_oracle(kP_scalar, "p384")
+        print(f"  scalar_mul_var_384 random[{i}] k={k:#x} nP={nP:#x}...")
+        t0 = time.time()
+        got = c64_scalar_mul_var(transport, labels, k, Px_, Py_)
+        dt = time.time() - t0
+        if got == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): random[{i}]")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): random[{i}] k={k:#x} nP={nP:#x}")
+            print(f"    Px={Px_:#098x}")
+            print(f"    Py={Py_:#098x}")
+            print(f"    expected={expected}")
+            print(f"    got     ={got}")
+
+    return passed, failed
+
+
 def test_scalar_mul_random_384(transport, labels, rng, n_random, n_kat_fast):
     passed = failed = 0
 
@@ -351,6 +463,7 @@ def run_tests(transport, labels, rng, run_full):
         n_j2a = 10
         n_inf = 5
         n_sca = 10
+        n_var = 10
         n_kat = None
     else:
         n_dbl = 3
@@ -358,6 +471,7 @@ def run_tests(transport, labels, rng, run_full):
         n_j2a = 3
         n_inf = 2
         n_sca = 3
+        n_var = 3
         n_kat = 3
 
     kat_count = len(load_nist_scalar_mul_kats("p384")) if n_kat is None else n_kat
@@ -377,6 +491,8 @@ def run_tests(transport, labels, rng, run_full):
          lambda: test_add_infinity_plus_random_384(transport, labels, rng, n_inf)),
         (f"Scalar mul ({n_sca} random + {kat_count} NIST KATs + k=1)",
          lambda: test_scalar_mul_random_384(transport, labels, rng, n_sca, n_kat)),
+        (f"Variable-base scalar mul ({n_var} random + 5 edge cases)",
+         lambda: test_scalar_mul_var_384(transport, labels, rng, n_var)),
     ]
 
     for name, test_fn in test_groups:
@@ -461,6 +577,7 @@ def main():
         "ec384_p1", "ec384_p2", "ec384_p3",
         "ec_gx384", "ec_gy384", "ec_p384",
         "ec_point_double_384", "ec_point_add_384", "ec_scalar_mul_384",
+        "ec_scalar_mul_var_384", "ec_base384_x", "ec_base384_y",
         "ec_set_modp_384", "ec_mulp_384",
         "fp_copy_384", "fp_zero_384",
         "sqtab_init", "reu_mul_init",
