@@ -9,6 +9,12 @@
 
 .importzp poly_i, poly_j, poly_carry, poly_tmp
 
+; --- data imports (for reu_fetch_mul_row) ---
+.import mul_cached_a
+
+; --- constants imports (for reu_fetch_mul_row) ---
+.import reu_reu_hi, reu_reu_bank, reu_command
+
 ; Quarter-square table addresses (page-aligned for speed)
 sqtab_lo        = $7800         ; 512 bytes: low bytes of floor(n^2/4)
 sqtab_hi        = $7a00         ; 512 bytes: high bytes of floor(n^2/4)
@@ -240,6 +246,25 @@ smc_hi_addr:
         lda sqtab_hi,x          ; hi byte SMC-patched above ($7a or $7b)
         sbc sqtab_hi,y
         sta poly_prod_hi
+        rts
+
+; =============================================================================
+; reu_fetch_mul_row - DMA a multiplication table row from REU to C64
+;
+; Input: mul_cached_a = multiplier value (0-255)
+; Fetches 512 bytes: 256 lo bytes to mul_dma_lo, 256 hi bytes to mul_dma_hi
+; Clobbers: A
+; =============================================================================
+.export reu_fetch_mul_row
+reu_fetch_mul_row:
+        lda mul_cached_a
+        asl                    ; A = multiplier * 2, carry = bit 7
+        sta reu_reu_hi
+        lda #0
+        adc #0                 ; bank = carry from shift
+        sta reu_reu_bank
+        lda #%10110001         ; execute + autoload + FETCH (REU->C64)
+        sta reu_command
         rts
 
 mul_b:          .byte 0

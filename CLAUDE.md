@@ -88,10 +88,10 @@ All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry
 ### Source files (src/)
 | File | Purpose |
 |------|---------|
-| main.s | Entry point, VIC blanking, REU DMA init, precompute table generation, benchmarking |
+| main.s | Entry point, VIC blanking, REU DMA init (`reu_mul_init`), precompute table generation, benchmarking. Test/bench driver for the library's own PRG — NOT linked into consumer projects (see API.md §8.2). |
 | constants.s | Hardware addresses, REU registers |
 | zp_config.s | Zero-page allocations (consumer-tunable) |
-| mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`) |
+| mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, the REU DMA row-fetch helper used by `fp_sqr_384` (moved here from main.s by issue #18 fix so standalone-link consumers resolve it). |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
 | curve256.s | P-256 parameters + RFC 6979 test vectors (little-endian) |

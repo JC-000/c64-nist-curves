@@ -12,6 +12,25 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Issue #18 (`fp_sqr_384` hangs in standalone-link consumer builds)** —
+  `fp_sqr_384`'s diagonal loop called `reu_fetch_mul_row`, which was
+  defined in `src/main.s`. Per `API.md` §8.2, consumers of the math
+  library do NOT link `main.s` into their PRG (it is the library's own
+  test/bench driver), so the `jsr reu_fetch_mul_row` site resolved to
+  an unresolved / garbage target and squaring hung. `fp_mul_384` was
+  unaffected because it inlines the REU DMA sequence; `fp_sqr` (P-256)
+  also inlines, so this was a P-384-squaring-only asymmetry. Fix:
+  relocated `reu_fetch_mul_row` into `src/mul_8x8.s` (its natural home
+  as the REU row-fetch helper for the multiply primitive), refreshed
+  `src/exports.inc` to reflect the new home, and cleared the
+  pre-existing ca65-migration TODO note on this routine. Zero
+  algorithm change; PRG size unchanged at 24322 bytes. Covered by the
+  existing P-384 point-ops suite (`test_points384.py`), which drives
+  `ec_point_double_384 → fp_mod_sqr_384 → fp_sqr_384` and is the
+  canonical gate for this issue.
+
 ### Added
 
 - Variable-base scalar multiplication: `ec_scalar_mul_var` (P-256),

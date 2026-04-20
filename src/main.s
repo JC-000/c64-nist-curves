@@ -313,25 +313,6 @@ reu_init_a:     .byte 0
 reu_init_b:     .byte 0
 
 ; =============================================================================
-; reu_fetch_mul_row - DMA a multiplication table row from REU to C64
-;
-; Input: mul_cached_a = multiplier value (0-255)
-; Fetches 512 bytes: 256 lo bytes to mul_dma_lo, 256 hi bytes to mul_dma_hi
-; Clobbers: A
-; =============================================================================
-.export reu_fetch_mul_row
-reu_fetch_mul_row:
-        lda mul_cached_a
-        asl                    ; A = multiplier * 2, carry = bit 7
-        sta reu_reu_hi
-        lda #0
-        adc #0                 ; bank = carry from shift
-        sta reu_reu_bank
-        lda #%10110001         ; execute + autoload + FETCH (REU->C64)
-        sta reu_command
-        rts
-
-; =============================================================================
 ; ECDSA verify test trampolines
 ;
 ; The c64-test-harness jsr() helper cannot pass register arguments to a

@@ -30,8 +30,11 @@
 ; -----------------------------------------------------------------------------
 ; mul_8x8.s
 ; EXPORTS: sqtab_init, mul_8x8, poly_prod_lo, poly_prod_hi,
-;          sqtab_lo, sqtab_hi
-; IMPORTS: poly_i, poly_j, poly_carry, poly_tmp (ZP from zp_config)
+;          sqtab_lo, sqtab_hi, reu_fetch_mul_row
+; IMPORTS:
+;   ZP: poly_i, poly_j, poly_carry, poly_tmp (from zp_config)
+;   data: mul_cached_a
+;   constants: reu_reu_hi, reu_reu_bank, reu_command
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
@@ -189,11 +192,8 @@
 ;   ZP: fp_src1, fp_src2, fp_dst, fp_carry, fp_mul_i, fp_mul_j
 ;   data: fp384_wide, mul_cached_a, poly_prod_lo, poly_prod_hi,
 ;         mul_dma_lo, mul_dma_hi
-;   mul_8x8: reu_fetch_mul_row (from main.asm — see note)
+;   mul_8x8: reu_fetch_mul_row
 ;   constants: reu_reu_hi, reu_reu_bank, reu_command
-; NOTE: fp384 uses reu_fetch_mul_row in the diagonal loop of fp_sqr_384.
-;       This routine is currently defined in main.asm. It should be moved
-;       to mul_8x8.s or a shared reu.s module during conversion.
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
@@ -243,7 +243,7 @@
 
 ; -----------------------------------------------------------------------------
 ; main.s — Entry point, init, REU DMA routines, strings
-; EXPORTS: reu_mul_init, reu_fetch_mul_row, bench_start, bench_stop,
+; EXPORTS: reu_mul_init, bench_start, bench_stop,
 ;          bench_ticks, vic_blank, vic_unblank,
 ;          clrscr, print_string, print_hex_byte,
 ;          ecdsa_verify_256_tramp, ecdsa_verify_384_tramp
