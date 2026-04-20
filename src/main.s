@@ -29,6 +29,14 @@
 .import ec_precompute_256
 .import ec_precompute_384
 
+; --- ecdsa imports (for test trampolines) ---
+.import ecdsa_verify_256, ecdsa_verify_384
+.import ecdsa_inputs_256, ecdsa_inputs_384
+.import ecdsa_result_256, ecdsa_result_384
+
+; --- variable-base scalar-mul imports (for U64E bench trampolines) ---
+.import ec_scalar_mul_var, ec_scalar_mul_var_384
+
 .segment "LOADADDR"
         .word $0801              ; CBM PRG load address
 
@@ -81,6 +89,7 @@ start:
         sta $02A7           ; sentinel location (unused area of C64 memory)
 
         ; Main idle loop - wait for test harness commands
+.export main_loop
 main_loop:
         jmp main_loop
 
@@ -320,6 +329,104 @@ reu_fetch_mul_row:
         sta reu_reu_bank
         lda #%10110001         ; execute + autoload + FETCH (REU->C64)
         sta reu_command
+        rts
+
+; =============================================================================
+; ECDSA verify test trampolines
+;
+; The c64-test-harness jsr() helper cannot pass register arguments to a
+; subroutine, so we stage the 160-/240-byte ECDSA verify input struct at
+; a fixed BSS address (ecdsa_inputs_256 / ecdsa_inputs_384 -- defined in
+; data.s) and invoke verify via a trampoline that loads A/X with the
+; struct pointer. The trampoline captures the C flag returned by the
+; verify routine and stores 0 (valid) or 1 (invalid) into a result byte
+; the harness can peek. This keeps the Python driver completely symbolic.
+; =============================================================================
+.export ecdsa_verify_256_tramp
+ecdsa_verify_256_tramp:
+        lda #<ecdsa_inputs_256
+        ldx #>ecdsa_inputs_256
+        jsr ecdsa_verify_256
+        lda #0
+        rol a                  ; shift C into bit 0 -> A = 0 if C=0, 1 if C=1
+        sta ecdsa_result_256
+        rts
+
+.export ecdsa_verify_384_tramp
+ecdsa_verify_384_tramp:
+        lda #<ecdsa_inputs_384
+        ldx #>ecdsa_inputs_384
+        jsr ecdsa_verify_384
+        lda #0
+        rol a
+        sta ecdsa_result_384
+        rts
+
+; =============================================================================
+; U64E bench-only trampolines
+;
+; These wrappers emit a marker byte at $BFFF immediately before and after
+; the measured routine.  The U64E debug stream (cycle-accurate bus trace
+; on UDP:11002) captures every bus cycle; a Python-side filter keyed on
+; "CPU write to $BFFF" pulls the markers out and measures the cycle delta
+; between the start and stop tokens.  Marker writes are 4 cycles each,
+; negligible against the multi-million-cycle targets (scalar_mul_var and
+; ecdsa_verify).  No effect on the shipping PRG because nothing else
+; calls these wrappers.
+;
+; Marker tokens:
+;   $80 / $81   ecdsa_verify_256 (start / stop)
+;   $82 / $83   ec_scalar_mul_var (P-256, start / stop)
+;   $84 / $85   ec_scalar_mul_var_384 (start / stop)
+;   $86 / $87   ecdsa_verify_384 (start / stop)
+; =============================================================================
+
+BENCH_DBG_MARK = $bfff
+
+.export bench_ecdsa_verify_256_tramp
+bench_ecdsa_verify_256_tramp:
+        lda #$80
+        sta BENCH_DBG_MARK
+        lda #<ecdsa_inputs_256
+        ldx #>ecdsa_inputs_256
+        jsr ecdsa_verify_256
+        lda #0
+        rol a
+        sta ecdsa_result_256
+        lda #$81
+        sta BENCH_DBG_MARK
+        rts
+
+.export bench_ecdsa_verify_384_tramp
+bench_ecdsa_verify_384_tramp:
+        lda #$86
+        sta BENCH_DBG_MARK
+        lda #<ecdsa_inputs_384
+        ldx #>ecdsa_inputs_384
+        jsr ecdsa_verify_384
+        lda #0
+        rol a
+        sta ecdsa_result_384
+        lda #$87
+        sta BENCH_DBG_MARK
+        rts
+
+.export bench_ec_scalar_mul_var_256_tramp
+bench_ec_scalar_mul_var_256_tramp:
+        lda #$82
+        sta BENCH_DBG_MARK
+        jsr ec_scalar_mul_var
+        lda #$83
+        sta BENCH_DBG_MARK
+        rts
+
+.export bench_ec_scalar_mul_var_384_tramp
+bench_ec_scalar_mul_var_384_tramp:
+        lda #$84
+        sta BENCH_DBG_MARK
+        jsr ec_scalar_mul_var_384
+        lda #$85
+        sta BENCH_DBG_MARK
         rts
 
 ; =============================================================================

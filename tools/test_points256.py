@@ -51,6 +51,7 @@ from tools.vectors import (  # noqa: E402
     scalar_mul_oracle,
     self_check,
 )
+from tools.vectors.loader import INFINITY, is_infinity  # noqa: E402
 
 VERBOSE = False
 
@@ -142,6 +143,26 @@ def c64_scalar_mul(transport, labels, k):
     write_bytes(transport, SCALAR_BUF, int_to_be_bytes(k, 32))
     set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
     jsr(transport, labels["ec_scalar_mul"], timeout=3600.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    return jacobian_to_affine(p3x, p3y, p3z, "p256")
+
+
+def c64_scalar_mul_var(transport, labels, k, bx, by):
+    """Drive ec_scalar_mul_var (variable-base double-and-add).
+
+    Pokes the 32-byte BE scalar into a scratch buffer, wires
+    ec_scalar_ptr to it, stages the LE base point into ec_base_x /
+    ec_base_y, and jsr's ec_scalar_mul_var. The Jacobian output at
+    ec_p3 is read back and converted to affine via the Python oracle
+    (handles the Z=0/infinity case naturally, same pattern as
+    c64_scalar_mul).
+    """
+    SCALAR_BUF = 0x033C
+    write_bytes(transport, SCALAR_BUF, int_to_be_bytes(k, 32))
+    set_ptr(transport, labels["ec_scalar_ptr"], SCALAR_BUF)
+    write_field_elem(transport, labels["ec_base_x"], bx)
+    write_field_elem(transport, labels["ec_base_y"], by)
+    jsr(transport, labels["ec_scalar_mul_var"], timeout=7200.0)
     p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
     return jacobian_to_affine(p3x, p3y, p3z, "p256")
 
@@ -362,6 +383,136 @@ def test_add_infinity_plus_random(transport, labels, rng, n_random):
     return passed, failed
 
 
+def test_scalar_mul_var(transport, labels, rng, n_random):
+    """ec_scalar_mul_var (variable-base double-and-add) vs oracle.
+
+    For each random sample we pick a random public point P = n_P * G
+    (so P is a valid curve point but distinct from G) and a random
+    scalar k, then assert harness(k, P) == oracle(k * P).
+
+    Edge cases: k=1 -> P, k=2 -> 2P, k=n-1 -> -P, k=0 -> infinity,
+    k=n -> infinity. The infinity cases exercise the routine's
+    "R remained ∞ across all bits" zero-fill branch at @v_loop_done.
+    """
+    passed = failed = 0
+
+    # --- Structured edge cases on a single pinned P (KAT[0]) so a
+    # failure is reproducible without chasing a random seed. ---
+    kats = load_nist_scalar_mul_kats("p256")
+    anchor = kats[0]
+    Px, Py = anchor["qx"], anchor["qy"]
+
+    def point_mul_oracle(k_):
+        """k*P in the affine group, reducing k mod n first."""
+        k_mod = k_ % N256
+        if k_mod == 0:
+            return INFINITY
+        # cryptography only exposes k*G, so reach the affine oracle via
+        # scalar_mul with the base rebinding trick -- not available, so
+        # fall back to repeated affine_add against the hand-rolled
+        # group law (self-check already validated it against
+        # cryptography at startup).
+        # Double-and-add from MSB.
+        R = INFINITY
+        bits = k_mod.bit_length()
+        for i in range(bits - 1, -1, -1):
+            R = affine_add(R, R, "p256")
+            if (k_mod >> i) & 1:
+                R = affine_add(R, (Px, Py), "p256")
+        return R
+
+    edge_cases = [
+        (1,           "k=1"),
+        (2,           "k=2"),
+        (N256 - 1,    "k=n-1"),
+        (0,           "k=0 (infinity)"),
+        (N256,        "k=n (infinity)"),
+    ]
+
+    def run_case(k, Px_, Py_, label):
+        nonlocal passed, failed
+        print(f"  scalar_mul_var {label}...")
+        t0 = time.time()
+        got = c64_scalar_mul_var(transport, labels, k, Px_, Py_)
+        dt = time.time() - t0
+        # Compute expected via affine double-and-add on top of
+        # (Px, Py). Correctness of affine_add itself is ensured by
+        # the self_check() run against `cryptography` at startup.
+        k_mod = k % N256
+        if k_mod == 0:
+            expected = INFINITY
+        else:
+            R = INFINITY
+            for i in range(k_mod.bit_length() - 1, -1, -1):
+                R = affine_add(R, R, "p256")
+                if (k_mod >> i) & 1:
+                    R = affine_add(R, (Px_, Py_), "p256")
+            expected = R
+        if got == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): {label}")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): {label} k={k:#x}")
+            print(f"    Px={Px_:#066x}")
+            print(f"    Py={Py_:#066x}")
+            print(f"    expected={expected}")
+            print(f"    got     ={got}")
+
+    for k, label in edge_cases:
+        run_case(k, Px, Py, label + f" on NIST KAT[0]")
+
+    # --- k=1 / k=n-1 sanity cross-checks (affine identities) ---
+    # k=1 -> expect (Px, Py); already covered by edge_cases but we
+    # pattern-match the tuple shape to catch any coercion drift.
+    got1 = c64_scalar_mul_var(transport, labels, 1, Px, Py)
+    if got1 == (Px, Py):
+        passed += 1
+        print("  PASS: k=1 returns (Px, Py) verbatim")
+    else:
+        failed += 1
+        print(f"  FAIL: k=1 identity: got {got1}, want ({Px:#x}, {Py:#x})")
+
+    neg_y = (-Py) % P256
+    got_neg = c64_scalar_mul_var(transport, labels, N256 - 1, Px, Py)
+    if got_neg == (Px, neg_y):
+        passed += 1
+        print("  PASS: k=n-1 returns (Px, -Py mod p)")
+    else:
+        failed += 1
+        print(f"  FAIL: k=n-1 identity: got {got_neg}")
+
+    # --- Random (n_P, k) pairs on a fresh P each time ---
+    for i in range(n_random):
+        # Random n_P gives a random valid public P distinct from G
+        # (with overwhelming probability).
+        nP = rng.randrange(2, N256 - 1)
+        Px_, Py_ = scalar_mul_oracle(nP, "p256")
+        k = rng.randrange(1, N256 - 1)
+        # Oracle: k * P = (k * nP mod n) * G via the library.
+        kP_scalar = (k * nP) % N256
+        if kP_scalar == 0:
+            expected = INFINITY
+        else:
+            expected = scalar_mul_oracle(kP_scalar, "p256")
+        print(f"  scalar_mul_var random[{i}] k={k:#x} nP={nP:#x}...")
+        t0 = time.time()
+        got = c64_scalar_mul_var(transport, labels, k, Px_, Py_)
+        dt = time.time() - t0
+        if got == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): random[{i}]")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): random[{i}] k={k:#x} nP={nP:#x}")
+            print(f"    Px={Px_:#066x}")
+            print(f"    Py={Py_:#066x}")
+            print(f"    expected={expected}")
+            print(f"    got     ={got}")
+
+    return passed, failed
+
+
 def test_scalar_mul_random(transport, labels, rng, n_random,
                            n_kat_fast):
     """n_random random scalars + NIST KATs + RFC 6979 sample."""
@@ -412,6 +563,7 @@ def run_tests(transport, labels, rng, run_full):
         n_j2a = 10
         n_inf = 5
         n_sca = 10
+        n_var = 10
         n_kat = None   # run all 25 NIST KATs
     else:
         n_dbl = 3
@@ -419,6 +571,7 @@ def run_tests(transport, labels, rng, run_full):
         n_j2a = 3
         n_inf = 2
         n_sca = 3
+        n_var = 3
         n_kat = 3
 
     kat_count = len(load_nist_scalar_mul_kats("p256")) if n_kat is None else n_kat
@@ -438,6 +591,8 @@ def run_tests(transport, labels, rng, run_full):
          lambda: test_add_infinity_plus_random(transport, labels, rng, n_inf)),
         (f"Scalar mul ({n_sca} random + {kat_count} NIST KATs + RFC 6979)",
          lambda: test_scalar_mul_random(transport, labels, rng, n_sca, n_kat)),
+        (f"Variable-base scalar mul ({n_var} random + 5 edge cases)",
+         lambda: test_scalar_mul_var(transport, labels, rng, n_var)),
     ]
 
     for name, test_fn in test_groups:
@@ -526,6 +681,7 @@ def main():
         "ec_t1", "ec_t2", "ec_t3",
         "ec_gx256", "ec_gy256",
         "ec_point_double", "ec_point_add", "ec_scalar_mul",
+        "ec_scalar_mul_var", "ec_base_x", "ec_base_y",
         "ec_set_modp", "ec_mulp",
         "ec_scalar_ptr",
         "sqtab_init", "reu_mul_init",

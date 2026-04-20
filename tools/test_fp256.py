@@ -210,6 +210,17 @@ def c64_fp_mod_mul(transport, labels, a, b):
     jsr(transport, labels["fp_mod_mul"], timeout=120.0)
     return read_field_elem(transport, labels["fp_r0"])
 
+def c64_fp_mod_mul_n(transport, labels, a, b):
+    write_field_elem(transport, labels["fp_tmp1"], a)
+    write_field_elem(transport, labels["fp_tmp2"], b)
+    # Pre-fill dst with a sentinel so we can detect no-op implementations.
+    write_field_elem(transport, labels["fp_tmp3"], 0xDEADBEEF)
+    set_fp_ptrs(transport, labels,
+                src1=labels["fp_tmp1"], src2=labels["fp_tmp2"],
+                dst=labels["fp_tmp3"])
+    jsr(transport, labels["fp_mod_mul_n"], timeout=180.0)
+    return read_field_elem(transport, labels["fp_tmp3"])
+
 def c64_fp_mod_inv(transport, labels, a):
     write_field_elem(transport, labels["fp_tmp1"], a)
     set_fp_ptrs(transport, labels, src1=labels["fp_tmp1"])
@@ -634,6 +645,51 @@ def test_fp_mod_mul(transport, labels, rng):
     return passed, failed
 
 
+def test_fp_mod_mul_n(transport, labels, rng):
+    """fp_mod_mul_n: (a*b) mod n256 (group order).
+
+    Oracle: Python `(a * b) % N256`. Inputs sampled from [0, N256-1].
+    This primitive is required for ECDSA verify, which needs modular
+    multiplication mod n (the group order), not mod p. The default
+    `fp_mod_mul` is hardcoded to Solinas p-reduction and cannot handle
+    mod-n arithmetic.
+    """
+    passed = failed = 0
+    cases = [
+        ("0*0", 0, 0),
+        ("0*1", 0, 1),
+        ("1*0", 1, 0),
+        ("1*1", 1, 1),
+        ("3*5", 3, 5),
+        ("n-1*1", N256 - 1, 1),
+        ("1*n-1", 1, N256 - 1),
+        ("n-1*n-1", N256 - 1, N256 - 1),
+    ]
+    n_rand = 10 if "--full" in sys.argv else 3
+    for i in range(n_rand):
+        # Rejection-sample uniform inputs in [0, N256-1].
+        while True:
+            a = rng.rand_256bit()
+            if a < N256:
+                break
+        while True:
+            b = rng.rand_256bit()
+            if b < N256:
+                break
+        cases.append((f"rand#{i}", a, b))
+    for name, a, b in cases:
+        expected = (a * b) % N256
+        result = c64_fp_mod_mul_n(transport, labels, a, b)
+        if result == expected:
+            passed += 1
+            if VERBOSE: print(f"  PASS mod_mul_n {name}")
+        else:
+            failed += 1
+            _report(f"mod_mul_n {name}", expected, result,
+                    f"    a = {a:#066x}\n    b = {b:#066x}")
+    return passed, failed
+
+
 def test_fp_mod_inv(transport, labels, rng):
     """fp_mod_inv: modular inverse via binary GCD.
 
@@ -809,6 +865,8 @@ def run_tests(transport, labels, rng):
          lambda: test_fp_mod_reduce256(transport, labels, rng)),
         ("fp_mod_mul", ["fp_mod_mul"],
          lambda: test_fp_mod_mul(transport, labels, rng)),
+        ("fp_mod_mul_n (group order)", ["fp_mod_mul_n", "ec_n256"],
+         lambda: test_fp_mod_mul_n(transport, labels, rng)),
         ("NIST KAT curve-equation anchor",
          ["fp_mod_mul", "fp_mod_add", "fp_mod_sub", "ec_p256"],
          lambda: test_nist_kat_curve_equation(transport, labels)),
@@ -899,7 +957,8 @@ def main():
     print(f"Labels loaded: {len(required)} required labels verified")
 
     mod_labels = ["fp_mod_add", "fp_mod_sub", "fp_mod_reduce256",
-                  "fp_mod_mul", "fp_mod_inv", "ec_p256", "ec_set_modp"]
+                  "fp_mod_mul", "fp_mod_mul_n", "fp_mod_inv",
+                  "ec_p256", "ec_n256", "ec_set_modp"]
     mod_available = [lbl for lbl in mod_labels if labels.address(lbl) is not None]
     mod_missing = [lbl for lbl in mod_labels if labels.address(lbl) is None]
     if mod_missing:

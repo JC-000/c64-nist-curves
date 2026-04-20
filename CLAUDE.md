@@ -10,7 +10,7 @@ make clean && make
 Assembler: ca65/ld65 (cc65 toolchain). Multi-object build: each .s file compiles
 to a separate .o, linked by ld65 with `src/c64.cfg`. Output: build/nist-curves.prg
 + build/labels.txt (VICE symbol table, post-processed from ld65 `-Ln` format).
-Current PRG size: ~20.2 KB (20672 bytes), loaded at $0801.
+Current PRG size: ~23.8 KB (24322 bytes), loaded at $0801.
 
 ## Test
 ```
@@ -22,6 +22,8 @@ python3 tools/bench_p256.py          # P-256 primitive benchmarks (oracle-gated)
 python3 tools/bench_p384.py          # P-384 primitive benchmarks (oracle-gated)
 python3 tools/bench_p256_u64.py      # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_p384_u64.py      # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
+python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAVP SigVer)
+python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
 
@@ -99,6 +101,8 @@ All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry
 | mod384.s | P-384 Solinas reduction, modular ops, binary GCD inverse, P-384 prime |
 | curve384.s | P-384 parameters + test vectors (little-endian) |
 | points384.s | P-384 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
+| ecdsa256.s | P-256 ECDSA verify (`ecdsa_verify_256`) + BE<->LE helper `fp_reverse32`. Non-constant-time (public-input-only) |
+| ecdsa384.s | P-384 ECDSA verify (`ecdsa_verify_384`) + BE<->LE helper `fp_reverse48`. Non-constant-time (public-input-only) |
 | data.s | Buffers, point storage, page-aligned DMA targets |
 | c64.cfg | ld65 linker configuration (memory regions, segment placement) |
 | exports.inc | Cross-module .import/.export dependency map |
@@ -207,6 +211,34 @@ mixed-add formula. The only place a real Z=1 fill happens is the comb
 *seeding* branch (first non-zero column when the accumulator is still ∞,
 src/points256.s:1393-1400 and src/points384.s:1318-1325).
 
+### ECDSA verify API
+
+`ecdsa_verify_256` (src/ecdsa256.s) and `ecdsa_verify_384` (src/ecdsa384.s)
+are packaged ECDSA verifiers with a big-endian ABI sized for direct
+consumption by TLS callers (planned `c64-https` integration path).
+
+- **Input:** pointer in A (low) / X (high) to a flat BE struct.
+  P-256 struct is 160 B laid out as `r(32) | s(32) | h(32) | Qx(32) | Qy(32)`.
+  P-384 struct is 240 B laid out as `r(48) | s(48) | h(48) | Qx(48) | Qy(48)`.
+  All five fields are big-endian (wire order for X.509 / ASN.1 and SHA-2).
+  Internally the verifier byte-reverses into the library's native LE via
+  `fp_reverse32` / `fp_reverse48`.
+- **Output:** carry flag. `C=0` VALID, `C=1` INVALID or malformed. No
+  register-returned status byte; callers branch on `bcc` / `bcs`.
+- **NOT constant-time.** Branches on bits of `r`, `s`, `h`, `Qx`, `Qy`,
+  all of which are public inputs in the verify context (signature +
+  peer certificate). A constant-time verify would be correct but strictly
+  slower and is unnecessary for TLS. The library does NOT provide one;
+  do not repurpose these routines for ECDSA *signing*.
+- **Building blocks:** verify composes `ec_scalar_mul` (fixed-base
+  `u1 * G`), `ec_scalar_mul_var` (variable-base `u2 * Q`), `ec_point_add`,
+  `fp_mod_inv` (mod n for `w = s^-1`), and `fp_mod_mul_n` (mod-n multiply
+  for `u1 = h*w`, `u2 = r*w`). All of those remain callable directly for
+  consumers who want to drive the LE primitives without the BE wrapper.
+- **Buffers:** ~416 B P-256 scratch (`ecdsa_r/s/h/qx/qy`, `ecdsa_w/u1/u2`,
+  `ecdsa_u1_be/u2_be`, `ecdsa_u1g_x/y`, `fp_rev_buf`) + ~624 B P-384
+  equivalents, all declared in src/data.s.
+
 ### Conventions
 - Scalars (private keys, nonces) are big-endian for compatibility with standards
 - Field elements, curve parameters, and coordinates are little-endian
@@ -264,3 +296,35 @@ keep all library calls on a single thread of control.
   `LDY #144 / DEY / STA ec384_p3,Y / BNE loop` (count down through $00
   via BNE). `ec_point_add_384` and `ec_jacobian_to_affine_384` no longer
   require the Python-side pre-zero workaround.
+- **LDA-clobbers-Z extension of the BPL bug family** (issue #17 Task #4).
+  Hit again in `ec_scalar_mul_var_384`'s 144-byte Jacobian copy loops:
+  the intuitive rewrite `ldy #0 / @l: lda src,y / sta dst,y / iny / cpy
+  #144 / bne @l` is fine, but `ldy #0 / @l: lda src,y / sta dst,y / iny
+  / bne @l` is NOT — with the terminator test elided, the loop relies on
+  Y wrapping from $FF to $00, which only works for 256-byte blocks.
+  The actual variant caught on src/points384.s was `ldx #144 / @l: ... /
+  dex / bne @l` paired with a countdown: correct. The hazard worth
+  remembering is that `LDA abs,y` always updates Z on the loaded byte,
+  so any `BNE` intended to test a separate counter must either re-load
+  the counter into a register that wasn't clobbered by the body (use
+  `DEX / BNE` with X holding the counter and the body using Y for
+  indexing), or explicitly re-test via `CPY` / `CPX` before the branch.
+  Same remediation shape as the original BPL bug: prefer decrementing
+  X and `BNE` against the known-preserved counter register. See
+  Task #4 notes for the full site list.
+- **Jiffy-clock / REU-DMA wall-clock non-linearity at U64E turbo**
+  (issue #17 Task #12). `tools/bench_ecdsa_u64.py`'s "cycles" column
+  is 1-MHz-equivalent wall-clock µs (jiffies × 17045), NOT machine
+  cycles at turbo. The NTSC jiffy clock ticks at 60 Hz regardless of
+  CPU turbo, and REU DMA runs at ~1 MHz regardless of CPU speed.
+  Real wall-clock at 48 MHz is ~0.7× of 16 MHz wall (not 16/48 = 0.33×)
+  across all four Task #9 primitives: a pure CPU-cycle extrapolation
+  will overestimate the 48 MHz speedup by ~3×. Future bench tools MUST
+  leave 3× headroom on per-call timeouts at turbo, or measure
+  wall-clock directly via `time.monotonic()` rather than inferring it
+  from jiffy-cycles. The original `max(60.0, base_timeout / mhz)`
+  formula at `base_timeout=3600` yielded only 75 s at 48 MHz, which
+  landed ~1 s short of `ecdsa_verify_384`'s intrinsic ~76 s wall time
+  and misfired as a spurious per-call timeout. Current formula
+  `max(180.0, 3 * base_timeout / mhz)` gives 225 s of headroom. Not
+  a C64 bug; a bench-tool design rule.

@@ -39,6 +39,7 @@ python3 tools/bench_p256.py       # P-256 benchmarks (oracle correctness gate)
 python3 tools/bench_p384.py       # P-384 benchmarks (oracle correctness gate)
 python3 tools/bench_p256_u64.py   # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
+python3 tools/bench_ecdsa_u64.py  # ECDSA verify + variable-base scalar_mul on U64E
 ```
 
 U64 benchmarks require `U64_HOST` set or the device at the default address.
@@ -98,6 +99,57 @@ cycles (46.73 s), a further **-48.0%** on top of Wave 5. P-384
 **-50.3%**. Cumulatively versus the wNAF-5 baseline both curves are now
 ~4.3-5.0x faster in scalar multiply. Boot time grows by ~90 seconds to
 build the 16 KB / 24 KB precompute tables in REU bank 2.
+
+### ECDSA verify / variable-base scalar_mul bench (U64E)
+
+Per-primitive cycle counts for the ECDSA verify surface (Issue #17) and its
+dominant building block, non-constant-time variable-base scalar multiplication.
+Scalars / points pin the RFC 6979 A.2.5 (P-256) and A.3.1 (P-384) test
+vectors. Oracle-gated against the `cryptography` Python package; any result
+that fails the gate is dropped, not reported. Timing source is the
+jiffy-clock pattern shared with `bench_p256_u64.py` (cycles = jiffies ×
+17045). `tools/bench_ecdsa_u64.py` optionally enables the U64E cycle-accurate
+debug bus-stream (UDP :11002) for a second-opinion measurement: the bench
+trampolines in `src/main.s` emit $80/$81 (P-256 verify), $82/$83 (P-256
+scalar_mul_var), $84/$85 (P-384 scalar_mul_var), $86/$87 (P-384 verify)
+markers at `$BFFF` and `DebugCapture` parses the cycle delta between them.
+
+| Primitive              | 16 MHz cyc   | 16 MHz wall | 48 MHz cyc   | 48 MHz wall |
+|------------------------|-------------:|------------:|-------------:|------------:|
+| ec_scalar_mul_var      |   37,618,315 |      2.35 s |   27,766,305 |      0.58 s |
+| ec_scalar_mul_var_384  |   95,469,045 |      5.97 s |   66,884,580 |      1.39 s |
+| ecdsa_verify_256       |   43,226,120 |      2.70 s |   31,823,015 |      0.66 s |
+| ecdsa_verify_384       |  111,235,670 |      6.95 s |   77,691,110 |      1.62 s |
+
+**1-MHz-equivalent cycle convention.** The "cyc" columns are 1-MHz-equivalent
+wall-clock microseconds (jiffies × 17045), NOT machine cycles at turbo. The
+U64E timing source is the NTSC jiffy clock (60 Hz IRQ) which ticks at the
+wall-clock rate regardless of CPU turbo, and REU DMA runs at ~1 MHz whatever
+the CPU is doing. Reading "27.7 M cycles at 48 MHz" as "27.7 M / 48 M ≈ 0.58 s"
+is numerically correct only because the cycle column is already
+1-MHz-equivalent wall time; it is NOT a machine-cycle count that scales with
+CPU frequency. Treat the "wall" column as authoritative for scheduling
+and the "cyc" column as a first-order cost comparison against other
+primitives measured the same way.
+
+Cycle counts captured on U64E fw 3.14d (NTSC, 1 jiffy = 17045 cy). Issue #17 cites an ~85 s in-tree hand-port baseline for
+`ecdsa_verify_256` at 1 MHz; `ecdsa_verify_256 ≈ ec_scalar_mul +
+ec_scalar_mul_var + ec_point_add + 1 inv`. Run `make bench-u64`
+with `U64_HOST=<ip>` set (and optionally `BENCH_DEBUG_STREAM=1` to enable
+the debug-stream cross-check) to re-populate the table.
+
+**Timeout formula note (Task #12).** The original per-primitive timeout
+`max(60.0, base_timeout / mhz)` gave 75 s at 48 MHz for `base_timeout=3600`,
+which landed ~1 s short of `ecdsa_verify_384`'s intrinsic 48 MHz wall time
+(~76 s). Intrinsic wall time does not scale linearly with CPU turbo because
+the NTSC jiffy clock (60 Hz raster IRQ) and REU DMA (~1 MHz) are both
+wall-clock anchored: going from 16 MHz to 48 MHz reduces wall time by only
+~25-30% across all four primitives, not the 3x that a pure CPU-cycle
+extrapolation would predict. `tools/bench_ecdsa_u64.py` now uses
+`max(180.0, 3*base_timeout/mhz)` which gives 225 s of headroom at 48 MHz.
+No code bug in `ecdsa_verify_384` and no cumulative REU-state issue; an
+isolated run (`tools/diag_verify384_turbo.py`) completes in the same ~1.62 s
+at 48 MHz whether it runs standalone or after the other three primitives.
 
 ## Wave 4 optimization round
 
@@ -189,6 +241,111 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 ## Releases
 
 - **v0.1.0** (2026-04-13) — First audited, tagged release. 1074 oracle-verified test vectors across P-256 and P-384 field / point / scalar-mul. See [`CHANGELOG.md`](CHANGELOG.md) for the full release notes and wave history.
+
+## ECDSA verify API
+
+`ecdsa_verify_256` and `ecdsa_verify_384` are packaged ECDSA verifiers with a
+big-endian calling ABI suitable for direct consumption by TLS-style callers
+(e.g. `c64-https`). **NOT constant-time.** They branch on bits of `r`, `s`,
+`h`, `Qx`, `Qy`, all of which are public inputs in the verifier context
+(signature + peer certificate). Do NOT call these for signing; the library
+does not provide a constant-time verify because it is unnecessary for TLS.
+
+### Calling convention
+
+- Input pointer is passed in `A` (low byte) / `X` (high byte), pointing at a
+  flat big-endian struct of the layout below.
+- Return value is the carry flag: `C=0` VALID, `C=1` INVALID or malformed.
+  No register-returned status byte; callers branch on `bcc` / `bcs`.
+- Full clobber: all field/point scratch is trampled as on any top-level op.
+  Serialize against other library calls per the re-entrancy contract
+  (API.md §4).
+
+### Struct layout
+
+**`ecdsa_verify_256` — 160-byte input struct (big-endian throughout):**
+
+| Offset | Size | Field  | Meaning                       |
+|-------:|-----:|--------|-------------------------------|
+|      0 |   32 | r      | signature r component         |
+|     32 |   32 | s      | signature s component         |
+|     64 |   32 | h      | SHA-256 digest of the message |
+|     96 |   32 | pub_x  | affine X of public key Q      |
+|    128 |   32 | pub_y  | affine Y of public key Q      |
+
+**`ecdsa_verify_384` — 240-byte input struct (big-endian throughout):**
+
+| Offset | Size | Field  | Meaning                       |
+|-------:|-----:|--------|-------------------------------|
+|      0 |   48 | r      | signature r component         |
+|     48 |   48 | s      | signature s component         |
+|     96 |   48 | h      | SHA-384 digest of the message |
+|    144 |   48 | pub_x  | affine X of public key Q      |
+|    192 |   48 | pub_y  | affine Y of public key Q      |
+
+Inputs are big-endian because that's the wire format for X.509 / ASN.1
+signatures and the SHA-2 digest spec. Internally the verifier calls
+`fp_reverse32` / `fp_reverse48` to translate to the library's native
+little-endian layout before driving `ec_scalar_mul`, `ec_scalar_mul_var`,
+`ec_point_add`, and `fp_mod_inv` under the hood.
+
+### c64-https wiring example (ca65)
+
+```asm
+; Assume the caller has already:
+;   - Parsed the peer cert and extracted Qx, Qy (32 B BE each for P-256).
+;   - Parsed the signature and extracted r, s (32 B BE each).
+;   - Computed SHA-256 over the signed-bytes buffer into `tls_sha256_out`.
+
+.import ecdsa_verify_256
+.import tls_sha256_out, tls_sig_r, tls_sig_s, tls_peer_qx, tls_peer_qy
+
+.bss
+verify_struct:      .res 160    ; r(32) | s(32) | h(32) | Qx(32) | Qy(32)
+
+.code
+tls_verify_cert_sig:
+        ; Pack the struct. memcpy_BE_to_BE wanted; no byte-reversal here,
+        ; the library does the BE->LE flip internally via fp_reverse32.
+        ldy #31
+@copy_r:
+        lda tls_sig_r,y
+        sta verify_struct+0,y
+        lda tls_sig_s,y
+        sta verify_struct+32,y
+        lda tls_sha256_out,y
+        sta verify_struct+64,y
+        lda tls_peer_qx,y
+        sta verify_struct+96,y
+        lda tls_peer_qy,y
+        sta verify_struct+128,y
+        dey
+        bpl @copy_r
+
+        ; Call verify: A = low byte, X = high byte of struct pointer.
+        lda #<verify_struct
+        ldx #>verify_struct
+        jsr ecdsa_verify_256
+        bcc @valid              ; C=0 => accept signature
+        ; C=1 => reject (malformed or invalid)
+        jmp tls_abort_handshake
+@valid:
+        rts
+```
+
+The P-384 path is identical except the struct is 240 B and the four field
+slices are 48 B each (see the offset table above). Call
+`ecdsa_verify_384` in place of `ecdsa_verify_256`; the carry-flag
+convention is the same.
+
+### Helpers
+
+- `fp_reverse32` / `fp_reverse48` are exported if a caller wants to drive
+  the library's native little-endian primitives (`ec_scalar_mul_var`,
+  `fp_mod_mul_n`, `fp_mod_inv`, ...) directly instead of going through
+  the packaged verifier. Set `fp_src1` and `fp_dst` ZP pointers before
+  `jsr`; they use `fp_rev_buf` (P-256) / `fp_rev_buf_384` (P-384) as
+  staging so src and dst may overlap arbitrarily.
 
 ## Integration as a library
 

@@ -15,6 +15,7 @@
 ; --- Exports ---
 .export ec_point_double_384, ec_point_add_384
 .export ec_precompute_384, ec_scalar_mul_384
+.export ec_scalar_mul_var_384
 .export ec_jacobian_to_affine_384
 
 ; --- ZP imports ---
@@ -42,6 +43,7 @@
 .import ec_anchor5_384_y, ec_anchor6_384_y, ec_anchor7_384_y, ec_anchor8_384_y
 .import cm_k_384, mul_dma_lo
 .import ec384_sc_byte, ec384_sc_mask, ec384_precomp_i
+.import ec_base384_x, ec_base384_y
 
 ; --- constants imports ---
 .import reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi
@@ -1481,6 +1483,177 @@ sm384w_restore_reu:
         sta reu_len_hi
         rts
 
+
+; =============================================================================
+; ec_scalar_mul_var_384: variable-base scalar multiplication (left-to-right
+;   double-and-add over 384 bits; non-constant-time, for ECDSA verify).
+; Input:  ec_scalar_ptr -> 48-byte BE scalar
+;         ec_base384_x, ec_base384_y -> 48-byte LE affine base point
+; Output: ec384_p3 (Jacobian, 144 B)
+; NOT re-entrant. Serialize with all other field/point ops.
+; 144-byte Jacobian copies use the countdown-from-144/BNE pattern because
+; LDY #143 / BPL never branches on the first iteration (bit 7 of $8F set).
+; =============================================================================
+ec_scalar_mul_var_384:
+        jsr ec_set_modp_384
+
+        ; Transpose BE scalar into LE internal buffer var384_k.
+        ;   var384_k[0]  = scalar[47]  (LSB)
+        ;   var384_k[47] = scalar[0]   (MSB)
+        ldy #47
+        ldx #0
+@v384_xpose:
+        lda (ec_scalar_ptr),y
+        sta var384_k,x
+        inx
+        dey
+        bpl @v384_xpose
+
+        ; Init walking state. Bit 383 is var384_k[47] bit 7.
+        lda #47
+        sta var384_byte_off
+        lda #$80
+        sta var384_bit_mask
+        ; 384 iterations encoded as hi=2/lo=$80.
+        ; Trace: iter 128 decrements hi 2→1 (not done); iters 129..384 count
+        ; lo $FF..$01; iter 384 decrements hi 1→0 and exits. 128+256 = 384.
+        lda #$80
+        sta var384_loop_ctr_lo
+        lda #2
+        sta var384_loop_ctr_hi
+        lda #1
+        sta var384_r_inf        ; R = infinity
+
+@v384_loop:
+        ; --- Double R unless infinity ---
+        lda var384_r_inf
+        bne @v384_skip_double
+        jsr ec_point_double_384
+        ; 144-byte copy ec384_p3 -> ec384_p1. Can't use the countdown+BNE
+        ; idiom from @v384_zinf because LDA here clobbers the Z flag the
+        ; BNE would test. Use a separate byte counter (X) so termination
+        ; is independent of the data.
+        ldx #144
+        ldy #0
+@v384_dcp:
+        lda ec384_p3,y
+        sta ec384_p1,y
+        iny
+        dex
+        bne @v384_dcp
+@v384_skip_double:
+
+        ; --- Test current bit of scalar ---
+        ldx var384_byte_off
+        lda var384_k,x
+        and var384_bit_mask
+        beq @v384_bit_is_zero
+
+        ; Bit set: stage P2 = (base_x, base_y) for the (possibly) coming add.
+        ldy #47
+@v384_cpbx:
+        lda ec_base384_x,y
+        sta ec384_p2,y
+        dey
+        bpl @v384_cpbx
+        ldy #47
+@v384_cpby:
+        lda ec_base384_y,y
+        sta ec384_p2+48,y
+        dey
+        bpl @v384_cpby
+
+        lda var384_r_inf
+        beq @v384_real_add
+
+        ; First set bit: seed R = (base_x, base_y, 1).
+        ldy #47
+@v384_seedx:
+        lda ec_base384_x,y
+        sta ec384_p1,y
+        dey
+        bpl @v384_seedx
+        ldy #47
+@v384_seedy:
+        lda ec_base384_y,y
+        sta ec384_p1+48,y
+        dey
+        bpl @v384_seedy
+        ; Z = 1 (LE: byte 0 = 1, rest = 0)
+        ldy #47
+        lda #0
+@v384_seedz:
+        sta ec384_p1+96,y
+        dey
+        bpl @v384_seedz
+        lda #1
+        sta ec384_p1+96
+        lda #0
+        sta var384_r_inf
+        jmp @v384_bit_done
+
+@v384_real_add:
+        jsr ec_point_add_384
+        ; 144-byte copy ec384_p3 -> ec384_p1 (see @v384_dcp note).
+        ldx #144
+        ldy #0
+@v384_acp:
+        lda ec384_p3,y
+        sta ec384_p1,y
+        iny
+        dex
+        bne @v384_acp
+
+@v384_bit_is_zero:
+@v384_bit_done:
+        ; --- Advance to next-lower bit ---
+        lsr var384_bit_mask
+        bne @v384_after_advance
+        lda #$80
+        sta var384_bit_mask
+        dec var384_byte_off
+@v384_after_advance:
+
+        ; --- 384-iteration counter (hi=1/lo=$80 decrementing to 0) ---
+        dec var384_loop_ctr_lo
+        bne @v384_loop_trampoline
+        dec var384_loop_ctr_hi
+        bne @v384_loop_trampoline
+        jmp @v384_loop_done
+@v384_loop_trampoline:
+        jmp @v384_loop
+
+@v384_loop_done:
+        ; --- Done. If R still infinity, return zero; else copy ec384_p1 -> ec384_p3. ---
+        lda var384_r_inf
+        beq @v384_copy_out
+        ldy #144
+        lda #0
+@v384_zinf:
+        dey
+        sta ec384_p3,y
+        bne @v384_zinf          ; Y counts 143..1; final iter stores byte 0
+        rts
+
+@v384_copy_out:
+        ; 144-byte copy ec384_p1 -> ec384_p3 (see @v384_dcp note).
+        ldx #144
+        ldy #0
+@v384_finc:
+        lda ec384_p1,y
+        sta ec384_p3,y
+        iny
+        dex
+        bne @v384_finc
+        rts
+
+; --- ec_scalar_mul_var_384 state vars (locally scoped; distinct from var_*) ---
+var384_k:           .res 48
+var384_byte_off:    .byte 0
+var384_bit_mask:    .byte 0
+var384_loop_ctr_lo: .byte 0
+var384_loop_ctr_hi: .byte 0
+var384_r_inf:       .byte 0
 
 ; =============================================================================
 ; ec_jacobian_to_affine_384: convert ec384_p3 (Jacobian) to affine (x,y)

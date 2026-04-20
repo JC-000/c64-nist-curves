@@ -14,6 +14,54 @@ contract).
 
 ### Added
 
+- Variable-base scalar multiplication: `ec_scalar_mul_var` (P-256),
+  `ec_scalar_mul_var_384` (P-384). Left-to-right binary double-and-add
+  over 256 / 384 bits. Non-constant-time (public inputs only). Unlocks
+  ECDSA verify's `u2 * Q` limb.
+- Packaged ECDSA verify with big-endian ABI: `ecdsa_verify_256`
+  (160-byte input struct), `ecdsa_verify_384` (240-byte input struct).
+  Input pointer in A/X, return via carry flag (`C=0` valid, `C=1`
+  invalid). Non-constant-time (TLS verifier context); a constant-time
+  variant is NOT provided because it is unnecessary for verify.
+- Byte-reversal helpers: `fp_reverse32`, `fp_reverse48`. Exported for
+  callers who want to drive the library's native little-endian
+  primitives from big-endian wire-format inputs directly.
+- Mod-order multiplication primitives: `fp_mod_mul_n`, `fp_mod_mul_n_384`.
+  Needed because `fp_mod_mul` hardcodes Solinas mod-p reduction; the
+  group-order mod-n reduction uses bit-serial top-down division.
+- U64E ECDSA bench tool (`tools/bench_ecdsa_u64.py`) with optional
+  DebugCapture integration via the U64E cycle-accurate debug bus-stream
+  (UDP :11002). Four bench trampolines added in `src/main.s` emitting
+  `$80`..`$87` markers at `$BFFF`.
+- Diagnostic reproducer `tools/diag_verify384_turbo.py` for the
+  Task #12 `ecdsa_verify_384` turbo timeout investigation.
+- NIST CAVP SigVer KAT bundles for P-256 and P-384 (15 vectors each,
+  `tools/vectors/nist_p256_sigver.rsp` + `nist_p384_sigver.rsp`)
+  consumed by the new `tools/test_ecdsa_verify.py`. Tests run RFC 6979
+  A.2.5 / A.3.1 positive vectors, 8 negatives per curve, and a
+  configurable slice of the CAVP vectors; all oracle-gated via the
+  `cryptography` Python package.
+
+### Fixed
+
+- **LDA-clobbers-Z bug pattern in 144-byte Jacobian copy loops**
+  (`ec_scalar_mul_var_384`, issue #17 Task #4). Extension of the
+  `LDY #143 / BPL` infinity-fill bug family already documented in
+  CLAUDE.md. The variant was a counter/Y-indexing mismatch where
+  `LDA abs,y` clobbered the Z flag that a subsequent `BNE` was trying
+  to test against a separate counter. Fixed via the X-counter
+  countdown pattern `ldx #144 / ... / iny / dex / bne @l`.
+- **CPX-clobbers-C bug in `fp_mod_mul_n`** (draft revision, caught
+  pre-landing during Task #10). The bit-serial top-down reduction's
+  ROL loop used `CPX #0` as the counter test, which clobbered C
+  between the `ROL acc` and the conditional subtract. Fixed by
+  switching to `DEC` / `DEX` counters, which preserve C and mirror
+  the style already used in `fp_mod_mul_n_384`.
+
+Closes #17.
+
+### Added (earlier in [Unreleased], pre-Task #9)
+
 - **`tools/ct_mul_brute_check.py`** — brute-force correctness check for
   the constant-time `mul_8x8`. Exercises all 65 536 `(a, b)` pairs in
   `[0, 255]²` against Python `a * b` and asserts byte equality of the
