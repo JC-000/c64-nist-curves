@@ -11,6 +11,7 @@
 
 ; Imports from constants
 .import reu_reu_hi, reu_reu_bank, reu_command
+.import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
 ; Exports
 .export fp_copy, fp_zero, fp_cmp, fp_add, fp_sub
@@ -128,6 +129,17 @@ fp_rshift1:
 ; fp_mul - 256x256 -> 512 bit multiply, little-endian
 ; =============================================================================
 fp_mul:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see c64-x25519 commit 817f525). Per-row DMA below writes only
+        ; reu_reu_hi/bank/command, trusting reu_reu_lo ($DF04) and
+        ; reu_addr_ctrl ($DF0A) remain 0 from reu_mul_init's tail. A
+        ; caller that touched those registers between init and us
+        ; would silently route the row fetch to the wrong REU offset
+        ; (or hold-C64-address) and we'd accumulate garbage.
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         ldx #63
         lda #0
 @zero_wide:
@@ -367,6 +379,12 @@ fp_mul:
 ; fp_sqr - 256-bit squaring with symmetry optimization, little-endian
 ; =============================================================================
 fp_sqr:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see fp_mul above and c64-x25519 commit 817f525).
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         ldx #63
         lda #0
 @zero_wide:

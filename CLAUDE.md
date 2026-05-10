@@ -1,16 +1,32 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # c64-nist-curves
 
 ## Project overview
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
+Companion docs (read alongside this file):
+- `README.md` — user-facing overview, full benchmark tables, ECDSA ABI walkthrough.
+- `API.md` — library API reference; §4 (re-entrancy contract) and §8 (consumer integration / submodule pinning) are load-bearing.
+- `CHANGELOG.md` — release history with wave-by-wave optimization log.
+- `tools/vectors/README.md` — oracle invariant + KAT refresh procedure.
+
 ## Build
 ```
-make clean && make
+make clean && make           # ca65/ld65 build → build/nist-curves.prg
+make build-acme              # legacy ACME build of *.asm (diff testing only)
+make bench-u64               # alias for tools/bench_ecdsa_u64.py (needs U64_HOST)
 ```
 Assembler: ca65/ld65 (cc65 toolchain). Multi-object build: each .s file compiles
 to a separate .o, linked by ld65 with `src/c64.cfg`. Output: build/nist-curves.prg
 + build/labels.txt (VICE symbol table, post-processed from ld65 `-Ln` format).
 Current PRG size: ~23.8 KB (24322 bytes), loaded at $0801.
+
+`src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
+ACME build path used in side-by-side diff testing only — do not edit
+them for new work.
 
 ## Test
 ```
@@ -26,6 +42,22 @@ python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAV
 python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
+
+Each test/bench is a single Python entrypoint — there is no pytest
+runner. To narrow scope: `--seed N` reproduces a specific failure
+(default unseeded via `secrets`); `--full` on the point tests expands
+3→10 random samples per routine and exercises all 25 CAVP KATs;
+`--verbose` is supported by most. To run a single routine in
+isolation, edit the test file's `main()` selection or run the
+matching standalone diag tool (e.g. `tools/diag_verify384_turbo.py`,
+`tools/test_inv_fast.py`, `tools/ct_mul_brute_check.py`).
+
+U64E benches require `U64_HOST=<ip>` env var (and optionally
+`U64_PASSWORD=<pw>`). Set `BENCH_DEBUG_STREAM=1` on `bench_ecdsa_u64.py`
+to enable the cycle-accurate UDP :11002 bus-trace cross-check
+(stream destination must be configured on the U64E). Hardware benches
+serialize on `DeviceLock` for cross-process safety — one stuck job
+blocks every other on the device.
 
 ### Oracle-driven testing model
 All test suites use an **external oracle** -- the `cryptography`
@@ -131,6 +163,13 @@ gets stale otherwise).
   works out to <1% of a full fp_mul. Point-level DMA routines
   (`.sm_reu_restore` / `.sm384w_restore_reu`) restore this invariant
   state on exit so the mul-fetch path never has to re-initialize it.
+  **Caller residue defence**: each public entry point that initiates
+  REU DMA (`fp_mul`, `fp_sqr`, `fp_mul_384`, `fp_sqr_384`,
+  `ec_scalar_mul[_var][_384]`, `ecdsa_verify_256/384`) re-establishes
+  `$DF04 = 0` and `$DF0A = 0` defensively before touching DMA, so a
+  caller that polluted those two registers between boot and a library
+  call cannot silently route the row fetch to the wrong REU offset.
+  Issue #33-class defence; ported from c64-x25519 commit 817f525.
 - Self-modifying code for multiply accumulation addresses
 - 4x unrolled inner multiply loop with inlined REU DMA
 - Dedicated squaring with deferred doubling of cross terms (Wave 4e)
@@ -270,7 +309,20 @@ keep all library calls on a single thread of control.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
-- None outstanding. Issue #14 (constant-time bug in `mul_8x8`) was
+- **Issue #33-class REU register-residue defence (ported from
+  c64-x25519 commit 817f525, 2026-05-10)**. The library's per-row REU
+  DMA fetch in `fp_mul`/`fp_sqr` (256+384) writes only 3 of 8 REU
+  registers per call, trusting `reu_reu_lo` (`$DF04`) and
+  `reu_addr_ctrl` (`$DF0A`) remain `$00` from `reu_mul_init`'s tail.
+  A caller that touched those two registers after boot (e.g. a sibling
+  REU consumer) would have caused the row fetch to DMA from the wrong
+  REU offset, silently producing a deterministic-but-wrong field
+  result. Defence: defensive `lda #0 / sta reu_reu_lo / sta
+  reu_addr_ctrl` at every public entry point that initiates DMA --
+  `fp_mul`/`fp_sqr` (×2 curves), `ec_scalar_mul`/`_var` (×2 curves),
+  `ecdsa_verify_256/384`. ~80 raw bytes of code, transparent runtime
+  cost (6 cy per call). Same bug shape and fix as the x25519 sibling.
+- Issue #14 (constant-time bug in `mul_8x8`) was
   remediated via Option B: the quarter-square primitive in `src/mul_8x8.s`
   was replaced with a branchless, SMC-dispatched implementation ported
   from `c64-ChaCha20-Poly1305` v0.3.0 `ct_mul_8x8`. The old body had two

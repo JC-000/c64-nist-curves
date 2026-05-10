@@ -1262,6 +1262,15 @@ ec_precompute_256:
 ; REQUIRES: ec_precompute_256 must have been called first.
 ; =============================================================================
 ec_scalar_mul:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see c64-x25519 commit 817f525). The per-row DMA in fp_mul/sqr
+        ; trusts reu_reu_lo / reu_addr_ctrl remain 0 from reu_mul_init.
+        ; Defence-in-depth at the public surface; the inner primitives
+        ; are also patched.
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         ; --- Transpose 32-byte BE scalar -> cm_k little-endian ---
         ; cm_k[i] = scalar[31 - i]; cm_k[0..3] = K0 (LSBs), ..., cm_k[28..31] = K7.
         ldy #31                 ; BE source index
@@ -1457,6 +1466,12 @@ cm_anch_idx:    .byte 0         ; precompute helper
 ; NOT re-entrant. Serialize with all other field/point ops.
 ; =============================================================================
 ec_scalar_mul_var:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see ec_scalar_mul above and c64-x25519 commit 817f525).
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         jsr ec_set_modp
 
         ; Transpose BE scalar into LE internal buffer var_k.

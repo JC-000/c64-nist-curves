@@ -46,6 +46,7 @@
 .import ec_n384
 .import ec_scalar_mul_384, ec_scalar_mul_var_384
 .import ec_point_add_384, ec_jacobian_to_affine_384
+.import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
 .import fp384_r0
 .import ec384_p1, ec384_p2, ec384_p3
@@ -92,6 +93,14 @@ fp_reverse48:
 ecdsa_verify_384:
         sta ecdsa384_in_ptr
         stx ecdsa384_in_ptr+1
+
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see c64-x25519 commit 817f525). Defence-in-depth at the
+        ; public surface; the inner fp_mul_384/sqr_384 primitives are
+        ; also patched. Must run after the A/X input save above.
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
 
         ; --- Step 2: byte-reverse 5 BE input fields into LE scratch. ---
         ; fp_src1 = ecdsa384_in_ptr + 0,   fp_dst = ecdsa384_r
