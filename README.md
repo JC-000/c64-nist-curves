@@ -240,7 +240,8 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 
 ## Releases
 
-- **v0.1.0** (2026-04-13) — First audited, tagged release. 1074 oracle-verified test vectors across P-256 and P-384 field / point / scalar-mul. See [`CHANGELOG.md`](CHANGELOG.md) for the full release notes and wave history.
+- **v0.2.0** (2026-05-12) — Adds variable-base scalar multiplication (`ec_scalar_mul_var[_384]`) and packaged ECDSA verify (`ecdsa_verify_256/384`) with BE wire-format ABI for TLS-style callers. Lands the issue #33-class REU register-residue defence ported from c64-x25519 (10 entry points, ~80 bytes / 6 cy per call, transparent). 1038 oracle-gated tests across five suites. Reproducible release tarball via `make dist VERSION=v0.2.0`. See [`docs/RELEASE_NOTES_v0.2.0.md`](docs/RELEASE_NOTES_v0.2.0.md) for the full v0.2.0 summary; [`CHANGELOG.md`](CHANGELOG.md) for the per-bullet log.
+- **v0.1.0** (2026-04-13) — First audited, tagged release. 1074 oracle-verified test vectors across P-256 and P-384 field / point / scalar-mul.
 
 ## ECDSA verify API
 
