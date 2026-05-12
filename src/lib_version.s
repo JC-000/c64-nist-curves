@@ -23,7 +23,7 @@
 ; =============================================================================
 
 LIB_VERSION_MAJOR = 0
-LIB_VERSION_MINOR = 1
+LIB_VERSION_MINOR = 2
 LIB_VERSION_PATCH = 0
 
 .export LIB_VERSION_MAJOR

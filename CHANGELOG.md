@@ -12,6 +12,30 @@ contract).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-12
+
+### Security
+
+- **Issue #33-class REU register-residue defence** (ported from
+  c64-x25519 commit `817f525`). The per-row REU DMA fetch in `fp_mul`
+  / `fp_sqr` (256+384) writes only 3 of 8 REU registers per call,
+  trusting `reu_reu_lo` (`$DF04`) and `reu_addr_ctrl` (`$DF0A`) remain
+  `$00` from `reu_mul_init`'s tail. A caller that touched those two
+  registers after boot (e.g. a sibling REU consumer in a composed
+  system like the planned `c64-https` / `c64-wireguard` integrations)
+  would have caused row fetches to DMA from the wrong REU offset or
+  with hold-C64-address mode, silently producing
+  deterministic-but-wrong field results. The x25519 sibling reported
+  exactly this composition-bug shape under c64-https TLS handshake
+  derivation. Defence: defensive `lda #0 / sta reu_reu_lo / sta
+  reu_addr_ctrl` at every public entry point that initiates DMA —
+  `fp_mul` / `fp_sqr` (×2 curves), `ec_scalar_mul` / `_var` (×2
+  curves), `ecdsa_verify_256` / `_384`. ~80 raw bytes of code across
+  10 sites; +6 cycles per call (transparent CT-neutral, unconditional
+  stores). PRG grows from 24322 → 24578 bytes; +176 of that is
+  page-alignment shift on the TABLES segment, not real code. Same bug
+  shape and fix as the x25519 sibling.
+
 ### Fixed
 
 - **Issue #18 (`fp_sqr_384` hangs in standalone-link consumer builds)** —
@@ -54,6 +78,21 @@ contract).
   `$80`..`$87` markers at `$BFFF`.
 - Diagnostic reproducer `tools/diag_verify384_turbo.py` for the
   Task #12 `ecdsa_verify_384` turbo timeout investigation.
+- Diagnostic reproducers used during the c64-test-harness issue #88
+  investigation (flaky `read_bytes` from the binary-monitor protocol;
+  fixed upstream by `c64-test-harness` PR #89):
+  `tools/diag_fp_mod_add.py`, `tools/diag_fp_mod_add_after_mul.py`,
+  `tools/diag_fp_mul.py`, `tools/diag_read_consistency.py`. Each is a
+  standalone, single-purpose reproducer that JSRs one library entry
+  point with fixed or randomized inputs and compares against the
+  Python oracle. Retained as upstream-regression sentinels.
+- **Reproducible release tarball builder** (`tools/build_release.sh`,
+  invoked via `make dist VERSION=v0.2.0`). Codifies the canonical
+  v0.2.0+ vendoring file list and produces a byte-deterministic
+  source tarball from a named git tag. SHA256 is printed and must
+  match the value recorded in `docs/RELEASE_NOTES_<tag>.md`. Mirrors
+  the c64-x25519 sibling's `tools/build_release.sh` recipe (commit
+  `535ea7a`).
 - NIST CAVP SigVer KAT bundles for P-256 and P-384 (15 vectors each,
   `tools/vectors/nist_p256_sigver.rsp` + `nist_p384_sigver.rsp`)
   consumed by the new `tools/test_ecdsa_verify.py`. Tests run RFC 6979
@@ -213,4 +252,5 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.2.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.2.0
 [0.1.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.1.0

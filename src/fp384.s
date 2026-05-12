@@ -26,6 +26,7 @@
 
 ; --- Imports: constants ---
 .import reu_reu_hi, reu_reu_bank, reu_command
+.import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
 ; --- Exports ---
 .export fp_copy_384, fp_zero_384, fp_cmp_384, fp_add_384, fp_sub_384
@@ -166,6 +167,15 @@ fp_rshift1_384:
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_mul_384:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see c64-x25519 commit 817f525). Per-row DMA below trusts
+        ; reu_reu_lo ($DF04) and reu_addr_ctrl ($DF0A) are still 0
+        ; from reu_mul_init's tail. Re-establish them so caller residue
+        ; cannot silently route the fetch to the wrong REU offset.
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         ; 1. Zero the 96-byte product buffer
         ldx #95
         lda #0
@@ -429,6 +439,12 @@ fp_mul_384:
 ; Clobbers: A, X, Y
 ; =============================================================================
 fp_sqr_384:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see fp_mul_384 above and c64-x25519 commit 817f525).
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         ; 1. Zero the 96-byte product buffer
         ldx #95
         lda #0

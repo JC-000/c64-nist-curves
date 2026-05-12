@@ -1187,6 +1187,14 @@ ec_precompute_384:
 ; REQUIRES: ec_precompute_384 must have been called first.
 ; =============================================================================
 ec_scalar_mul_384:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see c64-x25519 commit 817f525). The per-row DMA in fp_mul_384/
+        ; fp_sqr_384 trusts reu_reu_lo / reu_addr_ctrl remain 0 from
+        ; reu_mul_init. Defence-in-depth at the public surface.
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         ; --- Transpose 48-byte BE scalar -> cm_k_384 little-endian ---
         ; cm_k_384[0..5] = K0 (LSBs), cm_k_384[6..11] = K1, ..., cm_k_384[42..47] = K7.
         ldy #47                 ; BE source index
@@ -1495,6 +1503,12 @@ sm384w_restore_reu:
 ; LDY #143 / BPL never branches on the first iteration (bit 7 of $8F set).
 ; =============================================================================
 ec_scalar_mul_var_384:
+        ; --- Defensive REU register init (issue #33-class defence;
+        ; see ec_scalar_mul_384 above and c64-x25519 commit 817f525).
+        lda #0
+        sta reu_reu_lo
+        sta reu_addr_ctrl
+
         jsr ec_set_modp_384
 
         ; Transpose BE scalar into LE internal buffer var384_k.

@@ -20,7 +20,7 @@ CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
 OBJECTS   = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(MODULES)))
 ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 
-.PHONY: all clean build-acme bench-u64
+.PHONY: all clean build-acme bench-u64 dist
 
 all: $(PRG)
 
@@ -50,3 +50,22 @@ $(BUILD_DIR):
 
 clean:
 	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/nist-curves.prg $(BUILD_DIR)/labels.txt $(BUILD_DIR)/labels_raw.txt
+
+# --- Reproducible release tarball --------------------------------------------
+#
+# `make dist VERSION=v0.2.0` builds c64-nist-curves-<VERSION>.tar.gz from the
+# named git tag, with the canonical v0.2.0+ vendoring file set, and prints
+# byte size + SHA256. Deterministic: same VERSION always produces a
+# byte-identical tarball (git archive is content-deterministic; gzip -n
+# drops the gzip timestamp). The recorded SHA256 in
+# docs/RELEASE_NOTES_<VERSION>.md must match this script's output for
+# that VERSION.
+#
+# Used at release time to produce the artifact uploaded to the GitHub
+# Release page. See tools/build_release.sh for the full recipe.
+dist:
+	@if [ -z "$(VERSION)" ]; then \
+	  echo "usage: make dist VERSION=v0.2.0" >&2; \
+	  exit 1; \
+	fi
+	@tools/build_release.sh $(VERSION)
