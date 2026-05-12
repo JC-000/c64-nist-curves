@@ -82,11 +82,10 @@ above.
 ## Tarball
 
 `c64-nist-curves-v0.2.0.tar.gz` is produced reproducibly by
-`make dist VERSION=v0.2.0`. The canonical artifact's size and SHA256
-will be recorded here after the tag is cut and the tarball is built:
+`make dist VERSION=v0.2.0`. Canonical artifact:
 
-- Size:   _<filled after tag>_
-- SHA256: _<filled after tag>_
+- Size:   79173 bytes
+- SHA256: `2ed4cf0a795e6e00d69c9fd65c5da23b1ecadeda7b81e843efd44dc6f12bb1d4`
 
 Re-running `make dist VERSION=v0.2.0` against this tag must reproduce
 the recorded SHA256 byte-for-byte (`git archive` is deterministic;
