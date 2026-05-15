@@ -35,6 +35,17 @@ from tools.vectors import (  # noqa: E402
 NTSC_CYCLES_PER_JIFFY = 17045
 NTSC_CPU_HZ = NTSC_CYCLES_PER_JIFFY * 60  # ~1,022,700 Hz
 
+
+def _warn_if_vice_running():
+    import subprocess, sys
+    try:
+        res = subprocess.run(["pgrep", "-c", "x64sc"], capture_output=True, text=True, timeout=2)
+        n = int(res.stdout.strip() or "0")
+        if n > 0:
+            print(f"WARNING: {n} other x64sc instance(s) already running - wall-clock timings may be unreliable.", file=sys.stderr)
+    except Exception:
+        pass  # preflight must never block test execution
+
 # Trampoline install address (unused RAM under BASIC ROM is fine here; $C000
 # is the standard free 4 KB block that is always RAM).
 TRAMPOLINE_ADDR = 0xC000
@@ -333,6 +344,7 @@ BENCH_PLAN = [
 
 
 def main():
+    _warn_if_vice_running()
     os.chdir(PROJECT_ROOT)
 
     # Build

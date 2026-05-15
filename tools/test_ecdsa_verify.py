@@ -67,6 +67,17 @@ from tools.vectors import (  # noqa: E402
 )
 
 
+def _warn_if_vice_running():
+    import subprocess, sys
+    try:
+        res = subprocess.run(["pgrep", "-c", "x64sc"], capture_output=True, text=True, timeout=2)
+        n = int(res.stdout.strip() or "0")
+        if n > 0:
+            print(f"WARNING: {n} other x64sc instance(s) already running - wall-clock timings may be unreliable.", file=sys.stderr)
+    except Exception:
+        pass  # preflight must never block test execution
+
+
 # ----------------------------------------------------------------------------
 # RFC 6979 test vectors
 # ----------------------------------------------------------------------------
@@ -358,6 +369,7 @@ def run_tests(transport, labels, run_full):
 
 
 def main():
+    _warn_if_vice_running()
     run_full = "--full" in sys.argv[1:]
 
     os.chdir(PROJECT_ROOT)

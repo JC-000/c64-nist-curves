@@ -29,6 +29,17 @@ VERBOSE = False
 SKIP_SLOW = False
 
 
+def _warn_if_vice_running():
+    import subprocess, sys
+    try:
+        res = subprocess.run(["pgrep", "-c", "x64sc"], capture_output=True, text=True, timeout=2)
+        n = int(res.stdout.strip() or "0")
+        if n > 0:
+            print(f"WARNING: {n} other x64sc instance(s) already running - wall-clock timings may be unreliable.", file=sys.stderr)
+    except Exception:
+        pass  # preflight must never block test execution
+
+
 def int_to_le(v, n=32):
     return v.to_bytes(n, "little")
 
@@ -183,6 +194,7 @@ def run_tests(transport, labels, seed):
 
 def main():
     global VERBOSE, SKIP_SLOW
+    _warn_if_vice_running()
     os.chdir(PROJECT_ROOT)
 
     seed = random.randint(0, 2**32 - 1)
