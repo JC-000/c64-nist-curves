@@ -75,6 +75,20 @@ contract).
   the `c64-https` / `c64-wireguard` "as of" reference. The historical
   release-ledger line in `README.md` is preserved unchanged. No
   library code or ABI changes; documentation only.
+- **Doc staleness sweep, post-PR #23.** Five drift fixes accumulated
+  across v0.1.0 → v0.2.0 → SHA-384 work. (1) API.md §2 PRG-size cell
+  no longer pins a specific byte count — points readers at
+  `build/labels.txt` instead. (2) API.md §7 limitations entry on
+  scalar multiplication rewritten — `ec_scalar_mul_var[_384]` exists
+  as of v0.2.0 and ECDSA-verify is provided; the actual surviving
+  limitation is "both scalar-mul paths are non-constant-time, public-input
+  only" (the fixed-base comb also branches on comb index and infinity flag).
+  (3) CLAUDE.md ECDSA-verify-API buffer accounting refreshed for the +3 B
+  `ecdsa_verify_with_message_384` wrapper additions
+  (`ecdsa384_msg_struct_ptr` + `ecdsa_result_msg_384`). (4) README.md
+  feature-bullet list rejoined (stray blank line removed). (5) README.md
+  `## Status` checklist gains rows for packaged ECDSA verify and SHA-384
+  streaming hash.
 
 ## [0.2.0] — 2026-05-12
 

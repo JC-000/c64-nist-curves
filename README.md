@@ -19,7 +19,6 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill
 - Unrolled binary GCD shift loops for modular inversion
 - Self-modifying dispatch in Solinas reduction
-
 - Ultimate 64 Elite hardware benchmarking via DMA trampoline (16 / 48 MHz turbo)
 
 ## Requirements
@@ -238,6 +237,8 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 - [x] P-384 implementation
 - [x] Benchmarking suite
 - [x] Lim-Lee fixed-base comb scalar multiplication on both curves (h=4 Wave 5, upgraded to h=8 Wave 7a)
+- [x] Packaged ECDSA verify (`ecdsa_verify_256` / `ecdsa_verify_384`) with big-endian wire-format ABI (v0.2.0); `ecdsa_verify_with_message_384` hash-then-verify wrapper (PR #23)
+- [x] SHA-384 streaming hash (FIPS 180-4 §6.4): `sha384_init` / `sha384_update` / `sha384_final` (PR #23)
 - [x] Comprehensive test suite (1074 oracle-verified vectors across fp256, points256 --full, fp384, points384 --full)
 - [x] Fermat inversion (addition chain): implemented for P-256 in
       `src/inv256.s` but 41x slower than binary GCD, retained for reference only

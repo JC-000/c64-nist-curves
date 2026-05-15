@@ -276,8 +276,10 @@ consumption by TLS callers (planned `c64-https` integration path).
   for `u1 = h*w`, `u2 = r*w`). All of those remain callable directly for
   consumers who want to drive the LE primitives without the BE wrapper.
 - **Buffers:** ~416 B P-256 scratch (`ecdsa_r/s/h/qx/qy`, `ecdsa_w/u1/u2`,
-  `ecdsa_u1_be/u2_be`, `ecdsa_u1g_x/y`, `fp_rev_buf`) + ~624 B P-384
-  equivalents, all declared in src/data.s.
+  `ecdsa_u1_be/u2_be`, `ecdsa_u1g_x/y`, `fp_rev_buf`) + ~627 B P-384
+  equivalents (includes `ecdsa384_msg_struct_ptr` (2 B) and
+  `ecdsa_result_msg_384` (1 B) added by `ecdsa_verify_with_message_384`),
+  all declared in src/data.s.
 - **`ecdsa_verify_with_message_384` (src/ecdsa384.s):** one-shot
   hash-then-verify wrapper. Same A/X-pointer ABI and 240 B BE struct
   layout as `ecdsa_verify_384` (the `h` slot is overwritten with the
