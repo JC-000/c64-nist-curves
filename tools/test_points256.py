@@ -65,6 +65,17 @@ N256 = P256_N
 TEST_PRIVKEY = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
 
 
+def _warn_if_vice_running():
+    import subprocess, sys
+    try:
+        res = subprocess.run(["pgrep", "-c", "x64sc"], capture_output=True, text=True, timeout=2)
+        n = int(res.stdout.strip() or "0")
+        if n > 0:
+            print(f"WARNING: {n} other x64sc instance(s) already running - wall-clock timings may be unreliable.", file=sys.stderr)
+    except Exception:
+        pass  # preflight must never block test execution
+
+
 # ============================================================================
 # Byte conversion helpers
 # ============================================================================
@@ -621,6 +632,7 @@ def run_tests(transport, labels, rng, run_full):
 
 def main():
     global VERBOSE
+    _warn_if_vice_running()
     os.chdir(PROJECT_ROOT)
 
     seed = None

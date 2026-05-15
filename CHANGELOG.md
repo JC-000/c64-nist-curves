@@ -12,6 +12,46 @@ contract).
 
 ## [Unreleased]
 
+### Changed
+
+- **`read_bytes_verified` integration in field-arithmetic tests.** The
+  four single-byte carry/borrow verifier reads inside `c64_fp_add`
+  and `c64_fp_sub` in `tools/test_fp256.py` and `tools/test_fp384.py`
+  now use `c64_test_harness.read_bytes_verified` rather than plain
+  `read_bytes`. Future flakes at those sites will raise
+  `FlakeyReadError` (a distinct exception type) instead of silently
+  returning corrupted bytes that masquerade as wrong-answer assertion
+  failures. Bulk coordinate reads, wide-result reads, and the
+  `$02A7` startup sentinel poll are deliberately NOT converted — the
+  helper doubles wire traffic per call and is only worth it at
+  verifier sites where a flake would silently look like a test bug.
+  Requires c64-test-harness PR #89 (`read_bytes_verified` helper) or
+  later; older harness installs will fail on the import. Tests still
+  pass cleanly: 471/471 (P-256) and 473/473 (P-384).
+- **VICE-contention preflight warning** in all eight VICE-targeting
+  scripts under `tools/`: `test_fp256.py`, `test_fp384.py`,
+  `test_points256.py`, `test_points384.py`, `test_ecdsa_verify.py`,
+  `test_inv_fast.py`, `bench_p256.py`, `bench_p384.py`. Each `main()`
+  now calls `_warn_if_vice_running()`, which shells out to
+  `pgrep -c x64sc` (2 s timeout, all exceptions swallowed) and prints
+  a one-line stderr warning when another `x64sc` is already running
+  — surfaces the wall-clock-contention pattern that previously
+  manifested as spurious per-call timeouts in concurrent test runs.
+  Purely observational; never blocks or fails. U64-hardware bench
+  tools (`bench_p256_u64.py`, `bench_p384_u64.py`,
+  `bench_ecdsa_u64.py`, `bench_u64_common.py`) deliberately skipped —
+  those don't drive VICE.
+- **API.md v0.1.x → v0.2.x example refresh.** Five sites refreshed
+  in §8.1 / §8.5 / §8.6 to suggest the current release as the
+  default pin for new consumers: submodule integration example
+  (`git checkout v0.2.0` + commit message), bumping example
+  (`v0.2.1` placeholder), version-pinning check
+  (`LIB_VERSION_MINOR < 2`, error string `"c64-nist-curves v0.2.0 or
+  newer is required"`), PATCH-bump example (`v0.2.0 → v0.2.1`), and
+  the `c64-https` / `c64-wireguard` "as of" reference. The historical
+  release-ledger line in `README.md` is preserved unchanged. No
+  library code or ABI changes; documentation only.
+
 ## [0.2.0] — 2026-05-12
 
 ### Security

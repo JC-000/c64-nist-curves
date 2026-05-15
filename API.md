@@ -322,17 +322,17 @@ release tag.
 ```
 git submodule add https://github.com/JC-000/c64-nist-curves \
     lib/c64-nist-curves
-git -C lib/c64-nist-curves checkout v0.1.0
-git commit -m "Import c64-nist-curves v0.1.0 as submodule"
+git -C lib/c64-nist-curves checkout v0.2.0
+git commit -m "Import c64-nist-curves v0.2.0 as submodule"
 ```
 
 Bumping to a later release:
 
 ```
 git -C lib/c64-nist-curves fetch --tags
-git -C lib/c64-nist-curves checkout v0.1.1    # or whichever tag
+git -C lib/c64-nist-curves checkout v0.2.1    # or whichever tag
 git add lib/c64-nist-curves
-git commit -m "Bump c64-nist-curves to v0.1.1"
+git commit -m "Bump c64-nist-curves to v0.2.1"
 ```
 
 Consumers should pin to a specific tag rather than tracking `master`
@@ -438,14 +438,14 @@ checks, defined in `src/lib_version.s`:
 ```asm
 .import LIB_VERSION_MAJOR, LIB_VERSION_MINOR, LIB_VERSION_PATCH
 
-.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 1
-    .error "c64-nist-curves v0.1.0 or newer is required"
+.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 2
+    .error "c64-nist-curves v0.2.0 or newer is required"
 .endif
 ```
 
 The library is currently in the v0.x pre-stable series. Version policy:
 
-- **PATCH** bumps (v0.1.0 → v0.1.1) ship bugfixes or performance
+- **PATCH** bumps (v0.2.0 → v0.2.1) ship bugfixes or performance
   improvements with no public API changes. Always safe to adopt.
 - **MINOR** bumps (v0.1.x → v0.2.0) may add public symbols (new entry
   points, new constants) but will not remove or rename existing ones.
@@ -463,7 +463,7 @@ mirror for non-ca65 tooling (CI scripts, Makefile version variables).
 ### 8.6 Reference integrations
 
 The `c64-https` and `c64-wireguard` projects are planned reference
-integrations. As of v0.1.0, both are still on the legacy ACME
+integrations. As of v0.2.0, both are still on the legacy ACME
 toolchain and pending migration to ca65; once that migration lands
 and they adopt this library, this section will be updated with
 pointers to their integration patches as worked examples of the

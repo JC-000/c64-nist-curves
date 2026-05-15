@@ -33,7 +33,7 @@ import traceback
 
 from c64_test_harness import (
     Labels, ViceConfig, ViceInstanceManager,
-    read_bytes, write_bytes, jsr,
+    read_bytes, read_bytes_verified, write_bytes, jsr,
 )
 
 # Shared oracle constants + NIST KAT loader. DO NOT redefine P384 here.
@@ -48,6 +48,17 @@ LABELS_PATH = os.path.join(PROJECT_ROOT, "build", "labels.txt")
 
 VERBOSE = False
 RANDOM_CASES = 20
+
+
+def _warn_if_vice_running():
+    import subprocess, sys
+    try:
+        res = subprocess.run(["pgrep", "-c", "x64sc"], capture_output=True, text=True, timeout=2)
+        n = int(res.stdout.strip() or "0")
+        if n > 0:
+            print(f"WARNING: {n} other x64sc instance(s) already running - wall-clock timings may be unreliable.", file=sys.stderr)
+    except Exception:
+        pass  # preflight must never block test execution
 
 
 # ============================================================================
@@ -130,7 +141,7 @@ def c64_fp_add(transport, labels, a, b):
                 dst=labels["fp384_tmp3"])
     jsr(transport, labels["fp_add_384"], timeout=10.0)
     result = read_fe_384(transport, labels["fp384_tmp3"])
-    carry = le_bytes_to_int(read_bytes(transport, labels["fp_carry"], 1))
+    carry = le_bytes_to_int(read_bytes_verified(transport, labels["fp_carry"], 1))
     return result, carry
 
 def c64_fp_sub(transport, labels, a, b):
@@ -141,7 +152,7 @@ def c64_fp_sub(transport, labels, a, b):
                 dst=labels["fp384_tmp3"])
     jsr(transport, labels["fp_sub_384"], timeout=10.0)
     result = read_fe_384(transport, labels["fp384_tmp3"])
-    borrow = le_bytes_to_int(read_bytes(transport, labels["fp_carry"], 1))
+    borrow = le_bytes_to_int(read_bytes_verified(transport, labels["fp_carry"], 1))
     return result, borrow
 
 def c64_fp_mul(transport, labels, a, b):
@@ -782,6 +793,7 @@ def run_tests(transport, labels, rng):
 
 def main():
     global VERBOSE
+    _warn_if_vice_running()
     os.chdir(PROJECT_ROOT)
 
     seed = None
