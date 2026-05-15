@@ -17,7 +17,13 @@ Commodore 64 plus a RAM Expansion Unit (REU):
 - Jacobian point doubling and mixed Jacobian/affine point addition
 - Fixed-base scalar multiplication `k * G` via an 8-way width-1 Lim-Lee comb
   over a REU-resident 256-entry precompute table (Wave 7a; h=4 landed in Wave 5)
+- Variable-base scalar multiplication `k * P` (`ec_scalar_mul_var[_384]`,
+  ECDSA-verify building block; non-constant-time)
 - Jacobian-to-affine conversion for result export
+- Packaged ECDSA verify (`ecdsa_verify_256` / `ecdsa_verify_384`) with a
+  big-endian wire-format ABI suitable for TLS-style callers
+- SHA-384 streaming hash (FIPS 180-4 §6.4) and a one-shot
+  `ecdsa_verify_with_message_384` hash-then-verify wrapper
 
 Target platform: 6502 @ 1 MHz with a 1764 / 1750 / compatible REU.
 Source is ca65/ld65 assembly for the cc65 toolchain; build via `make clean && make`. See README.md for toolchain install notes.
@@ -54,7 +60,8 @@ host-supplied definition wins).
 | Lim-Lee anchors + working scalar (P-256) | approx. `$5367`-`$5586` | `ec_anchor1..8_x/y` (8 * 64 bytes), `cm_k` (32). Wave 7a h=8 doubled the anchor storage. |
 | Lim-Lee anchors + working scalar (P-384) | approx. `$5587`-`$58F6` | `ec_anchor1..8_384_x/y` (8 * 96 bytes), `cm_k_384` (48). |
 | Quarter-square multiply tables | `$7800`-`$7BFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. |
-| Zero-page | ~16 bytes, see `zp_config.s` | `$02`-`$03`, `$1A`-`$1D`, `$22`-`$2D`, `$3B`, `$FB`-`$FE` by default. |
+| SHA-384 streaming state + buffers | varies (DATA segment) | `sha_state` (64) + `sha_w` (640) + `sha_abcdefgh` (64) + `sha_t` (16) + `sha_scratch` (64) + `sha_block_buf` (128) + `sha_block_len` (1) + `sha_total_len` (16) + `sha384_digest` (48) + `sha384_msg_buf` (1024 test scratch) ≈ 2065 B total. K[80] round constants (640 B) live in RODATA inside `src/sha384.s`. |
+| Zero-page | ~20 bytes, see `zp_config.s` | `$02`-`$03`, `$04`-`$0B` (SHA), `$1A`-`$1D`, `$22`-`$2D`, `$3B`, `$FB`-`$FE` by default. |
 | REU bank 0-1 | `$00_0000`-`$01_FFFF` | 128 KB full 8x8 -> 16 multiply table, built once by `reu_mul_init`. |
 | REU bank 2, offset `$0000`-`$3FFF` | 16 KB | P-256 Lim-Lee comb precompute (256 entries x 64 bytes, X + Y only). Wave 7a h=8. |
 | REU bank 2, offset `$4000`-`$9F9F` | 24 KB | P-384 Lim-Lee comb precompute (256 entries x 96 bytes). Wave 7a h=8. |
@@ -239,6 +246,49 @@ identically to the P-256 version.
 | `ec_precompute_256` | points256 | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~25 s on real C64). |
 | `ec_precompute_384` | points384 | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~80 s on real C64). |
 
+### 5.4 Hash functions (`sha384.s`)
+
+| Name | Source | Inputs | Output | Notes |
+|---|---|---|---|---|
+| `sha384_init` | sha384 | — | resets `sha_state` to the SHA-384 IV; clears `sha_block_len`, `sha_total_len` | Must be called before the first `sha384_update` of a new stream and after every `sha384_final`. |
+| `sha384_update` | sha384 | `sha_src` (ZP, 2 B LE pointer), `sha_len` (ZP, 2 B LE byte count) | absorbs `sha_len` bytes from `sha_src`; may trigger zero or more 1024-bit compressions as the 128 B `sha_block_buf` fills | 16-bit `sha_len` caps a single call at 64 KB. May be called repeatedly to stream longer messages. |
+| `sha384_final` | sha384 | — | writes 48 BE bytes to `sha384_digest` | Pads per FIPS 180-4 §5.1.2 and runs the final compression(s). After this call, `sha384_init` must precede any further hashing. |
+
+Streaming pattern: `sha384_init` once, `sha384_update` one or more times
+(set `sha_src` and `sha_len` before each call), `sha384_final` once,
+then read 48 BE bytes from `sha384_digest`. The module is
+self-contained: it does not touch the REU, the multiply scratch, or any
+of the field/point ZP slots, but it is **not re-entrant** (per the
+library-wide contract in §4) and a single SHA stream cannot be
+interleaved with itself or with other library calls.
+
+### 5.5 ECDSA verify (`ecdsa256.s`, `ecdsa384.s`)
+
+| Name | Source | Inputs | Output | Notes |
+|---|---|---|---|---|
+| `ecdsa_verify_256` | ecdsa256 | A (lo) / X (hi) = pointer to 160 B BE struct `r(32) | s(32) | h(32) | Qx(32) | Qy(32)` | C=0 valid, C=1 invalid/malformed | Non-constant-time (public inputs). Internally byte-reverses to LE via `fp_reverse32`, then composes `ec_scalar_mul`, `ec_scalar_mul_var`, `ec_point_add`, `fp_mod_inv`, `fp_mod_mul_n`. |
+| `ecdsa_verify_384` | ecdsa384 | A (lo) / X (hi) = pointer to 240 B BE struct `r(48) | s(48) | h(48) | Qx(48) | Qy(48)` | C=0 valid, C=1 invalid/malformed | P-384 analogue using `fp_reverse48`. Same non-constant-time caveat. |
+| `ecdsa_verify_with_message_384` | ecdsa384 | A (lo) / X (hi) = pointer to same 240 B BE struct (h slot is overwritten); `sha_src` / `sha_len` (ZP) point at the message | C=0 valid, C=1 invalid/malformed | One-shot wrapper: runs `sha384_init / sha384_update / sha384_final`, splices `sha384_digest` into struct[96..143], then tail-calls `ecdsa_verify_384`. |
+
+The verify ABI is big-endian throughout because that is the wire
+format for X.509 / ASN.1 signatures and the SHA-2 digest spec.
+Internally the routines translate to the library's native
+little-endian layout. They are NOT constant-time and must NOT be
+repurposed for ECDSA signing; the library does not provide a
+constant-time verify because it is unnecessary for TLS.
+
+`ecdsa_verify_with_message_384` issues exactly one `sha384_update` call.
+For TLS-style transcripts spanning multiple buffers, callers should
+drive `sha384_init / sha384_update (n times) / sha384_final` directly
+and then `jsr ecdsa_verify_384` with the digest already stored at
+struct[96..143]. No P-256 / SHA-384 wrapper is provided: TLS 1.3
+cipher-suite pairings are `secp256r1+SHA-256` and `secp384r1+SHA-384`,
+and only SHA-384 is implemented here.
+
+`fp_reverse32` and `fp_reverse48` are exported for callers who want to
+drive the LE primitives directly from BE wire-format inputs without
+going through the packaged verifier.
+
 ## 6. Example usage
 
 ### 6.1 Modular multiply: `r = a * b mod p256`
@@ -282,6 +332,45 @@ The same pattern works for P-384 with `ec_scalar_mul_384` /
 `ec_jacobian_to_affine_384` and a 48-byte big-endian scalar. Both variants
 require the relevant `ec_precompute_*` to have been called at boot.
 
+### 6.3 ECDSA verify with message: P-384 hash-then-verify wrapper
+
+```asm
+        ; Pre-pack r, s, Qx, Qy into a 240 B BE struct. The h slot is
+        ; OVERWRITTEN by the wrapper -- callers may leave it zero.
+        ; struct layout: r(48) | s(48) | h(48) | Qx(48) | Qy(48).
+.bss
+verify_struct:  .res 240
+message_buf:    .res 1024       ; or wherever the message lives
+
+.code
+        ; ... pack r, s, Qx, Qy into verify_struct as 48 B BE each ...
+
+        ; Point sha_src / sha_len at the contiguous message bytes.
+        lda #<message_buf
+        sta sha_src
+        lda #>message_buf
+        sta sha_src+1
+        lda #<message_len       ; 16-bit byte count
+        sta sha_len
+        lda #>message_len
+        sta sha_len+1
+
+        ; Call the wrapper: A/X = struct pointer.
+        lda #<verify_struct
+        ldx #>verify_struct
+        jsr ecdsa_verify_with_message_384
+        bcc @valid              ; C=0 => signature valid
+        ; C=1 => invalid / malformed
+        jmp @reject
+@valid:
+        ; ...
+```
+
+For transcripts spanning multiple buffers (TLS handshake hashing,
+streamed file verification), drive `sha384_init / sha384_update /
+sha384_final` manually, splice `sha384_digest` into `verify_struct+96`,
+and `jsr ecdsa_verify_384` directly.
+
 ## 7. Limitations
 
 - **Not re-entrant.** The library shares global scratch and ZP slots across
@@ -304,6 +393,11 @@ require the relevant `ec_precompute_*` to have been called at boot.
   adding one.
 - **Scalars must be zero-padded** to 32 bytes for P-256 and 48 bytes for P-384,
   big-endian.
+- **SHA-384 only.** No SHA-256, SHA-512, or other digest is implemented.
+  A P-256 / SHA-256 ECDSA verify struct can still be built by computing
+  the digest off-chip (or with a separate library) and passing it in the
+  `h` slot of `ecdsa_verify_256`; the `ecdsa_verify_with_message_*`
+  one-shot wrapper exists only for the P-384 / SHA-384 pairing.
 
 ## 8. Consumer integration
 

@@ -394,3 +394,47 @@ ecdsa_result_256:       .byte 0
 ecdsa_inputs_384:       .res 240, 0     ; r|s|h|Qx|Qy each 48 B BE
 .export ecdsa_result_384
 ecdsa_result_384:       .byte 0
+
+; --- ecdsa_verify_with_message_384 scratch (P-384 hash-then-verify wrapper).
+;     Saves the caller's struct base pointer across sha384_init/update/final,
+;     since A/X are clobbered by every SHA call. Owned by ecdsa384.s and
+;     non-re-entrant (matches the rest of the library's calling contract).
+.export ecdsa384_msg_struct_ptr
+ecdsa384_msg_struct_ptr: .res 2, 0
+
+; --- ecdsa_verify_with_message_384 test driver result byte (mirrors
+;     ecdsa_result_384). Test-only: the harness peeks this after invoking
+;     the test trampoline; production consumers branch on C directly.
+.export ecdsa_result_msg_384
+ecdsa_result_msg_384:   .byte 0
+
+; =============================================================================
+; SHA-384 streaming hash state (FIPS 180-4 §6.4)
+;
+; Storage convention: each 64-bit word is held LITTLE-ENDIAN-WITHIN-WORD,
+; matching 6502 ADC carry propagation. Wire SHA-512 byte order is BE-within-
+; word; the byte-reverse happens at the boundary between sha_block_buf
+; (wire order, BE) and sha_w (on-chip order, LE). The final digest is
+; written BE in sha384_digest to match the FIPS spec output format.
+; All buffers are owned exclusively by sha384.s.
+; =============================================================================
+.export sha_state
+sha_state:        .res 64, 0     ; H[0..7], 8 bytes each LE-within-word
+.export sha_w
+sha_w:            .res 640, 0    ; W[0..79] message schedule, 8 B each LE
+.export sha_abcdefgh
+sha_abcdefgh:     .res 64, 0     ; working a..h, 8 B each LE
+.export sha_t
+sha_t:            .res 16, 0     ; T1 (8 B) + T2 (8 B), LE
+.export sha_scratch
+sha_scratch:      .res 64, 0     ; 8x 8-byte scratch slots for round helpers
+.export sha_block_buf
+sha_block_buf:    .res 128, 0    ; current 1024-bit block (wire order)
+.export sha_block_len
+sha_block_len:    .byte 0        ; bytes used in sha_block_buf, 0..127
+.export sha_total_len
+sha_total_len:    .res 16, 0     ; 128-bit total bit count, LE on-chip
+.export sha384_digest
+sha384_digest:    .res 48, 0     ; final BE digest output
+.export sha384_msg_buf
+sha384_msg_buf:   .res 1024, 0   ; test scratch buffer (poked by harness)

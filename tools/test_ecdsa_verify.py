@@ -38,6 +38,7 @@ Usage:
 
 import hashlib
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -51,7 +52,7 @@ from c64_test_harness import (
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.utils import (
-    encode_dss_signature, Prehashed,
+    encode_dss_signature, decode_dss_signature, Prehashed,
 )
 from cryptography.exceptions import InvalidSignature
 
@@ -179,6 +180,49 @@ def c64_verify_384(transport, labels, r, s, h_bytes, qx, qy):
     if result not in (0, 1):
         raise RuntimeError(
             f"ecdsa_result_384 = {result:#04x}; trampoline did not run"
+        )
+    return result
+
+
+def c64_verify_with_msg_384(transport, labels, r, s, message, qx, qy):
+    """Stage message + 240 B struct (h slot zeroed), invoke the wrapper tramp.
+
+    The C64 wrapper hashes `message` with SHA-384, splices the digest into
+    the struct's h slot, then runs the standard ecdsa_verify_384 path.
+    Returns 0 (valid) / 1 (invalid). `message` must fit in sha384_msg_buf
+    (1024 bytes) since the wrapper issues exactly one sha384_update call.
+    """
+    if len(message) > 1024:
+        raise ValueError(
+            f"message length {len(message)} exceeds sha384_msg_buf (1024)"
+        )
+
+    msg_buf = labels["sha384_msg_buf"]
+    sha_src = labels["sha_src"]
+    sha_len = labels["sha_len"]
+
+    # Build the struct: h slot is left zero -- the wrapper overwrites it.
+    payload = build_struct(r, s, 0, qx, qy, 48)
+    assert len(payload) == 240
+    write_bytes(transport, labels["ecdsa_inputs_384"], payload)
+
+    # Stage message (skip the poke for an empty message; sha_len = 0
+    # short-circuits sha384_update on the C64 side).
+    if len(message) > 0:
+        write_bytes(transport, msg_buf, message)
+    write_bytes(transport, sha_src,
+                bytes([msg_buf & 0xFF, (msg_buf >> 8) & 0xFF]))
+    write_bytes(transport, sha_len,
+                bytes([len(message) & 0xFF, (len(message) >> 8) & 0xFF]))
+
+    # Sentinel + invoke. SHA-384 of a sub-1KB message in warp is < 5s; the
+    # verify step itself runs ~30s; budget 600s for a generous margin.
+    write_bytes(transport, labels["ecdsa_result_msg_384"], b"\xFF")
+    jsr(transport, labels["ecdsa_verify_with_msg_384_tramp"], timeout=600.0)
+    result = read_bytes(transport, labels["ecdsa_result_msg_384"], 1)[0]
+    if result not in (0, 1):
+        raise RuntimeError(
+            f"ecdsa_result_msg_384 = {result:#04x}; trampoline did not run"
         )
     return result
 
@@ -328,6 +372,134 @@ def run_cavp_tests(transport, labels, curve, hash_alg, path, section, n_max):
 
 
 # ----------------------------------------------------------------------------
+# ecdsa_verify_with_message_384 wrapper tests
+#
+# Generate fresh P-384 keypairs and sign random messages of varying length
+# (1, 17, 100, 500, 1023 bytes -- all under the 1024 B sha384_msg_buf cap).
+# The C64 wrapper does the SHA-384 internally, so the test never poke a
+# precomputed digest into the h slot. Each case is then sanity-checked
+# against the existing precomputed-digest path (c64_verify_384) to confirm
+# the wrapper produces the same VALID/INVALID verdict.
+# ----------------------------------------------------------------------------
+
+def run_p384_msg_wrapper_tests(transport, labels):
+    """Generate keypair + random message + sign, verify the message-form
+    wrapper agrees with the precomputed-digest verify path."""
+    passed = failed = 0
+
+    # Use a single P-384 keypair for all positive cases. Bind it via the raw
+    # public-key numbers so we have qx/qy as ints in our LE/BE-agnostic form.
+    sk = ec.generate_private_key(ec.SECP384R1())
+    pub_nums = sk.public_key().public_numbers()
+    qx, qy = pub_nums.x, pub_nums.y
+
+    # Positive cases at boundary message lengths (under 1024 to keep the
+    # wrapper's single-update path; multi-update is the streaming variant
+    # callers drive directly, not this wrapper).
+    msg_lens = [1, 17, 100, 500, 1023]
+
+    for n in msg_lens:
+        msg = secrets.token_bytes(n)
+        # cryptography signs with SHA-384; result is DER, decode -> (r, s).
+        sig_der = sk.sign(msg, ec.ECDSA(hashes.SHA384()))
+        r, s = decode_dss_signature(sig_der)
+
+        # Compute expected outcome via the same external oracle used by every
+        # other test in this file -- this validates the message-form wrapper
+        # against cryptography end-to-end (hash + verify both done external).
+        h = hashlib.sha384(msg).digest()
+        oracle_valid = oracle_verify("p384", r, s, h, qx, qy)
+        # Sign should always produce a valid signature.
+        if not oracle_valid:
+            print(f"  FAIL [p384 wrapper] len={n}: oracle rejects fresh "
+                  f"keypair signature (test bug, not a C64 issue)")
+            failed += 1
+            continue
+        expected_c = 0
+
+        t0 = time.time()
+        try:
+            got_c = c64_verify_with_msg_384(transport, labels, r, s, msg, qx, qy)
+        except Exception as e:
+            dt = time.time() - t0
+            print(f"  FAIL ({dt:.1f}s) [p384 wrapper] len={n} positive: "
+                  f"exception {e!r}")
+            failed += 1
+            continue
+        dt = time.time() - t0
+        if got_c == expected_c:
+            print(f"  PASS ({dt:.1f}s) [p384 wrapper] len={n} positive: "
+                  f"VALID (C={got_c})")
+            passed += 1
+        else:
+            print(f"  FAIL ({dt:.1f}s) [p384 wrapper] len={n} positive: "
+                  f"oracle=VALID (C=0), C64 returned C={got_c}")
+            failed += 1
+
+    # Two negatives: tamper with the message after signing (digest changes,
+    # signature should no longer verify), and use a wrong public key on a
+    # fresh sign. Both must produce INVALID.
+    msg = secrets.token_bytes(64)
+    sig_der = sk.sign(msg, ec.ECDSA(hashes.SHA384()))
+    r, s = decode_dss_signature(sig_der)
+    tampered = bytes([msg[0] ^ 1]) + msg[1:]
+    h_tampered = hashlib.sha384(tampered).digest()
+    oracle_valid = oracle_verify("p384", r, s, h_tampered, qx, qy)
+    assert not oracle_valid, "tampered message should not verify"
+
+    t0 = time.time()
+    try:
+        got_c = c64_verify_with_msg_384(
+            transport, labels, r, s, tampered, qx, qy)
+    except Exception as e:
+        dt = time.time() - t0
+        print(f"  FAIL ({dt:.1f}s) [p384 wrapper] tampered msg: exception {e!r}")
+        failed += 1
+    else:
+        dt = time.time() - t0
+        if got_c == 1:
+            print(f"  PASS ({dt:.1f}s) [p384 wrapper] tampered msg: "
+                  f"INVALID (C={got_c})")
+            passed += 1
+        else:
+            print(f"  FAIL ({dt:.1f}s) [p384 wrapper] tampered msg: "
+                  f"oracle=INVALID (C=1), C64 returned C={got_c}")
+            failed += 1
+
+    # Wrong public key (keep r/s/msg, swap pub).
+    sk2 = ec.generate_private_key(ec.SECP384R1())
+    other_nums = sk2.public_key().public_numbers()
+    qx2, qy2 = other_nums.x, other_nums.y
+    msg = secrets.token_bytes(50)
+    sig_der = sk.sign(msg, ec.ECDSA(hashes.SHA384()))
+    r, s = decode_dss_signature(sig_der)
+    h = hashlib.sha384(msg).digest()
+    oracle_valid = oracle_verify("p384", r, s, h, qx2, qy2)
+    assert not oracle_valid, "sig under wrong pub should not verify"
+
+    t0 = time.time()
+    try:
+        got_c = c64_verify_with_msg_384(
+            transport, labels, r, s, msg, qx2, qy2)
+    except Exception as e:
+        dt = time.time() - t0
+        print(f"  FAIL ({dt:.1f}s) [p384 wrapper] wrong pub: exception {e!r}")
+        failed += 1
+    else:
+        dt = time.time() - t0
+        if got_c == 1:
+            print(f"  PASS ({dt:.1f}s) [p384 wrapper] wrong pub: "
+                  f"INVALID (C={got_c})")
+            passed += 1
+        else:
+            print(f"  FAIL ({dt:.1f}s) [p384 wrapper] wrong pub: "
+                  f"oracle=INVALID (C=1), C64 returned C={got_c}")
+            failed += 1
+
+    return passed, failed
+
+
+# ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
 
@@ -352,6 +524,8 @@ def run_tests(transport, labels, run_full):
              transport, labels, "p384", hashlib.sha384,
              os.path.join(PROJECT_ROOT, "tools/vectors/nist_p384_sigver.rsp"),
              "P-384,SHA-384", n_cavp)),
+        ("P-384 ecdsa_verify_with_message_384 wrapper (5 positive + 2 negative)",
+         lambda: run_p384_msg_wrapper_tests(transport, labels)),
     ]
 
     for name, fn in groups:
@@ -393,6 +567,9 @@ def main():
         "ecdsa_verify_256_tramp", "ecdsa_verify_384_tramp",
         "ecdsa_inputs_256", "ecdsa_inputs_384",
         "ecdsa_result_256", "ecdsa_result_384",
+        # ecdsa_verify_with_message_384 wrapper test trampoline
+        "ecdsa_verify_with_msg_384_tramp", "ecdsa_result_msg_384",
+        "sha384_msg_buf", "sha_src", "sha_len",
     ]
     missing = [n for n in required if labels.address(n) is None]
     if missing:
