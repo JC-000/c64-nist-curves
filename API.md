@@ -50,7 +50,7 @@ host-supplied definition wins).
 
 | Region | Address range | Purpose |
 |---|---|---|
-| PRG code | `$0801`-`$58FF` (approx.) | BASIC stub, boot code, math routines. Current PRG size: 20672 bytes (post-ca65-migration, post-Wave-8a-closure). |
+| PRG code | `$0801`-`$58FF` (approx.) | BASIC stub, boot code, math routines. PRG size varies per build — see `build/labels.txt` for the exact `__CODE_LAST__` symbol address in any given build. |
 | P-256 field buffers | `$4608`-`$49E9` | `fp_wide`, `fp_tmp1..4`, `fp_r0..3`, `fp_inv_*` (see `data.s`). |
 | P-256 point buffers | `$47CA`-`$49E9` | `ec_p1`, `ec_p2`, `ec_p3`, `ec_t1..6`, `ec_affine_x/y`. Overlap in table above reflects contiguous placement in `data.s`. |
 | `mul_cached_a` / `mul_src2_buf` / reduction scratch | `$49EA`-`$4AFF` (approx.) | Shared multiply scratch and Solinas accumulator. |
@@ -387,10 +387,12 @@ and `jsr ecdsa_verify_384` directly.
 - **Zero-page footprint is ~16 bytes.** See `src/zp_config.s` for the
   complete, editable list of slots. The hardware-fixed `proc_port` at `$01`
   is the only slot that cannot be moved.
-- **`ec_scalar_mul` is fixed-base only.** Only `k * G` (the curve generator)
-  is supported; there is no variable-base scalar multiply currently. ECDH and
-  ECDSA-verify are therefore not yet buildable on top of this library without
-  adding one.
+- **Scalar multiplication is non-constant-time.** Both the fixed-base
+  `ec_scalar_mul[_384]` (Lim-Lee comb, branches on comb index and infinity
+  flag) and the variable-base `ec_scalar_mul_var[_384]` (double-and-add,
+  branches on every scalar bit) leak the scalar via timing. Use only in
+  public-input contexts — ECDSA verify is the intended caller. Do not
+  use these routines for ECDH or ECDSA signing where the scalar is secret.
 - **Scalars must be zero-padded** to 32 bytes for P-256 and 48 bytes for P-384,
   big-endian.
 - **SHA-384 only.** No SHA-256, SHA-512, or other digest is implemented.
