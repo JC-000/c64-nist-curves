@@ -78,6 +78,20 @@
   ec_scalar_ptr  = $3b                  ; ZP pointer to 32-byte scalar k
 .endif
 
+; --- SHA-384 streaming pointers ---
+.ifndef sha_src
+  sha_src  = $04                        ; 2-byte LE pointer to input bytes
+.endif
+.ifndef sha_len
+  sha_len  = $06                        ; 2-byte LE byte count for one update
+.endif
+.ifndef sha_w_ptr
+  sha_w_ptr  = $08                      ; 2-byte LE scratch ptr into sha_w[]
+.endif
+.ifndef sha_w_ptr2
+  sha_w_ptr2 = $0a                      ; 2-byte LE scratch ptr into sha_w[]
+.endif
+
 ; --- mul_8x8 working variables ---
 .ifndef poly_i
   poly_i  = $1a                         ; inner loop counter
@@ -96,3 +110,4 @@
 .exportzp proc_port, zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
 .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_loop, fp_mul_i, fp_mul_j
 .exportzp ec_scalar_ptr, poly_i, poly_j, poly_carry, poly_tmp
+.exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2

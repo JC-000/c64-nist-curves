@@ -14,6 +14,7 @@ CFG = $(SRC_DIR)/c64.cfg
 MODULES = main constants zp_config lib_version mul_8x8 \
           fp256 mod256 curve256 points256 inv256 ecdsa256 \
           fp384 mod384 curve384 points384 ecdsa384 \
+          sha384 \
           data
 
 CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))

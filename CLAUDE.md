@@ -134,7 +134,8 @@ All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry
 | curve384.s | P-384 parameters + test vectors (little-endian) |
 | points384.s | P-384 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
 | ecdsa256.s | P-256 ECDSA verify (`ecdsa_verify_256`) + BE<->LE helper `fp_reverse32`. Non-constant-time (public-input-only) |
-| ecdsa384.s | P-384 ECDSA verify (`ecdsa_verify_384`) + BE<->LE helper `fp_reverse48`. Non-constant-time (public-input-only) |
+| ecdsa384.s | P-384 ECDSA verify (`ecdsa_verify_384`) + BE<->LE helper `fp_reverse48`. Non-constant-time (public-input-only). Also hosts `ecdsa_verify_with_message_384`, the one-shot SHA-384 + verify wrapper. |
+| sha384.s | SHA-384 streaming hash (FIPS 180-4 §6.4) — `sha384_init` / `sha384_update` / `sha384_final` + 48 B BE digest at `sha384_digest`. Self-contained (no REU DMA, no shared field/multiply scratch). Used by `ecdsa_verify_with_message_384`. |
 | data.s | Buffers, point storage, page-aligned DMA targets |
 | c64.cfg | ld65 linker configuration (memory regions, segment placement) |
 | exports.inc | Cross-module .import/.export dependency map |
@@ -277,6 +278,65 @@ consumption by TLS callers (planned `c64-https` integration path).
 - **Buffers:** ~416 B P-256 scratch (`ecdsa_r/s/h/qx/qy`, `ecdsa_w/u1/u2`,
   `ecdsa_u1_be/u2_be`, `ecdsa_u1g_x/y`, `fp_rev_buf`) + ~624 B P-384
   equivalents, all declared in src/data.s.
+- **`ecdsa_verify_with_message_384` (src/ecdsa384.s):** one-shot
+  hash-then-verify wrapper. Same A/X-pointer ABI and 240 B BE struct
+  layout as `ecdsa_verify_384` (the `h` slot is overwritten with the
+  computed digest, so callers may leave it zero). Caller pre-sets ZP
+  `sha_src` / `sha_len` to point at the message; the wrapper runs
+  `sha384_init / sha384_update / sha384_final`, splices `sha384_digest`
+  into struct[96..143], then tail-calls `ecdsa_verify_384`. C=0 valid /
+  C=1 invalid (matches the underlying verify). **Streaming caveat:** the
+  wrapper issues exactly one `sha384_update`; for TLS-style transcripts
+  spanning multiple buffers, callers should drive
+  `sha384_init / update (n times) / final` directly and then jsr
+  `ecdsa_verify_384` with the digest already spliced into the h slot.
+  No P-256/SHA-384 wrapper is provided: TLS 1.3 cipher-suite pairings
+  are `secp256r1+SHA-256` and `secp384r1+SHA-384`, and only SHA-384 is
+  implemented at present.
+
+### SHA-384 hash API
+
+`sha384_init` / `sha384_update` / `sha384_final` (src/sha384.s) implement
+the FIPS 180-4 §6.4 SHA-384 streaming hash. Algorithm is the SHA-512
+compression with the SHA-384 IV; on-chip output is `H[0..5]` truncated to
+48 bytes (the SHA-384 spec discards `H[6..7]`).
+
+- **Inputs:** `sha384_update` consumes `sha_len` bytes from `sha_src`
+  (both ZP). The 16-bit length means a single update call caps at 64 KB;
+  callers may chain multiple updates to absorb arbitrarily long messages.
+- **Outputs:** `sha384_final` writes 48 BE bytes to `sha384_digest`.
+  After `sha384_final`, the running state must be reset with
+  `sha384_init` before any further calls.
+- **Endianness on-chip:** 64-bit words are stored little-endian within
+  each word (matches 6502 ADC carry propagation). Wire / FIPS-spec
+  format is BE-within-word; byte reversal happens at the
+  `sha_block_buf` ↔ `sha_w` boundary on each compression and at the
+  digest output (and at the 128-bit length-tail encoding in the final
+  pad block). See src/sha384.s lines 28-40 for the full endianness
+  contract.
+- **Buffers:** ~2 KB total in DATA — `sha_state` (64 B), `sha_w`
+  (640 B), `sha_abcdefgh` (64 B), `sha_t` (16 B), `sha_scratch` (64 B),
+  `sha_block_buf` (128 B), `sha_block_len` (1 B), `sha_total_len`
+  (16 B), `sha384_digest` (48 B), plus a 1024 B `sha384_msg_buf` test
+  scratch buffer (owned by the harness; consumers don't need to use it).
+  K[80] round constants (640 B) live in RODATA inside src/sha384.s.
+  ZP slots: `sha_src` (2 B), `sha_len` (2 B); plus internal-only
+  `sha_w_ptr` (2 B) and `sha_w_ptr2` (2 B) used during compression.
+- **Re-entrancy:** not re-entrant (same constraint as the rest of the
+  library). No shared scratch with the field / point / ECDSA code paths,
+  so SHA state is independent of curve work but a single SHA stream
+  cannot be interleaved with itself.
+- **Dependencies:** self-contained — no REU DMA, no shared
+  `mul_*` / `fp_*` ZP slots. Safe to call without `sqtab_init` /
+  `reu_mul_init` (though consumers that also want curve ops still need
+  the curve init sequence).
+- **Test coverage:** `tools/test_sha384.py`, oracle = `hashlib.sha384`.
+  25/25 in `--full` mode: 4 mandatory FIPS 180-4 KATs + 17 random
+  boundary lengths {0, 1, 17, 55, 56, 57, 63, 64, 111, 112, 113, 127,
+  128, 129, 200, 255, 256} + 4 multi-block stress lengths {1023, 1024,
+  1025, 4096}.
+- **PRG growth:** 24322 B (pre-SHA) → 32022 B (post-SHA + wrapper),
+  of which ~1.7 KB is the test scratch buffer.
 
 ### Conventions
 - Scalars (private keys, nonces) are big-endian for compatibility with standards
@@ -364,6 +424,24 @@ keep all library calls on a single thread of control.
   Same remediation shape as the original BPL bug: prefer decrementing
   X and `BNE` against the known-preserved counter register. See
   Task #4 notes for the full site list.
+- **CPY-clobbers-C between ADC iterations (sha384.s
+  `sha_total_len`)**. Third pattern in the same forward-looking
+  hazard family as the BPL infinity-fill bug and the LDA-clobbers-Z
+  extension above. The 16-byte little-endian increment of
+  `sha_total_len` (after each absorbed byte/block) was originally
+  written as `ldy #0 / clc / @l: lda sha_total_len,y / adc #0 /
+  sta sha_total_len,y / iny / cpy #16 / bne @l` to chain the carry
+  across all 16 bytes. The bug: `CPY #16` updates the carry flag
+  based on the comparison, destroying the ADC carry-out between
+  iterations — so any byte that overflowed past the first one
+  silently dropped its carry. Fix: fully unroll the 15-byte
+  carry-propagation chain (no `CPY` between ADC steps); the
+  unrolled form keeps C live across the chain. Forward-looking
+  rule for arithmetic loops: any multi-precision ADC / SBC chain
+  must use a counter register that does NOT itself touch C
+  between steps, or the loop must be unrolled. `DEY / BNE` and
+  `DEX / BNE` are safe (DEC* updates N/Z but preserves C);
+  `CPY` / `CPX` / `CMP` are not.
 - **Jiffy-clock / REU-DMA wall-clock non-linearity at U64E turbo**
   (issue #17 Task #12). `tools/bench_ecdsa_u64.py`'s "cycles" column
   is 1-MHz-equivalent wall-clock µs (jiffies × 17045), NOT machine

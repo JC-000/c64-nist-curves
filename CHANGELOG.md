@@ -12,6 +12,30 @@ contract).
 
 ## [Unreleased]
 
+### Added
+
+- **SHA-384 streaming hash** (`src/sha384.s`, ~970 lines). FIPS 180-4 §6.4
+  compression with SHA-384 IV and 48-byte BE truncated output. Streaming
+  ABI: `sha384_init` (clear + IV) / `sha384_update` (absorb sha_len bytes
+  from sha_src) / `sha384_final` (pad + finalize → sha384_digest). LE
+  storage on-chip with byte reversal at the wire boundaries. Self-contained
+  module — no REU DMA, no shared field/point scratch. Test coverage:
+  `tools/test_sha384.py`, 25/25 against the `hashlib.sha384` oracle (4
+  mandatory FIPS 180-4 KATs + 17 boundary-length random + 4 multi-block
+  stress including 4 KB). PRG grew 24322 → 32022 B (~7.7 KB; ~1.7 KB of
+  that is a test scratch buffer).
+
+- **`ecdsa_verify_with_message_384`** (`src/ecdsa384.s`). One-shot wrapper
+  that hashes a contiguous message via the new SHA-384 module, splices the
+  digest into a 240-byte caller-owned BE struct (`r | s | h_unused | Qx |
+  Qy`), then tail-calls `ecdsa_verify_384`. C=0 valid / C=1 invalid; same
+  return convention as the underlying verify. For TLS-style transcripts
+  spanning multiple buffers, callers should drive `sha384_init/update*/final`
+  directly and call `ecdsa_verify_384` with the digest pre-spliced. New
+  tests in `tools/test_ecdsa_verify.py`: 5 positive (random msgs 1/17/100/500/1023 B
+  with fresh `cryptography` keypairs) + 2 negative (tampered msg / wrong
+  pubkey).
+
 ### Changed
 
 - **`read_bytes_verified` integration in field-arithmetic tests.** The

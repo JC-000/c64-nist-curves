@@ -76,7 +76,8 @@
 ;   ecdsa384_u1g_x, ecdsa384_u1g_y,
 ;   fp_rev_buf_384,
 ;   ecdsa_inputs_256, ecdsa_result_256,
-;   ecdsa_inputs_384, ecdsa_result_384
+;   ecdsa_inputs_384, ecdsa_result_384,
+;   ecdsa384_msg_struct_ptr, ecdsa_result_msg_384
 ; IMPORTS: (none — pure data)
 ; -----------------------------------------------------------------------------
 
@@ -167,21 +168,26 @@
 
 ; -----------------------------------------------------------------------------
 ; ecdsa384.s — Packaged ECDSA verify for P-384 (FIPS 186-4)
-; EXPORTS: ecdsa_verify_384, fp_reverse48
+; EXPORTS: ecdsa_verify_384, ecdsa_verify_with_message_384,
+;          ecdsa_verify_with_msg_384_tramp, fp_reverse48
 ; IMPORTS:
-;   ZP: fp_src1, fp_src2, fp_dst, fp_misc, zp_ptr2, ec_scalar_ptr
+;   ZP: fp_src1, fp_src2, fp_dst, fp_misc, zp_ptr2, ec_scalar_ptr,
+;       sha_src, sha_len
 ;   fp384:  fp_copy_384, fp_zero_384, fp_cmp_384, fp_sub_384, fp_is_zero_384
 ;   mod384: fp_mod_mul_n_384, fp_mod_inv_384,
 ;           ec_set_modp_384, ec_set_modn_384, ec_n384
 ;   points384: ec_scalar_mul_384, ec_scalar_mul_var_384,
 ;              ec_point_add_384, ec_jacobian_to_affine_384
+;   sha384: sha384_init, sha384_update, sha384_final,
+;           sha384_digest, sha384_msg_buf
 ;   data:   fp384_r0, ec384_p1, ec384_p2, ec384_p3,
 ;           ec384_affine_x, ec384_affine_y,
 ;           ec_base384_x, ec_base384_y,
 ;           ecdsa384_r, ecdsa384_s, ecdsa384_h, ecdsa384_qx, ecdsa384_qy,
 ;           ecdsa384_w, ecdsa384_u1, ecdsa384_u2,
 ;           ecdsa384_u1_be, ecdsa384_u2_be,
-;           ecdsa384_u1g_x, ecdsa384_u1g_y, fp_rev_buf_384
+;           ecdsa384_u1g_x, ecdsa384_u1g_y, fp_rev_buf_384,
+;           ecdsa384_msg_struct_ptr, ecdsa_inputs_384, ecdsa_result_msg_384
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
@@ -239,6 +245,17 @@
 ;   constants: reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi,
 ;              reu_reu_bank, reu_len_lo, reu_len_hi,
 ;              reu_addr_ctrl, reu_command
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+; sha384.s — Streaming SHA-384 (FIPS 180-4) hash
+; EXPORTS: sha384_init, sha384_update, sha384_final,
+;          sha384_digest, sha384_msg_buf
+; IMPORTS:
+;   ZP: sha_src, sha_len
+;   data: sha_state, sha_w, sha_abcdefgh, sha_t,
+;         sha_block_buf, sha_block_len, sha_total_len,
+;         sha384_digest, sha384_msg_buf
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------

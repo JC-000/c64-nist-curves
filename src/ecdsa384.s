@@ -36,9 +36,12 @@
 .segment "CODE"
 
 .export ecdsa_verify_384
+.export ecdsa_verify_with_message_384
+.export ecdsa_verify_with_msg_384_tramp
 .export fp_reverse48
 
 .importzp fp_src1, fp_src2, fp_dst, fp_misc, zp_ptr2, ec_scalar_ptr
+.importzp sha_src, sha_len
 
 .import fp_copy_384, fp_zero_384, fp_cmp_384, fp_sub_384, fp_is_zero_384
 .import fp_mod_mul_n_384, fp_mod_inv_384
@@ -57,6 +60,12 @@
 .import ecdsa384_u1_be, ecdsa384_u2_be
 .import ecdsa384_u1g_x, ecdsa384_u1g_y
 .import fp_rev_buf_384
+
+; --- ecdsa_verify_with_message_384 scratch + SHA-384 entry points ---
+.import ecdsa384_msg_struct_ptr
+.import ecdsa_inputs_384, ecdsa_result_msg_384  ; test-trampoline only
+.import sha384_init, sha384_update, sha384_final
+.import sha384_digest, sha384_msg_buf
 
 ; Use zp_ptr2 ($fd-$fe by default) as the struct base pointer.
 ecdsa384_in_ptr = zp_ptr2
@@ -517,4 +526,106 @@ ecdsa_verify_384:
 
 @ev_fail:
         sec
+        rts
+
+; ===========================================================================
+; ecdsa_verify_with_message_384 -- one-shot "hash message + verify" wrapper.
+;
+; Thin shim around sha384_init / sha384_update / sha384_final / ecdsa_verify_384.
+; Equivalent to the caller doing:
+;
+;     jsr sha384_init
+;     ; sha_src / sha_len pre-set by caller
+;     jsr sha384_update
+;     jsr sha384_final
+;     ; copy sha384_digest into struct[96..143]
+;     ; restore A/X to struct pointer
+;     jsr ecdsa_verify_384
+;
+; Calling contract:
+;   Entry:
+;     A = low byte, X = high byte of a pointer to a 240-byte struct:
+;       +0    r       48 B big-endian
+;       +48   s       48 B big-endian
+;       +96   h_slot  48 B  -- INPUT-IGNORED. Wrapper overwrites it with the
+;                              SHA-384 digest of the message before calling
+;                              ecdsa_verify_384. The struct must be writable.
+;       +144  pub_x   48 B big-endian affine X of public key
+;       +192  pub_y   48 B big-endian affine Y of public key
+;     sha_src (ZP, 2 B) -- pointer to message bytes
+;     sha_len (ZP, 2 B) -- 16-bit message length in bytes (single update call;
+;                          callers wanting > 1024 B should drive the SHA
+;                          ABI directly and call ecdsa_verify_384 themselves)
+;   Output: C=0 VALID, C=1 INVALID/malformed (matches ecdsa_verify_384).
+;   Clobbers: everything -- composes ecdsa_verify_384 + the SHA streaming
+;             primitives, both of which clobber freely.
+;
+; Streaming caveat: this routine issues exactly one sha384_update call. To
+; hash a transcript fragmented across multiple buffers (e.g. TLS) call
+; sha384_init / sha384_update (multiple) / sha384_final directly, then
+; jsr ecdsa_verify_384 with sha384_digest already stored at struct[96..143].
+; ===========================================================================
+ecdsa_verify_with_message_384:
+        ; Save struct pointer across the SHA calls (which clobber A/X/Y).
+        sta ecdsa384_msg_struct_ptr+0
+        stx ecdsa384_msg_struct_ptr+1
+
+        ; --- Hash the message --------------------------------------------------
+        jsr sha384_init
+        ; sha_src / sha_len already set up by caller; sha384_update consumes
+        ; them. For a zero-length message sha384_update returns immediately.
+        jsr sha384_update
+        jsr sha384_final          ; sha384_digest = SHA-384(message), 48 B BE
+
+        ; --- Splice digest into struct[96..143] -------------------------------
+        ; struct + 96 -> fp_dst.
+        clc
+        lda ecdsa384_msg_struct_ptr+0
+        adc #96
+        sta fp_dst
+        lda ecdsa384_msg_struct_ptr+1
+        adc #0
+        sta fp_dst+1
+
+        ; Copy 48 BE bytes from sha384_digest into (fp_dst). 47 ($2F) has bit 7
+        ; clear so ldy #47 / dey / bpl is safe; the loop body uses Y for both
+        ; src and (fp_dst),y dst so no LDA-clobbers-Z hazard against BPL on the
+        ; final iteration (BPL tests the N flag set by DEY, not the loaded
+        ; byte). Same idiom as fp_reverse48's phase 2.
+        ldy #47
+@msg_cp:
+        lda sha384_digest, y
+        sta (fp_dst), y
+        dey
+        bpl @msg_cp
+
+        ; --- Restore struct pointer to A/X and tail-call ecdsa_verify_384 -----
+        ; The verify routine's first action is to save A/X into ecdsa384_in_ptr,
+        ; then re-establish the REU defensive state, exactly as needed.
+        lda ecdsa384_msg_struct_ptr+0
+        ldx ecdsa384_msg_struct_ptr+1
+        jmp ecdsa_verify_384      ; tail-call: C return passes through
+
+; ===========================================================================
+; ecdsa_verify_with_msg_384_tramp -- test-only trampoline.
+;
+; The c64-test-harness jsr() helper cannot pass register arguments, so we
+; fix the struct address at the BSS-resident ecdsa_inputs_384 buffer (already
+; used by the existing ecdsa_verify_384 tests) and the message at
+; sha384_msg_buf. The Python driver pre-pokes:
+;   - ecdsa_inputs_384  : 240 B BE struct (h slot can be left zero -- the
+;                         wrapper overwrites it)
+;   - sha384_msg_buf    : the message bytes
+;   - sha_src           : low/high pointer to sha384_msg_buf
+;   - sha_len           : 16-bit message byte count
+; Then calls this trampoline. Result byte: 0 = valid, 1 = invalid (mirrors
+; ecdsa_result_384's encoding).
+; ===========================================================================
+ecdsa_verify_with_msg_384_tramp:
+        lda #<ecdsa_inputs_384
+        ldx #>ecdsa_inputs_384
+        jsr ecdsa_verify_with_message_384
+        lda #0
+        rol a                     ; shift C into bit 0
+        sta ecdsa_result_msg_384
         rts

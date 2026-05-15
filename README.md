@@ -8,6 +8,9 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - Full P-384 field arithmetic (384-bit add, subtract, multiply, square)
 - Solinas fast reduction for both P-256 and P-384 primes
 - Jacobian coordinate point operations (double, add, scalar multiply)
+- Packaged ECDSA verify (`ecdsa_verify_256` / `ecdsa_verify_384`) with big-endian wire-format ABI
+- SHA-384 streaming hash (FIPS 180-4 §6.4) and one-shot
+  `ecdsa_verify_with_message_384` hash-then-verify wrapper
 - RFC 6979 test vector validation
 - Optimizations ported from [c64-x25519](https://github.com/JC-000/c64-x25519):
   REU DMA multiply tables, self-modifying code, loop unrolling, dedicated squaring
@@ -40,6 +43,7 @@ python3 tools/bench_p384.py       # P-384 benchmarks (oracle correctness gate)
 python3 tools/bench_p256_u64.py   # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_ecdsa_u64.py  # ECDSA verify + variable-base scalar_mul on U64E
+python3 tools/test_sha384.py      # SHA-384 streaming hash (FIPS 180-4 KAT + boundary lengths)
 ```
 
 U64 benchmarks require `U64_HOST` set or the device at the default address.
