@@ -21,9 +21,6 @@
 .import fp384_wide, mul_cached_a, poly_prod_lo, poly_prod_hi
 .import mul_dma_lo, mul_dma_hi
 
-; --- Imports: REU ---
-.import reu_fetch_mul_row
-
 ; --- Imports: constants ---
 .import reu_reu_hi, reu_reu_bank, reu_command
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
@@ -726,7 +723,15 @@ fp_sqr_384:
         beq @diag_skip
 
         sta mul_cached_a
-        jsr reu_fetch_mul_row
+        ; Inlined REU row fetch (mirrors fp_sqr in fp256.s; saves the
+        ; ~12-cy jsr/rts round trip × 48 diag iterations per call).
+        asl
+        sta reu_reu_hi
+        lda #0
+        adc #0
+        sta reu_reu_bank
+        lda #%10110001
+        sta reu_command
 
         ldy mul_cached_a
         lda mul_dma_lo,y
