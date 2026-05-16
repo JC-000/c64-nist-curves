@@ -42,17 +42,20 @@
 
 .importzp fp_src1, fp_src2, fp_dst, fp_misc, zp_ptr2, ec_scalar_ptr
 .importzp sha_src, sha_len
+.importzp fp_carry
 
-.import fp_copy_384, fp_zero_384, fp_cmp_384, fp_sub_384, fp_is_zero_384
+.import fp_copy_384, fp_zero_384, fp_cmp_384, fp_add_384, fp_sub_384, fp_is_zero_384
 .import fp_mod_mul_n_384, fp_mod_inv_384
 .import ec_set_modp_384, ec_set_modn_384
-.import ec_n384
+.import ec_mulp_384, ec_sqrp_384
+.import ec_n384, ec_p384
 .import ec_scalar_mul_384, ec_scalar_mul_var_384
 .import ec_point_add_384, ec_jacobian_to_affine_384
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
 .import fp384_r0
 .import ec384_p1, ec384_p2, ec384_p3
+.import ec384_t1, ec384_t2, ec384_t3
 .import ec384_affine_x, ec384_affine_y
 .import ec_base384_x, ec_base384_y
 .import ecdsa384_r, ecdsa384_s, ecdsa384_h, ecdsa384_qx, ecdsa384_qy
@@ -398,27 +401,18 @@ ecdsa_verify_384:
         lda #>ecdsa384_u1g_x
         sta fp_src1+1
         jsr fp_is_zero_384
-        bne @ev_r_from_u1g      ; u1*G.x != 0 -> use it as R.x
+        beq @ev_u1gx_zero
+        jmp @ev_r_from_u1g      ; u1*G.x != 0 -> use it as R.x
+@ev_u1gx_zero:
         lda #<ecdsa384_u1g_y
         sta fp_src1
         lda #>ecdsa384_u1g_y
         sta fp_src1+1
         jsr fp_is_zero_384
-        bne @ev_r_from_u1g      ; NE = u1*G.y nonzero -> ok
-        jmp @ev_fail            ; both x and y zero: R = infinity -> fail
-@ev_r_from_u1g:
-        ; R affine = (ecdsa384_u1g_x, ecdsa384_u1g_y). Copy x into ec384_affine_x
-        ; so the shared final-compare code below can do its work.
-        lda #<ecdsa384_u1g_x
-        sta fp_src1
-        lda #>ecdsa384_u1g_x
-        sta fp_src1+1
-        lda #<ec384_affine_x
-        sta fp_dst
-        lda #>ec384_affine_x
-        sta fp_dst+1
-        jsr fp_copy_384
-        jmp @ev_have_r_affine
+        beq @ev_fail_jmp        ; both x and y zero: R = infinity -> fail
+        jmp @ev_r_from_u1g
+@ev_fail_jmp:
+        jmp @ev_fail
 
 @ev_u2q_ok:
         ; Is u1*G infinity? (ecdsa384_u1g_x == 0 AND ecdsa384_u1g_y == 0)
@@ -434,9 +428,8 @@ ecdsa_verify_384:
         sta fp_src1+1
         jsr fp_is_zero_384
         bne @ev_do_add          ; u1*G.y != 0 -> not infinity
-        ; u1*G == infinity. R = u2*Q, which is already in ec384_p1 Jacobian.
-        ; Move ec384_p1 -> ec384_p3 so ec_jacobian_to_affine_384 consumes it.
-        ; 144-byte copy -- same X-counter guardrail as @evcpq.
+        ; u1*G == infinity. R = u2*Q, already Jacobian in ec384_p1.
+        ; 144-byte copy ec384_p1 -> ec384_p3 -- X-counter guardrail as @evcpq.
         ldx #144
         ldy #0
 @evcpq2:
@@ -445,7 +438,7 @@ ecdsa_verify_384:
         iny
         dex
         bne @evcpq2
-        jmp @ev_to_affine
+        jmp @ev_cofactor_cmp
 
 @ev_do_add:
         ; Load u1*G affine into ec384_p2 (X at +0, Y at +48). ec_point_add_384
@@ -472,33 +465,128 @@ ecdsa_verify_384:
         lda #>(ec384_p3+96)
         sta fp_src1+1
         jsr fp_is_zero_384
-        beq @ev_fail
+        bne @ev_cofactor_cmp
+        jmp @ev_fail
 
-@ev_to_affine:
-        ; --- Step 11: R Jacobian -> affine in ec384_affine_x / ec384_affine_y ---
-        jsr ec_jacobian_to_affine_384
+@ev_cofactor_cmp:
+        ; --- Cofactor comparison: r * Z^2 == X (mod p)? ---
+        ; Replaces ec_jacobian_to_affine_384 on the final point. R is Jacobian
+        ; in ec384_p3: X at +0..47, Y at +48..95 (unused), Z at +96..143.
 
-@ev_have_r_affine:
-        ; --- Step 12: reduce R.x mod n ---
-        ; R.x was computed mod p. Since p > n but p < 2n for P-384 as well
-        ; (n is about p - 2^191), at most one subtraction of n brings it
-        ; into [0, n-1].
-        ; Compare ec384_affine_x to ec_n384 (fp_cmp_384: C=1 if src1>=src2).
-        lda #<ec384_affine_x
+        ; ec384_t1 = Z^2 mod p
+        lda #<(ec384_p3+96)
         sta fp_src1
-        lda #>ec384_affine_x
+        lda #>(ec384_p3+96)
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_dst
+        lda #>ec384_t1
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; ec384_t2 = r * Z^2 mod p
+        lda #<ecdsa384_r
+        sta fp_src1
+        lda #>ecdsa384_r
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_src2
+        lda #>ec384_t1
+        sta fp_src2+1
+        lda #<ec384_t2
+        sta fp_dst
+        lda #>ec384_t2
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ldy #47
+@ev_cof_cmp1:
+        lda ec384_t2,y
+        cmp ec384_p3,y
+        bne @ev_cof_fallback
+        dey
+        bpl @ev_cof_cmp1
+        clc
+        rts
+
+@ev_cof_fallback:
+        ; Try (r + n) * Z^2 mod p. Valid only when r + n < p (p - n ~ 2^192
+        ; for P-384) so the integer sum doesn't reduce.
+        lda #<ecdsa384_r
+        sta fp_src1
+        lda #>ecdsa384_r
+        sta fp_src1+1
+        lda #<ec_n384
+        sta fp_src2
+        lda #>ec_n384
+        sta fp_src2+1
+        lda #<ec384_t3
+        sta fp_dst
+        lda #>ec384_t3
+        sta fp_dst+1
+        jsr fp_add_384
+
+        lda fp_carry
+        beq @ev_cof_no_carry
+        jmp @ev_fail
+@ev_cof_no_carry:
+
+        lda #<ec384_t3
+        sta fp_src1
+        lda #>ec384_t3
+        sta fp_src1+1
+        lda #<ec_p384
+        sta fp_src2
+        lda #>ec_p384
+        sta fp_src2+1
+        jsr fp_cmp_384
+        bcc @ev_cof_in_range
+        jmp @ev_fail
+@ev_cof_in_range:
+
+        lda #<ec384_t3
+        sta fp_src1
+        lda #>ec384_t3
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_src2
+        lda #>ec384_t1
+        sta fp_src2+1
+        lda #<ec384_t2
+        sta fp_dst
+        lda #>ec384_t2
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ldy #47
+@ev_cof_cmp2:
+        lda ec384_t2,y
+        cmp ec384_p3,y
+        bne @ev_cof_cmp2_fail
+        dey
+        bpl @ev_cof_cmp2
+        clc
+        rts
+@ev_cof_cmp2_fail:
+        jmp @ev_fail
+
+@ev_r_from_u1g:
+        ; R is affine (u2*Q was infinity). Reduce ecdsa384_u1g_x mod n then
+        ; byte-compare against ecdsa384_r.
+        lda #<ecdsa384_u1g_x
+        sta fp_src1
+        lda #>ecdsa384_u1g_x
         sta fp_src1+1
         lda #<ec_n384
         sta fp_src2
         lda #>ec_n384
         sta fp_src2+1
         jsr fp_cmp_384
-        bcc @ev_cmp_r           ; ec384_affine_x < n: nothing to do
+        bcc @ev_u1g_cmp
 
-        ; ec384_affine_x -= n
-        lda #<ec384_affine_x
+        lda #<ecdsa384_u1g_x
         sta fp_src1
-        lda #>ec384_affine_x
+        lda #>ecdsa384_u1g_x
         sta fp_src1+1
         lda #<ec_n384
         sta fp_src2
@@ -508,21 +596,31 @@ ecdsa_verify_384:
         sta fp_dst
         lda #>ec384_affine_x
         sta fp_dst+1
-        jsr fp_sub_384          ; in-place: ec384_affine_x := ec384_affine_x - n
-
-@ev_cmp_r:
-        ; --- Step 13: byte-compare ec384_affine_x to ecdsa384_r (both LE, 48 B) ---
+        jsr fp_sub_384
         ldy #47
-@ev_mcmp:
+@ev_u1g_cmp_sub:
         lda ec384_affine_x,y
         cmp ecdsa384_r,y
-        bne @ev_fail
+        bne @ev_u1g_fail_jmp
         dey
-        bpl @ev_mcmp
-
-        ; All bytes equal: signature valid.
+        bpl @ev_u1g_cmp_sub
         clc
         rts
+@ev_u1g_fail_jmp:
+        jmp @ev_fail
+
+@ev_u1g_cmp:
+        ldy #47
+@ev_u1g_cmp_loop:
+        lda ecdsa384_u1g_x,y
+        cmp ecdsa384_r,y
+        bne @ev_u1g_cmp_fail
+        dey
+        bpl @ev_u1g_cmp_loop
+        clc
+        rts
+@ev_u1g_cmp_fail:
+        jmp @ev_fail
 
 @ev_fail:
         sec
