@@ -725,79 +725,41 @@ bit_rotr1:
         rts
 
 ; ---------------------------------------------------------------------------
-; bit_shr1 -- in-place SHR-by-1 of sha_out (8 bytes), zero fill at MSB.
+; rotr_lut_body q, lo_tbl, hi_tbl
+;   Fused byte+bit ROTR of sha_in -> sha_out. The bit-rotate amount r is
+;   implicit in the chosen (lo_tbl, hi_tbl) pair (lo_r[b] = b>>r,
+;   hi_r[b] = (b<<(8-r))&0xff). For each output byte i:
+;     sha_out[i] = lo_r[sha_in[(i+q)%8]] | hi_r[sha_in[(i+q+1)%8]]
+;   which is exactly ROTR(x, 8*q + r) under the LE-within-word convention.
 ; ---------------------------------------------------------------------------
-bit_shr1:
-        lsr sha_out + 7
-        ror sha_out + 6
-        ror sha_out + 5
-        ror sha_out + 4
-        ror sha_out + 3
-        ror sha_out + 2
-        ror sha_out + 1
-        ror sha_out + 0
-        rts
+.macro rotr_lut_body q, lo_tbl, hi_tbl
+        .repeat 8, i
+                ldx sha_in + ((i + q) .mod 8)
+                lda lo_tbl, x
+                ldx sha_in + ((i + q + 1) .mod 8)
+                ora hi_tbl, x
+                sta sha_out + i
+        .endrepeat
+.endmacro
 
 ; ---------------------------------------------------------------------------
-; bit_rotr_n / bit_shr_n -- repeated calls to the 1-bit primitives.
-;
-; Each helper bit-shifts sha_out in place by n bits (n in 1..7).
+; shr_lut_body lo_tbl, hi_tbl
+;   Fused SHR of sha_in -> sha_out (no byte-shift component; r in (0,8)).
+;     sha_out[i] = lo_r[sha_in[i]] | hi_r[sha_in[i+1]]   for i = 0..6
+;     sha_out[7] = lo_r[sha_in[7]]                       (zero fill at MSB)
 ; ---------------------------------------------------------------------------
-bit_rotr_2:
-        jsr bit_rotr1
-        jmp bit_rotr1
-
-bit_rotr_3:
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jmp bit_rotr1
-
-bit_rotr_4:
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jmp bit_rotr1
-
-bit_rotr_5:
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jmp bit_rotr1
-
-bit_rotr_6:
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jmp bit_rotr1
-
-bit_rotr_7:
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jsr bit_rotr1
-        jmp bit_rotr1
-
-bit_shr_6:
-        jsr bit_shr1
-        jsr bit_shr1
-        jsr bit_shr1
-        jsr bit_shr1
-        jsr bit_shr1
-        jmp bit_shr1
-
-bit_shr_7:
-        jsr bit_shr1
-        jsr bit_shr1
-        jsr bit_shr1
-        jsr bit_shr1
-        jsr bit_shr1
-        jsr bit_shr1
-        jmp bit_shr1
+.macro shr_lut_body lo_tbl, hi_tbl
+        .repeat 7, i
+                ldx sha_in + i
+                lda lo_tbl, x
+                ldx sha_in + (i + 1)
+                ora hi_tbl, x
+                sta sha_out + i
+        .endrepeat
+        ldx sha_in + 7
+        lda lo_tbl, x
+        sta sha_out + 7
+.endmacro
 
 ; ---------------------------------------------------------------------------
 ; The named ROTR_n / SHR_n entry points.
@@ -818,6 +780,10 @@ bit_shr_7:
 ;   n = 61: q=7, r=5
 ; ---------------------------------------------------------------------------
 
+; r=1 (rotr_1, rotr_41) stays on the chained-LSR/ROR path: the 1-bit
+; primitive is ~55 cy vs ~160 cy for the fused-LUT body, so r=1 is the
+; only k value where the LUT loses on cycles. r=0 (rotr_8) is byte-only.
+
 rotr_1:
         byte_rotr_q 0
         jmp bit_rotr1
@@ -827,45 +793,45 @@ rotr_8:
         rts
 
 rotr_14:
-        byte_rotr_q 1
-        jmp bit_rotr_6
+        rotr_lut_body 1, lo_6_tbl, hi_6_tbl
+        rts
 
 rotr_18:
-        byte_rotr_q 2
-        jmp bit_rotr_2
+        rotr_lut_body 2, lo_2_tbl, hi_2_tbl
+        rts
 
 rotr_19:
-        byte_rotr_q 2
-        jmp bit_rotr_3
+        rotr_lut_body 2, lo_3_tbl, hi_3_tbl
+        rts
 
 rotr_28:
-        byte_rotr_q 3
-        jmp bit_rotr_4
+        rotr_lut_body 3, lo_4_tbl, hi_4_tbl
+        rts
 
 rotr_34:
-        byte_rotr_q 4
-        jmp bit_rotr_2
+        rotr_lut_body 4, lo_2_tbl, hi_2_tbl
+        rts
 
 rotr_39:
-        byte_rotr_q 4
-        jmp bit_rotr_7
+        rotr_lut_body 4, lo_7_tbl, hi_7_tbl
+        rts
 
 rotr_41:
         byte_rotr_q 5
         jmp bit_rotr1
 
 rotr_61:
-        byte_rotr_q 7
-        jmp bit_rotr_5
+        rotr_lut_body 7, lo_5_tbl, hi_5_tbl
+        rts
 
 ; SHR variants (zero fill at MSB).
 shr_6:
-        byte_shr_q 0
-        jmp bit_shr_6
+        shr_lut_body lo_6_tbl, hi_6_tbl
+        rts
 
 shr_7:
-        byte_shr_q 0
-        jmp bit_shr_7
+        shr_lut_body lo_7_tbl, hi_7_tbl
+        rts
 
 ; ===========================================================================
 ; SHA-384 IV (FIPS 180-4 §5.3.4) and K[80] table (FIPS 180-4 §4.2.3).
@@ -970,3 +936,76 @@ sha384_k:
         .byte $2a, $7e, $65, $fc, $9c, $29, $7f, $59   ; 597f299cfc657e2a
         .byte $ec, $fa, $d6, $3a, $ab, $6f, $cb, $5f   ; 5fcb6fab3ad6faec
         .byte $17, $58, $47, $4a, $8c, $19, $44, $6c   ; 6c44198c4a475817
+
+; ===========================================================================
+; Within-byte bit-shift LUTs for the Sigma/sigma rotates.
+;
+; For each k in {2,3,4,5,6,7} (the bit-shift amounts used by the fused
+; byte+bit rotates in rotr_14..rotr_61 / shr_6 / shr_7):
+;
+;   lo_k_tbl[b] = b >> k           (low (8-k) bits of the byte, shifted down)
+;   hi_k_tbl[b] = (b << (8-k)) & $ff   (high k bits of byte b, shifted up to
+;                                       become the low bits' carry-in for the
+;                                       byte to its right under LE storage)
+;
+; A k-bit ROTR of an 8-byte LE-within-word value, after the byte-rotate
+; step that shuffles source indices, becomes
+;   out[i] = lo_k[src[i]] | hi_k[src[i+1]]      (mod 8 for rotates)
+; which collapses the chained-LSR/ROR loop into two table loads + ORA per
+; output byte. r=1 stays on the LSR/ROR path -- the LUT path costs ~160 cy
+; and the LSR/ROR path ~55 cy, so r=1 is the one k where the LUT loses.
+;
+; Tables live in TABLES (align=$100) so `lda lo_k_tbl,x` and `ora hi_k_tbl,x`
+; never page-cross.
+; ===========================================================================
+
+.segment "TABLES"
+
+lo_2_tbl:
+        .repeat 256, i
+                .byte (i >> 2) & $ff
+        .endrepeat
+hi_2_tbl:
+        .repeat 256, i
+                .byte (i << 6) & $ff
+        .endrepeat
+lo_3_tbl:
+        .repeat 256, i
+                .byte (i >> 3) & $ff
+        .endrepeat
+hi_3_tbl:
+        .repeat 256, i
+                .byte (i << 5) & $ff
+        .endrepeat
+lo_4_tbl:
+        .repeat 256, i
+                .byte (i >> 4) & $ff
+        .endrepeat
+hi_4_tbl:
+        .repeat 256, i
+                .byte (i << 4) & $ff
+        .endrepeat
+lo_5_tbl:
+        .repeat 256, i
+                .byte (i >> 5) & $ff
+        .endrepeat
+hi_5_tbl:
+        .repeat 256, i
+                .byte (i << 3) & $ff
+        .endrepeat
+lo_6_tbl:
+        .repeat 256, i
+                .byte (i >> 6) & $ff
+        .endrepeat
+hi_6_tbl:
+        .repeat 256, i
+                .byte (i << 2) & $ff
+        .endrepeat
+lo_7_tbl:
+        .repeat 256, i
+                .byte (i >> 7) & $ff
+        .endrepeat
+hi_7_tbl:
+        .repeat 256, i
+                .byte (i << 1) & $ff
+        .endrepeat
