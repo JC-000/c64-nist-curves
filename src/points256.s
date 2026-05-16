@@ -42,6 +42,8 @@
 .import cm_k, mul_dma_lo
 .import ec_sc_byte, ec_sc_mask
 .import ec_base_x, ec_base_y
+.import var_wnaf, var_wnaf_len, var_wnaf_len_hi
+.import var_tbl_base, var_jac_save, var_neg_y, var_zero32
 
 ; --- constants imports ---
 .import reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi
@@ -1458,12 +1460,28 @@ cm_seeded:      .byte 0         ; precompute helper
 cm_anch_idx:    .byte 0         ; precompute helper
 
 ; =============================================================================
-; ec_scalar_mul_var: variable-base scalar multiplication (left-to-right
-;   double-and-add over 256 bits; non-constant-time, for ECDSA verify).
+; ec_scalar_mul_var: variable-base scalar multiplication using width-4 w-NAF.
+;   Average nonzero digit density 1/(w+1) = 1/5, so a 256-bit scalar emits
+;   ~52 nonzero digits vs ~128 set bits in plain binary -- roughly 60% fewer
+;   mixed-adds than the previous left-to-right double-and-add path.
+;
+; Precompute strategy (1 inversion path):
+;   T[1] = Q affine (input).
+;   T[3] = 2Q + Q (mixed-add); convert 3Q Jacobian -> affine.
+;   T[5] = 3Q + 2Q (mixed-add against 2Q affine, computed once); convert.
+;   T[7] = 5Q + 2Q (mixed-add against 2Q affine); convert.
+;   Total: 4 jacobian->affine conversions (4 inversions) + 3 mixed-adds +
+;   1 doubling. Amortised across ~76 saved point adds (vs plain).
+;
+; Negations are free: at digit-fetch time, if the signed w-NAF digit is
+; negative we negate Y in var_neg_y via fp_mod_sub from var_zero32, and
+; stage the table entry (X, -Y) into ec_p2 for the mixed-add.
+;
 ; Input:  ec_scalar_ptr -> 32-byte BE scalar
 ;         ec_base_x, ec_base_y -> 32-byte LE affine base point
 ; Output: ec_p3 (Jacobian, 96 B)
 ; NOT re-entrant. Serialize with all other field/point ops.
+; NOT constant-time (intended for ECDSA verify; scalar is public).
 ; =============================================================================
 ec_scalar_mul_var:
         ; --- Defensive REU register init (issue #33-class defence;
@@ -1474,149 +1492,639 @@ ec_scalar_mul_var:
 
         jsr ec_set_modp
 
-        ; Transpose BE scalar into LE internal buffer var_k.
-        ;   var_k[0]  = scalar[31]  (LSB)
-        ;   var_k[31] = scalar[0]   (MSB)
+        ; --- Zero the var_zero32 scratch buffer once. Used as src1 in
+        ;     fp_mod_sub for "0 - Y mod p" point-Y negation.
+        ldy #31
+        lda #0
+@vz_zero:
+        sta var_zero32,y
+        dey
+        bpl @vz_zero
+
+        ; --- Transpose BE scalar -> LE work buffer var_k33 (32 + 1 carry byte). ---
         ldy #31
         ldx #0
 @vxpose:
         lda (ec_scalar_ptr),y
-        sta var_k,x
+        sta var_k33,x
         inx
         dey
         bpl @vxpose
-
-        ; Init walking state. Bit 255 is var_k[31] bit 7.
-        lda #31
-        sta var_byte_off
-        lda #$80
-        sta var_bit_mask
         lda #0
-        sta var_loop_ctr_lo     ; 256 iterations encoded as hi=1/lo=0
-        lda #1
-        sta var_loop_ctr_hi
+        sta var_k33+32          ; high byte = 0 (room for carry from k+=1..7)
+
+        ; --- Recode scalar to w-NAF digits in var_wnaf[0..len-1] (LSB first). ---
+        jsr v_recode_wnaf
+
+        ; --- Build precompute table {T[1]=Q, T[3], T[5], T[7]} affine. ---
+        jsr v_precompute
+
+        ; --- Scan w-NAF digits MSB->LSB, doubling and mixed-adding. ---
         lda #1
         sta var_r_inf           ; R = infinity
 
-@v_loop:
-        ; --- Double R unless infinity ---
+        ; Scan index (16-bit): start at (len_hi:len_lo) - 1, count down to 0.
+        ; If len == 0, scalar was zero -> jump straight to done (R = infinity).
+        lda var_wnaf_len
+        ora var_wnaf_len_hi
+        bne @v_scan_init
+        jmp @v_scan_done
+@v_scan_init:
+
+        ; Set up scan_idx = len - 1.
+        sec
+        lda var_wnaf_len
+        sbc #1
+        sta v_scan_idx_lo
+        lda var_wnaf_len_hi
+        sbc #0
+        sta v_scan_idx_hi
+
+@v_scan_loop:
+        ; --- Double R unless still infinity ---
         lda var_r_inf
-        bne @v_skip_double
+        bne @v_sl_skip_double
         jsr ec_point_double
-        ldy #95
-@v_dcp:
+        ; 96-byte copy ec_p3 -> ec_p1 via X-counter (LDA clobbers Z; use DEX/BNE).
+        ldx #96
+        ldy #0
+@v_sl_dcp:
         lda ec_p3,y
         sta ec_p1,y
-        dey
-        bpl @v_dcp
-@v_skip_double:
+        iny
+        dex
+        bne @v_sl_dcp
+@v_sl_skip_double:
 
-        ; --- Test current bit of scalar ---
-        ldx var_byte_off
-        lda var_k,x
-        and var_bit_mask
-        beq @v_bit_is_zero
+        ; --- Fetch current digit. Index lives in (v_scan_idx_hi:v_scan_idx_lo). ---
+        ; If hi==0 we can index var_wnaf directly with Y.
+        ; If hi==1, index 256..len-1; use self-modified address.
+        lda v_scan_idx_hi
+        bne @v_fetch_hi
+        ldy v_scan_idx_lo
+        lda var_wnaf,y
+        jmp @v_have_digit
+@v_fetch_hi:
+        ; index >= 256: read var_wnaf+256+lo (only valid when len > 256).
+        ldy v_scan_idx_lo
+        lda var_wnaf+256,y
+@v_have_digit:
+        ; A = digit (two's complement signed). 0 -> just advance.
+        bne @v_have_nonzero
+        jmp @v_digit_zero
+@v_have_nonzero:
+        sta v_digit            ; save signed digit
 
-        ; Bit set: need to add base point to R.
-        ; Stage P2 = (base_x, base_y) for the (possibly) coming add.
-        ldy #31
-@v_cpbx:
-        lda ec_base_x,y
+        ; --- Compute |d| and (d < 0?) ---
+        bpl @v_digit_pos
+        ; d < 0: |d| = -d
+        eor #$FF
+        clc
+        adc #1
+        sta v_abs_d
+        lda #1
+        sta v_digit_neg
+        jmp @v_have_abs
+@v_digit_pos:
+        sta v_abs_d
+        lda #0
+        sta v_digit_neg
+@v_have_abs:
+        ; v_abs_d in {1,3,5,7}. Table index = (|d|-1)/2 in {0,1,2,3}.
+        ; Each table entry is 64 bytes (32 X + 32 Y) at var_tbl_base + idx*64.
+        ; Compute offset = (|d|-1) * 32 (since |d|-1 in {0,2,4,6}).
+        ; Equivalently: offset = (|d|-1) << 5. With |d| odd low byte, |d|-1 even.
+        lda v_abs_d
+        sec
+        sbc #1                  ; |d|-1 in {0,2,4,6}
+        ; multiply by 32: shift left 5 times. Result fits in one byte (max 192).
+        asl
+        asl
+        asl
+        asl
+        asl                     ; offset = (|d|-1) * 32 in {0,64,128,192}
+        sta v_tbl_off
+
+        ; --- Stage P2 = T[|d|] (with Y negated if d < 0) ---
+        ; Both source and destination indices ascend in lockstep so byte i of
+        ; the table entry lands at byte i of ec_p2 (preserves LE order).
+        ldx v_tbl_off
+        ldy #0
+@v_cpx:
+        lda var_tbl_base,x      ; X-bytes (32 of them) at offset 0..31
         sta ec_p2,y
-        dey
-        bpl @v_cpbx
+        inx
+        iny
+        cpy #32
+        bne @v_cpx
+        ; (X-offset advanced 32, now pointing at Y bytes of this entry.)
+        ; ec_p2+32 = Y or -Y depending on v_digit_neg.
+        lda v_digit_neg
+        bne @v_neg_y
+
+        ; Positive: copy Y bytes directly.
+        ldy #0
+@v_cpy:
+        lda var_tbl_base,x
+        sta ec_p2+32,y
+        inx
+        iny
+        cpy #32
+        bne @v_cpy
+        jmp @v_have_p2
+
+@v_neg_y:
+        ; Negative: var_neg_y = 0 - Y mod p (via fp_mod_sub).
+        ; First copy Y bytes into a scratch (use fp_tmp1 since field ops haven't
+        ; been invoked yet for this digit).
+        ldy #0
+@v_neg_cpy:
+        lda var_tbl_base,x
+        sta fp_tmp1,y
+        inx
+        iny
+        cpy #32
+        bne @v_neg_cpy
+        lda #<var_zero32
+        sta fp_src1
+        lda #>var_zero32
+        sta fp_src1+1
+        lda #<fp_tmp1
+        sta fp_src2
+        lda #>fp_tmp1
+        sta fp_src2+1
+        lda #<var_neg_y
+        sta fp_dst
+        lda #>var_neg_y
+        sta fp_dst+1
+        jsr fp_mod_sub          ; var_neg_y = (0 - Y) mod p
+        ; Copy var_neg_y -> ec_p2+32.
         ldy #31
-@v_cpby:
-        lda ec_base_y,y
+@v_cpy_neg:
+        lda var_neg_y,y
         sta ec_p2+32,y
         dey
-        bpl @v_cpby
+        bpl @v_cpy_neg
 
+@v_have_p2:
+        ; --- R += signed_d * Q ---
         lda var_r_inf
-        beq @v_real_add
+        beq @v_real_add_d
 
-        ; First set bit: seed R = (base_x, base_y, 1).
+        ; R was infinity: seed R = (X, Y) Jacobian with Z=1.
         ldy #31
-@v_seedx:
-        lda ec_base_x,y
+@v_seedx_d:
+        lda ec_p2,y
         sta ec_p1,y
         dey
-        bpl @v_seedx
+        bpl @v_seedx_d
         ldy #31
-@v_seedy:
-        lda ec_base_y,y
+@v_seedy_d:
+        lda ec_p2+32,y
         sta ec_p1+32,y
         dey
-        bpl @v_seedy
-        ; Z = 1 (LE: byte 0 = 1, rest = 0)
+        bpl @v_seedy_d
         ldy #31
         lda #0
-@v_seedz:
+@v_seedz_d:
         sta ec_p1+64,y
         dey
-        bpl @v_seedz
+        bpl @v_seedz_d
         lda #1
         sta ec_p1+64
         lda #0
         sta var_r_inf
-        jmp @v_bit_done
+        jmp @v_digit_zero
 
-@v_real_add:
+@v_real_add_d:
         jsr ec_point_add
-        ldy #95
-@v_acp:
+        ; 96-byte copy ec_p3 -> ec_p1.
+        ldx #96
+        ldy #0
+@v_sl_acp:
         lda ec_p3,y
         sta ec_p1,y
-        dey
-        bpl @v_acp
+        iny
+        dex
+        bne @v_sl_acp
 
-@v_bit_is_zero:
-@v_bit_done:
-        ; --- Advance to next-lower bit ---
-        lsr var_bit_mask
-        bne @v_after_advance
-        lda #$80
-        sta var_bit_mask
-        dec var_byte_off
-@v_after_advance:
+@v_digit_zero:
+        ; --- Advance scan index ---
+        lda v_scan_idx_lo
+        bne @v_sl_dec_lo
+        ; lo == 0: if hi == 0, we're done (we just processed digit 0).
+        lda v_scan_idx_hi
+        beq @v_scan_done
+        dec v_scan_idx_hi
+        lda #$FF
+        sta v_scan_idx_lo
+        jmp @v_scan_loop
+@v_sl_dec_lo:
+        dec v_scan_idx_lo
+        jmp @v_scan_loop
 
-        ; --- 256-iteration counter (hi=1/lo=0 decrementing to 0) ---
-        dec var_loop_ctr_lo
-        bne @v_loop_trampoline
-        dec var_loop_ctr_hi
-        bne @v_loop_trampoline
-        jmp @v_loop_done
-@v_loop_trampoline:
-        jmp @v_loop
-
-@v_loop_done:
+@v_scan_done:
         ; --- Done. If R still infinity, return zero; else copy ec_p1 -> ec_p3. ---
         lda var_r_inf
         beq @v_copy_out
-        ldy #95
+        ldx #96
+        ldy #0
         lda #0
 @v_zinf:
         sta ec_p3,y
-        dey
-        bpl @v_zinf
+        iny
+        dex
+        bne @v_zinf
         rts
 
 @v_copy_out:
-        ldy #95
+        ldx #96
+        ldy #0
 @v_finc:
         lda ec_p1,y
         sta ec_p3,y
+        iny
+        dex
+        bne @v_finc
+        rts
+
+; -----------------------------------------------------------------------------
+; v_recode_wnaf: read 33-byte LE scalar var_k33 (var_k33+32 = 0 initially),
+;   emit signed w-NAF digits into var_wnaf, store length in
+;   var_wnaf_len:var_wnaf_len_hi (lo:hi). Width 4 (max digit magnitude 7).
+;
+; Algorithm (Solinas):
+;   i = 0
+;   while k != 0:
+;     if (k & 1):
+;       d = k & 0x0F                 ; d in {1,3,5,7,9,11,13,15}
+;       if d >= 8: d_signed = d - 16 ; k += (16 - d) i.e. positive
+;                  store d | $F0     ; two's complement byte
+;       else:      d_signed = d      ; k -= d
+;                  store d
+;     else:        d = 0; store 0
+;     k >>= 1
+;     i += 1
+;
+; HAZARD NOTES (per CLAUDE.md hazard family):
+;   - The k +/- |d| step is a 32-byte multi-precision SBC/ADC chain. We use
+;     X as the counter (DEX preserves C); Y as the index. CPY/CPX/CMP would
+;     destroy the inter-ADC carry.
+;   - The k >>= 1 step is a 33-byte multi-precision ROR chain. We use a
+;     fresh CLC start and propagate via ROR (which both reads and writes C
+;     in the right direction). Counter is X (DEX preserves C).
+; -----------------------------------------------------------------------------
+v_recode_wnaf:
+        lda #0
+        sta v_scan_idx_lo
+        sta v_scan_idx_hi       ; reuse as write index during recoding
+
+@vr_loop:
+        ; Test k == 0. OR-fold all 33 bytes. NOTE: the BNE that exits the OR
+        ; loop tests Z from DEX (always 1 on exit), not from A. We must
+        ; restore Z = (A == 0?) before the BEQ. `cmp #0` is equivalent to
+        ; testing A and sets Z without clobbering it (sets C also but we
+        ; don't depend on C here).
+        lda var_k33+0
+        ldx #32
+@vr_ortest:
+        ora var_k33,x
+        dex
+        bne @vr_ortest
+        cmp #0                  ; restore Z from A (final OR result)
+        beq @vr_done            ; A == 0 -> all 33 bytes were zero
+
+        lda var_k33+0
+        and #1
+        beq @vr_emit_zero
+
+        ; --- k & 1 set: compute d in 1..15 ---
+        lda var_k33+0
+        and #$0F
+        cmp #8
+        bcs @vr_neg
+
+        ; d in {1,3,5,7}: store +d, k -= d.
+        sta v_abs_d             ; will reuse v_abs_d as scratch
+        ; ---- emit positive digit ----
+        ; v_abs_d = d  (1..7); store byte value d at var_wnaf[idx].
+        jsr v_emit_digit_a      ; A still holds d (set right before jsr)
+        ; (v_emit_digit_a expects A = digit byte; trashes Y.)
+        ; ---- k -= d  ----
+        sec
+        lda var_k33+0
+        sbc v_abs_d
+        sta var_k33+0
+        ldx #32                 ; propagate borrow through 32 more bytes
+        ldy #1
+@vr_sub_prop:
+        lda var_k33,y
+        sbc #0
+        sta var_k33,y
+        iny
+        dex
+        bne @vr_sub_prop
+        jmp @vr_shift
+
+@vr_neg:
+        ; d in {9,11,13,15}: store (d | $F0) = d - 16 in two's complement.
+        ; k += (16 - d).
+        sta v_abs_d             ; save d (9..15)
+        ora #$F0                ; encoded signed byte (-1..-7)
+        jsr v_emit_digit_a
+        ; compute (16 - d) and add to k.
+        lda #16
+        sec
+        sbc v_abs_d             ; (16 - d) in {1,3,5,7}
+        clc
+        adc var_k33+0
+        sta var_k33+0
+        ldx #32
+        ldy #1
+@vr_add_prop:
+        lda var_k33,y
+        adc #0
+        sta var_k33,y
+        iny
+        dex
+        bne @vr_add_prop
+        jmp @vr_shift
+
+@vr_emit_zero:
+        lda #0
+        jsr v_emit_digit_a
+
+@vr_shift:
+        ; k >>= 1 across 33 bytes. Walk MSB -> LSB, ROR with initial CLC.
+        ; X is the index (32..0) AND counter via BPL. ROR abs,X is the only
+        ; available mode; DEX/BPL preserve C between iterations, ROR feeds
+        ; its bit-0 into C for the next byte. Initial X = 32 = $20 has bit 7
+        ; clear, so BPL takes the first iteration (forward-looking check
+        ; per the BPL bit-7 hazard family).
+        clc
+        ldx #32
+@vr_shr:
+        ror var_k33,x
+        dex
+        bpl @vr_shr
+        jmp @vr_loop
+
+@vr_done:
+        ; Store length in var_wnaf_len:var_wnaf_len_hi (= write index).
+        lda v_scan_idx_lo
+        sta var_wnaf_len
+        lda v_scan_idx_hi
+        sta var_wnaf_len_hi
+        rts
+
+; -----------------------------------------------------------------------------
+; v_emit_digit_a: store A (already the encoded digit byte) at var_wnaf[idx];
+;   advance idx (16-bit). Trashes Y. Preserves X (callers depend on it).
+; -----------------------------------------------------------------------------
+v_emit_digit_a:
+        ; Use 16-bit index (v_scan_idx_hi:v_scan_idx_lo). When hi==0, store
+        ; at var_wnaf,y; otherwise at var_wnaf+256,y.
+        ldy v_scan_idx_hi
+        bne @ved_hi
+        ldy v_scan_idx_lo
+        sta var_wnaf,y
+        jmp @ved_adv
+@ved_hi:
+        ldy v_scan_idx_lo
+        sta var_wnaf+256,y
+@ved_adv:
+        inc v_scan_idx_lo
+        bne @ved_done
+        inc v_scan_idx_hi
+@ved_done:
+        rts
+
+; -----------------------------------------------------------------------------
+; v_precompute: build affine table {T[1], T[3], T[5], T[7]} in var_tbl_base.
+;
+;   ec_p1 (Jacobian) is used as the running operand. Each precompute step:
+;     1. Copy operand affine -> ec_p2 (for mixed-add).
+;     2. ec_p1 = 2Q seeded or running Jacobian.
+;     3. ec_point_add -> ec_p3.
+;     4. Save ec_p3 to var_jac_save (since jacobian_to_affine doesn't clobber
+;        ec_p3, but the next ec_point_add chain will).
+;     5. ec_jacobian_to_affine -> ec_affine_x/y, copy into var_tbl_base entry.
+;
+;   T[1] = Q (no compute, just copy ec_base_x/y).
+;   T[3] = 2Q + Q (mixed-add).  Need 2Q in Jacobian for the add, and 2Q in
+;          affine to use as 2Q_aff source for T[5] and T[7].
+;   T[5] = 3Q_Jac + 2Q_aff.
+;   T[7] = 5Q_Jac + 2Q_aff.
+;
+; Cost: 4 jacobian_to_affine (2Q, 3Q, 5Q, 7Q), 1 doubling, 3 mixed-adds.
+; -----------------------------------------------------------------------------
+v_precompute:
+        ; --- T[1] = Q (affine input): copy ec_base_x/y to var_tbl_base[0..63]. ---
+        ldy #31
+@vp_t1x:
+        lda ec_base_x,y
+        sta var_tbl_base+0,y
         dey
-        bpl @v_finc
+        bpl @vp_t1x
+        ldy #31
+@vp_t1y:
+        lda ec_base_y,y
+        sta var_tbl_base+32,y
+        dey
+        bpl @vp_t1y
+
+        ; --- Seed ec_p1 = (Q, Z=1) Jacobian, then ec_point_double -> 2Q in ec_p3. ---
+        ldy #31
+@vp_seedx:
+        lda ec_base_x,y
+        sta ec_p1,y
+        dey
+        bpl @vp_seedx
+        ldy #31
+@vp_seedy:
+        lda ec_base_y,y
+        sta ec_p1+32,y
+        dey
+        bpl @vp_seedy
+        ldy #31
+        lda #0
+@vp_seedz:
+        sta ec_p1+64,y
+        dey
+        bpl @vp_seedz
+        lda #1
+        sta ec_p1+64
+        jsr ec_point_double             ; ec_p3 = 2Q Jacobian
+
+        ; Save 2Q Jacobian into var_jac_save (we'll need it for the next add).
+        ldx #96
+        ldy #0
+@vp_sv2q:
+        lda ec_p3,y
+        sta var_jac_save,y
+        iny
+        dex
+        bne @vp_sv2q
+
+        ; Convert 2Q -> affine, store in ec_aff2g_256_x/y (persistent scratch).
+        jsr ec_jacobian_to_affine
+        ldy #31
+@vp_2qax:
+        lda ec_affine_x,y
+        sta ec_aff2g_256_x,y
+        dey
+        bpl @vp_2qax
+        ldy #31
+@vp_2qay:
+        lda ec_affine_y,y
+        sta ec_aff2g_256_y,y
+        dey
+        bpl @vp_2qay
+
+        ; --- T[3] = 2Q + Q.  ec_p1 = 2Q Jacobian (restore from save), ec_p2 = Q affine.
+        ldx #96
+        ldy #0
+@vp_re2q:
+        lda var_jac_save,y
+        sta ec_p1,y
+        iny
+        dex
+        bne @vp_re2q
+        ldy #31
+@vp_qax:
+        lda ec_base_x,y
+        sta ec_p2,y
+        dey
+        bpl @vp_qax
+        ldy #31
+@vp_qay:
+        lda ec_base_y,y
+        sta ec_p2+32,y
+        dey
+        bpl @vp_qay
+        jsr ec_point_add                ; ec_p3 = 3Q Jacobian
+
+        ; Save 3Q Jacobian.
+        ldx #96
+        ldy #0
+@vp_sv3q:
+        lda ec_p3,y
+        sta var_jac_save,y
+        iny
+        dex
+        bne @vp_sv3q
+
+        ; Convert 3Q -> affine -> var_tbl_base[64..127].
+        jsr ec_jacobian_to_affine
+        ldy #31
+@vp_t3x:
+        lda ec_affine_x,y
+        sta var_tbl_base+64,y
+        dey
+        bpl @vp_t3x
+        ldy #31
+@vp_t3y:
+        lda ec_affine_y,y
+        sta var_tbl_base+96,y
+        dey
+        bpl @vp_t3y
+
+        ; --- T[5] = 3Q_Jac + 2Q_aff. ec_p1 = 3Q Jacobian, ec_p2 = 2Q affine. ---
+        ldx #96
+        ldy #0
+@vp_re3q:
+        lda var_jac_save,y
+        sta ec_p1,y
+        iny
+        dex
+        bne @vp_re3q
+        ldy #31
+@vp_2qax2:
+        lda ec_aff2g_256_x,y
+        sta ec_p2,y
+        dey
+        bpl @vp_2qax2
+        ldy #31
+@vp_2qay2:
+        lda ec_aff2g_256_y,y
+        sta ec_p2+32,y
+        dey
+        bpl @vp_2qay2
+        jsr ec_point_add                ; ec_p3 = 5Q Jacobian
+
+        ; Save 5Q.
+        ldx #96
+        ldy #0
+@vp_sv5q:
+        lda ec_p3,y
+        sta var_jac_save,y
+        iny
+        dex
+        bne @vp_sv5q
+
+        ; Convert 5Q -> affine -> var_tbl_base[128..191].
+        jsr ec_jacobian_to_affine
+        ldy #31
+@vp_t5x:
+        lda ec_affine_x,y
+        sta var_tbl_base+128,y
+        dey
+        bpl @vp_t5x
+        ldy #31
+@vp_t5y:
+        lda ec_affine_y,y
+        sta var_tbl_base+160,y
+        dey
+        bpl @vp_t5y
+
+        ; --- T[7] = 5Q_Jac + 2Q_aff. ---
+        ldx #96
+        ldy #0
+@vp_re5q:
+        lda var_jac_save,y
+        sta ec_p1,y
+        iny
+        dex
+        bne @vp_re5q
+        ldy #31
+@vp_2qax3:
+        lda ec_aff2g_256_x,y
+        sta ec_p2,y
+        dey
+        bpl @vp_2qax3
+        ldy #31
+@vp_2qay3:
+        lda ec_aff2g_256_y,y
+        sta ec_p2+32,y
+        dey
+        bpl @vp_2qay3
+        jsr ec_point_add                ; ec_p3 = 7Q Jacobian
+
+        ; Convert 7Q -> affine -> var_tbl_base[192..255]. (Don't bother saving.)
+        jsr ec_jacobian_to_affine
+        ldy #31
+@vp_t7x:
+        lda ec_affine_x,y
+        sta var_tbl_base+192,y
+        dey
+        bpl @vp_t7x
+        ldy #31
+@vp_t7y:
+        lda ec_affine_y,y
+        sta var_tbl_base+224,y
+        dey
+        bpl @vp_t7y
         rts
 
 ; --- ec_scalar_mul_var state vars (locally scoped; distinct from cm_*) ---
-var_k:           .res 32
-var_byte_off:    .byte 0
-var_bit_mask:    .byte 0
-var_loop_ctr_lo: .byte 0
-var_loop_ctr_hi: .byte 0
+var_k33:         .res 33         ; LE scalar + 1 carry byte for w-NAF recoding
 var_r_inf:       .byte 0
+v_scan_idx_lo:   .byte 0
+v_scan_idx_hi:   .byte 0
+v_digit:         .byte 0
+v_abs_d:         .byte 0
+v_digit_neg:     .byte 0
+v_tbl_off:       .byte 0
 
 ; =============================================================================
 ; ec_jacobian_to_affine: convert ec_p3 (Jacobian) to affine (x,y)
