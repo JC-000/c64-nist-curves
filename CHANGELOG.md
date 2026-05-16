@@ -38,6 +38,32 @@ contract).
 
 ### Changed
 
+- **Width-4 w-NAF replaces left-to-right double-and-add in
+  `ec_scalar_mul_var[_384]`** (`src/points256.s`, `src/points384.s`).
+  Same public ABI (BE scalar in `ec_scalar_ptr`, affine input in
+  `ec_base{_x,_y}` / `ec_base384_{x,y}`, Jacobian output at `ec_p3` /
+  `ec384_p3`); same re-entrancy contract. The new inner loop scans a
+  signed w-NAF digit string `{d_i}` with `d_i ∈ {-7,-5,-3,-1,0,1,3,5,7}`
+  MSB→LSB: each step doubles the accumulator and (for nonzero `d_i`)
+  mixed-adds `±T[|d_i|]`. Average nonzero density is `1/(w+1) = 1/5`,
+  so a 256-bit scalar emits ~52 nonzero digits vs ~128 set bits under
+  plain double-and-add — roughly 60% fewer point additions and ~17 M
+  cy saved per P-256 verify, ~22 M cy saved per P-384 verify (analytic
+  estimate; primitive costs from the v0.2.0 bench table). The
+  precompute table {T[1]=Q, T[3], T[5], T[7]} is built per call (Q
+  affine input → 2Q via doubling → 3Q/5Q/7Q via three mixed-adds
+  against 2Q affine) and stored affine in a 256-/384-byte scratch in
+  DATA, with one Jacobian-to-affine inversion per non-trivial entry
+  (4 total, amortized across the saved additions). Negations are free:
+  the inner loop negates the table Y into a 32-/48-byte scratch via
+  `fp_mod_sub` from a zero buffer at digit-fetch time. Hazard family
+  notes: the 32-/48-byte multi-precision ADC/SBC chains use `DEX`
+  counters (DEX preserves C between iterations) and the 33-/49-byte
+  scalar right-shift uses `ROR abs,X` with `DEX/BPL` (initial X = 32
+  / 48 has bit 7 clear, so the BPL takes the first iter). PRG grew
+  32022 → 35340 B (+3318 B). Test coverage: `tools/test_points256.py`
+  33/33, `tools/test_points384.py` 33/33, `tools/test_ecdsa_verify.py`
+  35/35 (P-256 + P-384 RFC 6979 + CAVP SigVer + SHA-384 wrapper).
 - **`read_bytes_verified` integration in field-arithmetic tests.** The
   four single-byte carry/borrow verifier reads inside `c64_fp_add`
   and `c64_fp_sub` in `tools/test_fp256.py` and `tools/test_fp384.py`
