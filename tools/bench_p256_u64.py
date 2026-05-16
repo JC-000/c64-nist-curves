@@ -39,6 +39,7 @@ from bench_u64_common import (  # noqa: E402
     Labels,
     reboot_and_prepare, run_one_routine, park_main_loop,
     set_ptr, write_le, read_le,
+    acquire_device_lock_or_exit, writemem_health_probe,
 )
 
 PRG_PATH = os.path.join(PROJECT_ROOT, "build", "nist-curves.prg")
@@ -336,10 +337,16 @@ def main():
     if not pr.reachable:
         print(f"FATAL: U64 not reachable: {pr}")
         sys.exit(2)
-    print("  reachable")
+    print("  reachable (GET-only; writemem health probed post-acquire)")
 
-    lock = DeviceLock(host)
-    with lock:
+    lock = acquire_device_lock_or_exit(host)
+    try:
+        ok, reason = writemem_health_probe(host, password=password)
+        if not ok:
+            print(f"FATAL: writemem health probe failed: {reason}")
+            sys.exit(3)
+        print(f"  [writemem] {reason}")
+
         client = Ultimate64Client(host=host, password=password, timeout=60.0)
         transport = Ultimate64Transport(host=host, password=password, client=client)
         info = client.get_info()
@@ -369,6 +376,8 @@ def main():
 
         elapsed = time.monotonic() - t_start
         print(f"\nTotal sweep wall time: {elapsed/60:.1f} min")
+    finally:
+        lock.release()
 
     print_summary(all_results, speeds)
 
