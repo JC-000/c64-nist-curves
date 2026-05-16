@@ -33,16 +33,19 @@
 .export fp_reverse32
 
 .importzp fp_src1, fp_src2, fp_dst, fp_misc, zp_ptr2, ec_scalar_ptr
+.importzp fp_carry
 
 .import fp_copy, fp_zero, fp_cmp, fp_add, fp_sub, fp_is_zero
 .import fp_mod_mul_n, fp_mod_inv
 .import ec_set_modp, ec_set_modn
-.import ec_n256
+.import ec_mulp, ec_sqrp
+.import ec_n256, ec_p256
 .import ec_scalar_mul, ec_scalar_mul_var, ec_point_add, ec_jacobian_to_affine
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
 .import fp_r0
 .import ec_p1, ec_p2, ec_p3
+.import ec_t1, ec_t2, ec_t3
 .import ec_affine_x, ec_affine_y
 .import ec_base_x, ec_base_y
 .import ecdsa_r, ecdsa_s, ecdsa_h, ecdsa_qx, ecdsa_qy
@@ -377,27 +380,18 @@ ecdsa_verify_256:
         lda #>ecdsa_u1g_x
         sta fp_src1+1
         jsr fp_is_zero
-        bne @ev_r_from_u1g      ; u1*G.x != 0 -> use it as R.x
+        beq @ev_u1gx_zero
+        jmp @ev_r_from_u1g      ; u1*G.x != 0 -> use it as R.x
+@ev_u1gx_zero:
         lda #<ecdsa_u1g_y
         sta fp_src1
         lda #>ecdsa_u1g_y
         sta fp_src1+1
         jsr fp_is_zero
-        bne @ev_r_from_u1g      ; NE = u1*G.y nonzero -> ok
-        jmp @ev_fail            ; both x and y zero: R = infinity -> fail
-@ev_r_from_u1g:
-        ; R affine = (ecdsa_u1g_x, ecdsa_u1g_y). Copy x into ec_affine_x so
-        ; the shared final-compare code below can do its work.
-        lda #<ecdsa_u1g_x
-        sta fp_src1
-        lda #>ecdsa_u1g_x
-        sta fp_src1+1
-        lda #<ec_affine_x
-        sta fp_dst
-        lda #>ec_affine_x
-        sta fp_dst+1
-        jsr fp_copy
-        jmp @ev_have_r_affine
+        beq @ev_fail_jmp        ; both x and y zero: R = infinity -> fail
+        jmp @ev_r_from_u1g
+@ev_fail_jmp:
+        jmp @ev_fail
 
 @ev_u2q_ok:
         ; Is u1*G infinity? (ecdsa_u1g_x == 0 AND ecdsa_u1g_y == 0)
@@ -413,15 +407,14 @@ ecdsa_verify_256:
         sta fp_src1+1
         jsr fp_is_zero
         bne @ev_do_add          ; u1*G.y != 0 -> not infinity
-        ; u1*G == infinity. R = u2*Q, which is already in ec_p1 Jacobian.
-        ; Move ec_p1 -> ec_p3 so ec_jacobian_to_affine consumes it.
+        ; u1*G == infinity. R = u2*Q, already Jacobian in ec_p1.
         ldy #95
 @evcpq2:
         lda ec_p1,y
         sta ec_p3,y
         dey
         bpl @evcpq2
-        jmp @ev_to_affine
+        jmp @ev_cofactor_cmp
 
 @ev_do_add:
         ; Load u1*G affine into ec_p2 (X at +0, Y at +32). ec_point_add is
@@ -448,32 +441,138 @@ ecdsa_verify_256:
         lda #>(ec_p3+64)
         sta fp_src1+1
         jsr fp_is_zero
-        beq @ev_fail
+        bne @ev_cofactor_cmp
+        jmp @ev_fail
 
-@ev_to_affine:
-        ; --- Step 11: R Jacobian -> affine in ec_affine_x / ec_affine_y ---
-        jsr ec_jacobian_to_affine
+@ev_cofactor_cmp:
+        ; --- Cofactor comparison: r * Z^2 == X (mod p)? ---
+        ; Replaces ec_jacobian_to_affine on the final point (saves one binary
+        ; GCD inversion + 3 mod-p multiplies). R is Jacobian in ec_p3:
+        ;   X at +0..31, Y at +32..63 (unused), Z at +64..95.
+        ; X_R from ec_point_add is canonical (< p), so a byte-equality compare
+        ; against (r * Z^2 mod p) on both sides is well-defined.
 
-@ev_have_r_affine:
-        ; --- Step 12: reduce R.x mod n ---
-        ; R.x was computed mod p. Since p > n but p < 2n, at most one
-        ; subtraction of n brings it into [0, n-1].
-        ; Compare ec_affine_x to ec_n256 (fp_cmp: C=1 if src1>=src2).
-        lda #<ec_affine_x
+        ; ec_t1 = Z^2 mod p
+        lda #<(ec_p3+64)
         sta fp_src1
-        lda #>ec_affine_x
+        lda #>(ec_p3+64)
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_dst
+        lda #>ec_t1
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; ec_t2 = r * Z^2 mod p
+        lda #<ecdsa_r
+        sta fp_src1
+        lda #>ecdsa_r
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_src2
+        lda #>ec_t1
+        sta fp_src2+1
+        lda #<ec_t2
+        sta fp_dst
+        lda #>ec_t2
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; Compare ec_t2 vs ec_p3 (X_R), LE 32 bytes
+        ldy #31
+@ev_cof_cmp1:
+        lda ec_t2,y
+        cmp ec_p3,y
+        bne @ev_cof_fallback
+        dey
+        bpl @ev_cof_cmp1
+        clc                     ; all bytes equal -> VALID
+        rts
+
+@ev_cof_fallback:
+        ; First test failed; try (r + n) * Z^2 mod p. Valid only when
+        ; r + n < p (so the integer sum doesn't reduce); this is the case
+        ; r in [0, p - n - 1]. p - n ~ 2^128, so this branch is essentially
+        ; never taken on honest inputs but is correctness-required.
+        lda #<ecdsa_r
+        sta fp_src1
+        lda #>ecdsa_r
+        sta fp_src1+1
+        lda #<ec_n256
+        sta fp_src2
+        lda #>ec_n256
+        sta fp_src2+1
+        lda #<ec_t3
+        sta fp_dst
+        lda #>ec_t3
+        sta fp_dst+1
+        jsr fp_add              ; ec_t3 = r + n (33-bit carry into fp_carry)
+
+        lda fp_carry
+        beq @ev_cof_no_carry
+        jmp @ev_fail            ; r + n >= 2^256 > p: no fallback applicable
+@ev_cof_no_carry:
+
+        ; Compare ec_t3 to p256: if ec_t3 >= p, fallback not applicable.
+        lda #<ec_t3
+        sta fp_src1
+        lda #>ec_t3
+        sta fp_src1+1
+        lda #<ec_p256
+        sta fp_src2
+        lda #>ec_p256
+        sta fp_src2+1
+        jsr fp_cmp
+        bcc @ev_cof_in_range
+        jmp @ev_fail            ; r + n >= p
+@ev_cof_in_range:
+
+        ; ec_t2 = (r + n) * Z^2 mod p
+        lda #<ec_t3
+        sta fp_src1
+        lda #>ec_t3
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_src2
+        lda #>ec_t1
+        sta fp_src2+1
+        lda #<ec_t2
+        sta fp_dst
+        lda #>ec_t2
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ldy #31
+@ev_cof_cmp2:
+        lda ec_t2,y
+        cmp ec_p3,y
+        bne @ev_cof_cmp2_fail
+        dey
+        bpl @ev_cof_cmp2
+        clc
+        rts
+@ev_cof_cmp2_fail:
+        jmp @ev_fail
+
+@ev_r_from_u1g:
+        ; R is affine (u2*Q was infinity). Skip cofactor path: reduce
+        ; ecdsa_u1g_x mod n then byte-compare against ecdsa_r.
+        ; Compare ecdsa_u1g_x to ec_n256.
+        lda #<ecdsa_u1g_x
+        sta fp_src1
+        lda #>ecdsa_u1g_x
         sta fp_src1+1
         lda #<ec_n256
         sta fp_src2
         lda #>ec_n256
         sta fp_src2+1
         jsr fp_cmp
-        bcc @ev_cmp_r           ; ec_affine_x < n: nothing to do
+        bcc @ev_u1g_cmp         ; u1g_x < n: nothing to do
 
-        ; ec_affine_x -= n
-        lda #<ec_affine_x
+        ; ec_affine_x = ecdsa_u1g_x - n
+        lda #<ecdsa_u1g_x
         sta fp_src1
-        lda #>ec_affine_x
+        lda #>ecdsa_u1g_x
         sta fp_src1+1
         lda #<ec_n256
         sta fp_src2
@@ -483,19 +582,25 @@ ecdsa_verify_256:
         sta fp_dst
         lda #>ec_affine_x
         sta fp_dst+1
-        jsr fp_sub              ; in-place: ec_affine_x := ec_affine_x - n
-
-@ev_cmp_r:
-        ; --- Step 13: byte-compare ec_affine_x to ecdsa_r (both LE, 32 B) ---
+        jsr fp_sub
         ldy #31
-@ev_mcmp:
+@ev_u1g_cmp_sub:
         lda ec_affine_x,y
         cmp ecdsa_r,y
         bne @ev_fail
         dey
-        bpl @ev_mcmp
+        bpl @ev_u1g_cmp_sub
+        clc
+        rts
 
-        ; All bytes equal: signature valid.
+@ev_u1g_cmp:
+        ldy #31
+@ev_u1g_cmp_loop:
+        lda ecdsa_u1g_x,y
+        cmp ecdsa_r,y
+        bne @ev_fail
+        dey
+        bpl @ev_u1g_cmp_loop
         clc
         rts
 
