@@ -32,7 +32,7 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 ## Build & Test
 
 ```bash
-make                              # build nist-curves.prg
+make                              # build nist-curves.prg + labels.txt + nist-curves.dbg
 python3 tools/test_fp256.py       # P-256 field arithmetic (NIST KAT curve-eq + CSPRNG)
 python3 tools/test_points256.py   # P-256 point ops (add --full for 10x random samples)
 python3 tools/test_fp384.py       # P-384 field arithmetic (NIST KAT curve-eq + CSPRNG)

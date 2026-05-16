@@ -8,6 +8,7 @@ BUILD_DIR = build
 PRG = $(BUILD_DIR)/nist-curves.prg
 LABELS = $(BUILD_DIR)/labels.txt
 LABELS_RAW = $(BUILD_DIR)/labels_raw.txt
+DBG = $(BUILD_DIR)/nist-curves.dbg
 CFG = $(SRC_DIR)/c64.cfg
 
 # Source modules (order matters for linking — matches original !source chain)
@@ -26,13 +27,17 @@ ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 all: $(PRG)
 
 # --- ca65 + ld65 multi-object build (default) ---
+# -g on ca65 embeds source-line debug info in each .o; --dbgfile on ld65
+# aggregates that into a single VICE/c64-debugger-loadable debug file.
+# The .prg is byte-identical with or without -g; debug data lives in .o
+# metadata only and the .dbg is a separate output.
 $(PRG): $(OBJECTS) $(CFG) | $(BUILD_DIR)
-	$(LD65) -o $(PRG) -C $(CFG) -Ln $(LABELS_RAW) $(OBJECTS)
+	$(LD65) -o $(PRG) -C $(CFG) -Ln $(LABELS_RAW) --dbgfile $(DBG) $(OBJECTS)
 	sed 's/^al \([0-9a-fA-F]\{2\}\)\([0-9a-fA-F]\{4\}\) /al C:\2 /' $(LABELS_RAW) > $(LABELS)
 
 # Pattern rule: assemble each .s to .o
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -I $(SRC_DIR) -o $@ $<
+	$(CA65) --cpu 6502 -g -I $(SRC_DIR) -o $@ $<
 
 # --- ACME build (legacy, for side-by-side testing) ---
 build-acme: $(ASM_SRCS) | $(BUILD_DIR)
@@ -50,7 +55,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 clean:
-	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/nist-curves.prg $(BUILD_DIR)/labels.txt $(BUILD_DIR)/labels_raw.txt
+	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/nist-curves.prg $(BUILD_DIR)/labels.txt $(BUILD_DIR)/labels_raw.txt $(BUILD_DIR)/nist-curves.dbg
 
 # --- Reproducible release tarball --------------------------------------------
 #
