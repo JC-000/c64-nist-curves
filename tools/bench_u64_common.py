@@ -27,7 +27,10 @@ if os.path.isdir(_HARNESS_SRC) and _HARNESS_SRC not in sys.path:
     sys.path.insert(0, _HARNESS_SRC)
 
 from c64_test_harness.backends.ultimate64 import Ultimate64Transport  # noqa: E402
-from c64_test_harness.backends.ultimate64_client import Ultimate64Client  # noqa: E402
+from c64_test_harness.backends.ultimate64_client import (  # noqa: E402
+    Ultimate64Client,
+    Ultimate64Error,
+)
 from c64_test_harness.backends.ultimate64_helpers import (  # noqa: E402
     get_turbo_mhz,
     set_turbo_mhz,
@@ -35,7 +38,10 @@ from c64_test_harness.backends.ultimate64_helpers import (  # noqa: E402
     snapshot_state,
     restore_state,
 )
-from c64_test_harness.backends.device_lock import DeviceLock  # noqa: E402
+from c64_test_harness.backends.device_lock import (  # noqa: E402
+    DeviceLock,
+    DeviceLockTimeout,
+)
 from c64_test_harness.backends.ultimate64_probe import probe_u64  # noqa: E402
 from c64_test_harness.labels import Labels  # noqa: E402
 
@@ -310,6 +316,190 @@ def write_le(transport, addr, value, length):
 
 def read_le(transport, addr, length):
     return int.from_bytes(transport.read_memory(addr, length), "little")
+
+
+# ---------------------------------------------------------------------------
+# Device-lock acquire helpers
+# ---------------------------------------------------------------------------
+
+#: Bench-tool default for the bounded acquire timeout.  10 minutes matches
+#: the longest expected serialized bench wait while keeping a stuck queue
+#: from blocking another agent's run indefinitely.
+DEFAULT_LOCK_ACQUIRE_TIMEOUT = 600.0
+
+
+def _fmt_lock_holder(info):
+    """Render a DeviceLock.read_info() dict into a one-line human string.
+
+    Returns ``"<no metadata>"`` on falsy / non-dict input rather than ``None``
+    so the call site can always print something useful.
+    """
+    if not isinstance(info, dict):
+        return "<no metadata>"
+    pid = info.get("pid")
+    ts = info.get("ts")
+    host = info.get("device_host")
+    bits = []
+    if pid is not None:
+        bits.append(f"pid={pid}")
+    if isinstance(ts, (int, float)):
+        age = max(0.0, time.time() - ts)
+        bits.append(f"started_at={ts:.0f} ({age:.0f}s ago)")
+    if host:
+        bits.append(f"device_host={host!r}")
+    return ", ".join(bits) if bits else "<no metadata>"
+
+
+def acquire_device_lock_or_exit(host, *,
+                                timeout=DEFAULT_LOCK_ACQUIRE_TIMEOUT):
+    """Stale-clean, surface existing holder, then bounded-acquire.
+
+    Bench-tool entry-point helper that replaces the legacy
+    ``with DeviceLock(host):`` pattern.  Performs, in order:
+
+      1. ``DeviceLock.cleanup_stale()`` to drop lockfiles belonging to
+         dead PIDs (e.g. previous holder ``kill -9``ed without releasing).
+      2. ``lock.read_info()`` to surface the metadata of any current
+         holder BEFORE we block.  Printed as a single line so the user
+         can see they'd be queueing behind a specific other run.
+      3. ``lock.acquire_or_raise(timeout=...)`` to block at most
+         *timeout* seconds.  On :class:`DeviceLockTimeout` the structured
+         message (holder pid, liveness, lockfile age, REST reachability)
+         is printed and the process exits 2.
+
+    Returns the acquired :class:`DeviceLock` instance.  Callers are
+    responsible for ``lock.release()`` in their cleanup path.
+
+    NOTE: this function will ``sys.exit(2)`` on timeout — it is intended
+    for top-level bench tools, not library code.
+    """
+    try:
+        removed = DeviceLock.cleanup_stale()
+    except Exception as e:  # pragma: no cover - defensive
+        removed = 0
+        print(f"  [lock] cleanup_stale: WARN {type(e).__name__}: {e}",
+              flush=True)
+    if removed:
+        print(f"  [lock] cleanup_stale removed {removed} stale lockfile(s)",
+              flush=True)
+
+    lock = DeviceLock(host)
+
+    pre_info = lock.read_info()
+    if pre_info is not None:
+        print(
+            f"  [lock] device currently held by another run: "
+            f"{_fmt_lock_holder(pre_info)}",
+            flush=True,
+        )
+        print(
+            f"  [lock] will block up to {timeout:.0f}s for acquire "
+            f"(queue-aware; live progressing holders extend the deadline)",
+            flush=True,
+        )
+    else:
+        print(f"  [lock] no current holder; acquiring (timeout={timeout:.0f}s)",
+              flush=True)
+
+    try:
+        lock.acquire_or_raise(timeout=timeout)
+    except DeviceLockTimeout as e:
+        print(f"FATAL: DeviceLock acquire failed: {e}", flush=True)
+        # Re-surface the holder metadata in case the structured message
+        # didn't carry it (e.g. cleanup_stale dropped it mid-wait).
+        late_info = lock.read_info()
+        if late_info is not None:
+            print(f"  current holder: {_fmt_lock_holder(late_info)}",
+                  flush=True)
+        sys.exit(2)
+    held_info = lock.read_info()
+    if held_info is not None:
+        print(f"  [lock] acquired; metadata={_fmt_lock_holder(held_info)}",
+              flush=True)
+    else:
+        print("  [lock] acquired", flush=True)
+    return lock
+
+
+# ---------------------------------------------------------------------------
+# Writemem health probe (POST 404 detection)
+# ---------------------------------------------------------------------------
+
+#: Scratch address used by :func:`writemem_health_probe`.  Adjacent to the
+#: existing $02A7 init sentinel and $02A8 done sentinel but DISTINCT —
+#: deliberately avoids those bytes so the probe never collides with a
+#: post-init poll.  Within the BASIC RS-232 stash area which the C64
+#: KERNAL never touches without explicit I/O.
+WRITEMEM_PROBE_ADDR = 0x02A9
+
+#: Distinctive payload (avoids 0x00 / 0xFF so a stuck readback can't masquerade
+#: as success).  Length 64 forces the POST raw-byte path when paired with
+#: ``write_mem_query_threshold=0`` — see :func:`writemem_health_probe`.
+_WRITEMEM_PROBE_PAYLOAD = bytes(((0xA5 ^ i) & 0xFF) for i in range(64))
+
+
+def writemem_health_probe(host, *, password=None,
+                          addr=WRITEMEM_PROBE_ADDR,
+                          timeout=10.0):
+    """Detect the U64E 3.14d POST /v1/machine:writemem 404 degradation.
+
+    The firmware bug surfaces as **HTTP 404 "Could not read data from
+    attachment"** on the POST raw-byte form of ``write_mem``; the PUT
+    ``?data=<hex>`` form keeps working through it.  ``probe_u64(...).reachable``
+    only exercises GET endpoints and so cannot see this state.  The bug
+    clears only via physical power-cycle; ``reset`` / ``reboot`` over REST
+    may NOT recover it, and repeated POST hits against the degraded endpoint
+    can wedge the entire TCP stack.
+
+    This probe builds a one-shot :class:`Ultimate64Client` with
+    ``write_mem_query_threshold=0`` to FORCE the POST path regardless of
+    detected firmware version, writes a 64-byte distinctive payload to
+    *addr*, reads it back, and verifies the round-trip.  On a healthy
+    device this is a few hundred ms.
+
+    Returns ``(ok: bool, reason: str)``.  ``ok=True`` only when the
+    round-trip matches byte-for-byte.  On HTTP 404 the *reason* names
+    the bug explicitly so the operator knows a power-cycle is needed.
+    """
+    try:
+        # write_mem_query_threshold=0 forces POST for any non-empty
+        # payload, bypassing the autodetected 128-byte cutoff that
+        # would otherwise route this through the safe PUT path.
+        probe_client = Ultimate64Client(
+            host=host, password=password, timeout=timeout,
+            write_mem_query_threshold=0,
+        )
+    except Exception as e:
+        return False, f"client construct failed: {type(e).__name__}: {e}"
+    try:
+        probe_client.write_mem(addr, _WRITEMEM_PROBE_PAYLOAD)
+    except Ultimate64Error as e:
+        status = getattr(e, "status", None)
+        body = getattr(e, "body", "") or ""
+        if status == 404 and "attachment" in body.lower():
+            return False, (
+                "POST /v1/machine:writemem returned HTTP 404 "
+                "'Could not read data from attachment' — device is in "
+                "writemem-degraded state, physical power-cycle required "
+                "(reset/reboot over REST does NOT clear this)"
+            )
+        return False, (
+            f"write_mem failed: HTTP {status} {type(e).__name__}: "
+            f"{str(e)[:200]}"
+        )
+    except Exception as e:
+        return False, f"write_mem raised {type(e).__name__}: {e}"
+    try:
+        got = probe_client.read_mem(addr, len(_WRITEMEM_PROBE_PAYLOAD))
+    except Exception as e:
+        return False, f"read_mem raised {type(e).__name__}: {e}"
+    if got != _WRITEMEM_PROBE_PAYLOAD:
+        return False, (
+            f"readback mismatch (wrote {len(_WRITEMEM_PROBE_PAYLOAD)} bytes, "
+            f"got {len(got)} bytes; first 8 wrote="
+            f"{_WRITEMEM_PROBE_PAYLOAD[:8].hex()} got={got[:8].hex()})"
+        )
+    return True, "writemem POST round-trip OK"
 
 
 def run_one_routine(transport, labels, main_loop_addr,

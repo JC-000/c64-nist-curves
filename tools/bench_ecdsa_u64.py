@@ -60,6 +60,7 @@ from bench_u64_common import (  # noqa: E402
     Labels,
     reboot_and_prepare, run_one_routine, park_main_loop,
     set_ptr, write_le, read_le,
+    acquire_device_lock_or_exit, writemem_health_probe,
 )
 
 try:
@@ -544,7 +545,7 @@ def main():
         print(f"FATAL: U64 not reachable: {pr}")
         print("  The bench requires live Ultimate 64 Elite hardware. Exiting.")
         sys.exit(2)
-    print("  reachable")
+    print("  reachable (GET-only; writemem health probed post-acquire)")
 
     if args.debug_stream:
         if not _DEBUG_CAPTURE_OK:
@@ -555,8 +556,14 @@ def main():
             print(f"Debug-stream cross-check ENABLED (UDP "
                   f"{DEFAULT_DEBUG_PORT})")
 
-    lock = DeviceLock(host)
-    with lock:
+    lock = acquire_device_lock_or_exit(host)
+    try:
+        ok, reason = writemem_health_probe(host, password=password)
+        if not ok:
+            print(f"FATAL: writemem health probe failed: {reason}")
+            sys.exit(3)
+        print(f"  [writemem] {reason}")
+
         client = Ultimate64Client(host=host, password=password, timeout=60.0)
         transport = Ultimate64Transport(host=host, password=password,
                                         client=client)
@@ -586,6 +593,8 @@ def main():
 
         print(f"\nTotal sweep wall time: "
               f"{(time.monotonic()-t_start)/60:.1f} min")
+    finally:
+        lock.release()
 
     print_summary(all_results, speeds)
 
