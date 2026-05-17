@@ -20,8 +20,15 @@ make build-acme              # legacy ACME build of *.asm (diff testing only)
 make bench-u64               # alias for tools/bench_ecdsa_u64.py (needs U64_HOST)
 ```
 Assembler: ca65/ld65 (cc65 toolchain). Multi-object build: each .s file compiles
-to a separate .o, linked by ld65 with `src/c64.cfg`. Output: build/nist-curves.prg
-+ build/labels.txt (VICE symbol table, post-processed from ld65 `-Ln` format).
+to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
+- `build/nist-curves.prg` — loadable PRG (loaded at $0801).
+- `build/labels.txt` — VICE symbol table, post-processed from ld65 `-Ln` format.
+- `build/nist-curves.dbg` — aggregated source-line debug info (cc65 .dbg format)
+  produced by ca65 `-g` + ld65 `--dbgfile`. Loadable by VICE binary monitor
+  (`monitor> dbgfile build/nist-curves.dbg`) and other cc65-aware debuggers for
+  source-level stepping / breakpoints / span lookup. `.dbg` is a separate
+  artifact; the .prg is byte-identical with or without `-g` (verified by
+  sha256 round-trip).
 Current PRG size: ~23.8 KB (24322 bytes), loaded at $0801.
 
 `src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
