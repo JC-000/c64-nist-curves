@@ -98,73 +98,37 @@ ecdsa_verify_256:
         sta reu_reu_lo
         sta reu_addr_ctrl
 
-        ; --- Step 2: byte-reverse 5 BE input fields into LE scratch. ---
-        ; fp_src1 = ecdsa_in_ptr + 0,   fp_dst = ecdsa_r
-        lda ecdsa_in_ptr
-        sta fp_src1
-        lda ecdsa_in_ptr+1
-        sta fp_src1+1
-        lda #<ecdsa_r
-        sta fp_dst
-        lda #>ecdsa_r
-        sta fp_dst+1
-        jsr fp_reverse32
-
-        ; fp_src1 = ecdsa_in_ptr + 32,  fp_dst = ecdsa_s
+        ; --- Step 2: byte-reverse 5 BE input fields into LE scratch.
+        ; Parametric loop drives fp_reverse32 over the 5 (src_offset,
+        ; dst) pairs; index lives in @rev_idx since fp_reverse32
+        ; clobbers X and Y across the call.
+        lda #0
+        sta @rev_idx
+@rev_loop:
+        ldx @rev_idx
         clc
         lda ecdsa_in_ptr
-        adc #32
+        adc @rev_offsets,x
         sta fp_src1
         lda ecdsa_in_ptr+1
         adc #0
         sta fp_src1+1
-        lda #<ecdsa_s
+        lda @rev_dst_lo,x
         sta fp_dst
-        lda #>ecdsa_s
+        lda @rev_dst_hi,x
         sta fp_dst+1
         jsr fp_reverse32
+        inc @rev_idx
+        lda @rev_idx
+        cmp #5
+        bcc @rev_loop
+        jmp @rev_done
 
-        ; fp_src1 = ecdsa_in_ptr + 64,  fp_dst = ecdsa_h
-        clc
-        lda ecdsa_in_ptr
-        adc #64
-        sta fp_src1
-        lda ecdsa_in_ptr+1
-        adc #0
-        sta fp_src1+1
-        lda #<ecdsa_h
-        sta fp_dst
-        lda #>ecdsa_h
-        sta fp_dst+1
-        jsr fp_reverse32
-
-        ; fp_src1 = ecdsa_in_ptr + 96,  fp_dst = ecdsa_qx
-        clc
-        lda ecdsa_in_ptr
-        adc #96
-        sta fp_src1
-        lda ecdsa_in_ptr+1
-        adc #0
-        sta fp_src1+1
-        lda #<ecdsa_qx
-        sta fp_dst
-        lda #>ecdsa_qx
-        sta fp_dst+1
-        jsr fp_reverse32
-
-        ; fp_src1 = ecdsa_in_ptr + 128, fp_dst = ecdsa_qy
-        clc
-        lda ecdsa_in_ptr
-        adc #128
-        sta fp_src1
-        lda ecdsa_in_ptr+1
-        adc #0
-        sta fp_src1+1
-        lda #<ecdsa_qy
-        sta fp_dst
-        lda #>ecdsa_qy
-        sta fp_dst+1
-        jsr fp_reverse32
+@rev_idx:       .byte 0
+@rev_offsets:   .byte 0, 32, 64, 96, 128
+@rev_dst_lo:    .byte <ecdsa_r, <ecdsa_s, <ecdsa_h, <ecdsa_qx, <ecdsa_qy
+@rev_dst_hi:    .byte >ecdsa_r, >ecdsa_s, >ecdsa_h, >ecdsa_qx, >ecdsa_qy
+@rev_done:
 
         ; --- Step 3: validate r, s in [1, n-1] ---
         ; r == 0?
@@ -395,18 +359,16 @@ ecdsa_verify_256:
 
 @ev_u2q_ok:
         ; Is u1*G infinity? (ecdsa_u1g_x == 0 AND ecdsa_u1g_y == 0)
-        lda #<ecdsa_u1g_x
-        sta fp_src1
-        lda #>ecdsa_u1g_x
-        sta fp_src1+1
-        jsr fp_is_zero
-        bne @ev_do_add          ; u1*G.x != 0 -> not infinity
-        lda #<ecdsa_u1g_y
-        sta fp_src1
-        lda #>ecdsa_u1g_y
-        sta fp_src1+1
-        jsr fp_is_zero
-        bne @ev_do_add          ; u1*G.y != 0 -> not infinity
+        ; ecdsa_u1g_x and _y are stored back-to-back (32+32 B) in data.s,
+        ; so a single 64-byte OR-fold replaces the two fp_is_zero calls
+        ; and their address setup.
+        lda #0
+        ldy #63
+@ev_u1g_orfold:
+        ora ecdsa_u1g_x,y
+        dey
+        bpl @ev_u1g_orfold
+        bne @ev_do_add          ; any nonzero byte -> not infinity
         ; u1*G == infinity. R = u2*Q, already Jacobian in ec_p1.
         ldy #95
 @evcpq2:
