@@ -39,7 +39,7 @@ from bench_u64_common import (  # noqa: E402
     Labels,
     reboot_and_prepare, run_one_routine, park_main_loop,
     set_ptr, write_le, read_le,
-    acquire_device_lock_or_exit, writemem_health_probe,
+    acquire_device_lock_or_exit, liveness_probe,
 )
 
 PRG_PATH = os.path.join(PROJECT_ROOT, "build", "nist-curves.prg")
@@ -341,11 +341,13 @@ def main():
 
     lock = acquire_device_lock_or_exit(host)
     try:
-        ok, reason = writemem_health_probe(host, password=password)
-        if not ok:
-            print(f"FATAL: writemem health probe failed: {reason}")
+        live = liveness_probe(host, password=password)
+        if not live.healthy:
+            print(f"FATAL: liveness probe failed: {live.summary}")
+            if live.recommendation:
+                print(f"  recommendation: {live.recommendation}")
             sys.exit(3)
-        print(f"  [writemem] {reason}")
+        print(f"  [liveness] {live.summary}")
 
         client = Ultimate64Client(host=host, password=password, timeout=60.0)
         transport = Ultimate64Transport(host=host, password=password, client=client)
