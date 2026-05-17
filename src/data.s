@@ -94,31 +94,6 @@ ec_sc_byte:     .byte 0
 .export ec_sc_mask
 ec_sc_mask:     .byte 0
 
-; --- w-NAF (width 4) variable-base scalar-mul scratch (P-256).
-;     ec_scalar_mul_var uses a 4-bit signed w-NAF recoding:
-;       digits[i] in {-7,-5,-3,-1,0,1,3,5,7}, stored as two's complement bytes.
-;     A 256-bit scalar can recode to up to 257 digits (one final carry bit).
-;     The precompute table holds {Q, 3Q, 5Q, 7Q} as affine (X,Y) pairs,
-;     stored contiguously at var_tbl_base; entry index (|d|-1)/2 in 0..3
-;     lives at offset index*64 with X at +0 and Y at +32. Mixed-add fetches
-;     the table entry into ec_p2 and (if d<0) negates Y into var_neg_y.
-;     The Jacobian "running accumulator" used during 3/5/7 precompute steps
-;     is saved in var_jac_save between jacobian_to_affine and the next add.
-.export var_wnaf
-var_wnaf:       .res 257, 0
-.export var_wnaf_len
-var_wnaf_len:   .byte 0           ; low byte of 16-bit length (max 257)
-.export var_wnaf_len_hi
-var_wnaf_len_hi: .byte 0          ; high byte (effectively a 0/1 flag)
-.export var_tbl_base
-var_tbl_base:   .res 256, 0       ; 4 entries x (32 X + 32 Y) = 256 B
-.export var_jac_save
-var_jac_save:   .res 96, 0        ; 96-B Jacobian (X|Y|Z) staging
-.export var_neg_y
-var_neg_y:      .res 32, 0        ; -Y mod p for digit<0 mixed-add
-.export var_zero32
-var_zero32:     .res 32, 0        ; permanent 32-B zero (subtract source)
-
 ; --- fe_mul optimization buffers ---
 ; NOT RE-ENTRANT. The buffers below (mul_cached_a, mul_src2_buf, mul_dma_lo,
 ; mul_dma_hi) plus the fp_src1/fp_src2/fp_dst zero-page slots are SHARED
@@ -242,31 +217,6 @@ ec384_sc_nibble: .byte 0          ; current nibble index (0..95)
 ec384_sc_half:  .byte 0           ; 0=high nibble, 1=low nibble
 .export ec384_precomp_i
 ec384_precomp_i: .byte 0          ; precompute loop counter
-
-; --- w-NAF (width 4) variable-base scalar-mul scratch (P-384).
-;     Same layout as the P-256 var_* buffers, scaled to 48-byte fields.
-;     A 384-bit scalar can recode to up to 385 digits.
-.export var384_wnaf
-var384_wnaf:    .res 385, 0
-.export var384_wnaf_len
-var384_wnaf_len: .byte 0          ; low byte of length (256..385 needs hi=1)
-.export var384_wnaf_len_hi
-var384_wnaf_len_hi: .byte 0
-.export var384_tbl_base
-var384_tbl_base: .res 384, 0      ; 4 entries x (48 X + 48 Y) = 384 B
-.export var384_jac_save
-var384_jac_save: .res 144, 0      ; 144-B Jacobian staging
-.export var384_neg_y
-var384_neg_y:   .res 48, 0        ; -Y mod p for digit<0 mixed-add
-.export var384_zero48
-var384_zero48:  .res 48, 0        ; permanent 48-B zero
-; --- 2Q affine staging used during v384_precompute. ec_point_double_384
-;     and ec_point_add_384 clobber ec384_t1..t6, so the 2Q affine
-;     coordinates can't live there across the precompute sequence.
-.export var384_2q_x
-var384_2q_x:    .res 48, 0
-.export var384_2q_y
-var384_2q_y:    .res 48, 0
 
 ; --- P-384 Solinas reduction scratch ---
 .export fp384_red_tmp

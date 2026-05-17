@@ -7,7 +7,7 @@
 ; =============================================================================
 
 ; --- Imports: ZP ---
-.importzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_loop
+.importzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry
 
 ; --- Imports: fp384 ---
 .import fp_add_384, fp_sub_384, fp_cmp_384, fp_copy_384, fp_zero_384
@@ -904,53 +904,6 @@ fp_mod_inv_384:
 
 @halfu:
         lda fp384_inv_u
-        beq :+
-        jmp @halfu_low_nz                ; low byte != 0 -> per-bit path
-:
-        ; --- u low byte == 0 fast path (P-384, 48-byte): byte-shift u down,
-        ; then halve x1 by 2^8 mod m via 8 single-bit halvings inline.
-        ldx #0
-@halfu_bshift:
-        lda fp384_inv_u+1,x
-        sta fp384_inv_u,x
-        inx
-        cpx #47
-        bne @halfu_bshift
-        lda #0
-        sta fp384_inv_u+47
-        lda #8
-        sta fp_loop
-@halfu_x1_8loop:
-        lda fp384_inv_x1
-        and #1
-        beq @halfu_x1_even
-        clc
-        ldy #0
-        ldx #48
-@halfu_x1_addmod:
-        lda fp384_inv_x1,y
-        adc (fp_misc),y
-        sta fp384_inv_x1,y
-        iny
-        dex
-        bne @halfu_x1_addmod
-        lda #0
-        adc #0
-        lsr
-        jmp @halfu_x1_doshift
-@halfu_x1_even:
-        clc
-@halfu_x1_doshift:
-.repeat 48, i
-        ror fp384_inv_x1 + (47 - i)
-.endrepeat
-        dec fp_loop                      ; DEC preserves carry; outer loop, unused
-        beq :+
-        jmp @halfu_x1_8loop
-:
-        jmp @halfu
-
-@halfu_low_nz:
         and #1
         beq :+
         jmp @halfv
@@ -990,52 +943,6 @@ fp_mod_inv_384:
 
 @halfv:
         lda fp384_inv_v
-        beq :+
-        jmp @halfv_low_nz                ; low byte != 0 -> per-bit path
-:
-        ; v low-byte zero fast path: byte-shift v, then 8 single-bit halvings of x2.
-        ldx #0
-@halfv_bshift:
-        lda fp384_inv_v+1,x
-        sta fp384_inv_v,x
-        inx
-        cpx #47
-        bne @halfv_bshift
-        lda #0
-        sta fp384_inv_v+47
-        lda #8
-        sta fp_loop
-@halfv_x2_8loop:
-        lda fp384_inv_x2
-        and #1
-        beq @halfv_x2_even
-        clc
-        ldy #0
-        ldx #48
-@halfv_x2_addmod:
-        lda fp384_inv_x2,y
-        adc (fp_misc),y
-        sta fp384_inv_x2,y
-        iny
-        dex
-        bne @halfv_x2_addmod
-        lda #0
-        adc #0
-        lsr
-        jmp @halfv_x2_doshift
-@halfv_x2_even:
-        clc
-@halfv_x2_doshift:
-.repeat 48, i
-        ror fp384_inv_x2 + (47 - i)
-.endrepeat
-        dec fp_loop
-        beq :+
-        jmp @halfv_x2_8loop
-:
-        jmp @halfv
-
-@halfv_low_nz:
         and #1
         beq :+
         jmp @comp
