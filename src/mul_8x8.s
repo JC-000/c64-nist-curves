@@ -15,11 +15,26 @@
 ; --- constants imports (for reu_fetch_mul_row) ---
 .import reu_reu_hi, reu_reu_bank, reu_command
 
-; Quarter-square table addresses (page-aligned for speed)
-sqtab_lo        = $7800         ; 512 bytes: low bytes of floor(n^2/4)
-sqtab_hi        = $7a00         ; 512 bytes: high bytes of floor(n^2/4)
-
-.export sqtab_lo, sqtab_hi
+; Quarter-square tables (page-aligned for `lda abs,x` 4-cy timing).
+; Linker-allocated in the TABLES segment so they can never collide with
+; other page-aligned tables placed there by the linker (`mul_dma_lo`,
+; `mul_dma_hi`, SHA-384 Solinas LUTs `lo_*_tbl` / `hi_*_tbl`). The two
+; halves are kept back-to-back so `>sqtab_hi - >sqtab_lo == 2` holds,
+; which the SMC dispatch below relies on. Prior to 2026-05-16 these
+; lived at hardcoded `$7800` / `$7a00`; once CODE+RODATA grew enough
+; (SHA-384 PR #23 + w-NAF PR #27 combined) the linker placed
+; mul_dma_lo at `$7a00` and stomped sqtab_hi during reu_mul_init,
+; producing garbage REU multiplication tables and a deterministic
+; boot hang (the regression that triggered the PR #29 revert).
+.segment "TABLES"
+.export sqtab_lo
+.align 256
+sqtab_lo:
+        .res 512, 0             ; low bytes of floor(n^2/4) for n=0..511
+.export sqtab_hi
+sqtab_hi:
+        .res 512, 0             ; high bytes of floor(n^2/4) for n=0..511
+.code
 
 ; =============================================================================
 ; sqtab_init - Build quarter-square lookup table at $7800-$7BFF
