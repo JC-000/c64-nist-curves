@@ -59,7 +59,7 @@ host-supplied definition wins).
 | P-384 field + point buffers | `$4D21`-`$5365` | `fp384_wide`, `fp384_tmp1..4`, `fp384_r0..3`, `fp384_inv_*`, `ec384_p1/p2/p3`, `ec384_t1..6`, `ec384_affine_x/y`. |
 | Lim-Lee anchors + working scalar (P-256) | approx. `$5367`-`$5586` | `ec_anchor1..8_x/y` (8 * 64 bytes), `cm_k` (32). Wave 7a h=8 doubled the anchor storage. |
 | Lim-Lee anchors + working scalar (P-384) | approx. `$5587`-`$58F6` | `ec_anchor1..8_384_x/y` (8 * 96 bytes), `cm_k_384` (48). |
-| Quarter-square multiply tables | `$7800`-`$7BFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. |
+| Quarter-square multiply tables | `$9C00`-`$9FFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. Moved from `$7800` on 2026-05-17 to clear the linker-managed `mul_dma_*` page-aligned slots as code grew (see CLAUDE.md "Known issues"). |
 | SHA-384 streaming state + buffers | varies (DATA segment) | `sha_state` (64) + `sha_w` (640) + `sha_abcdefgh` (64) + `sha_t` (16) + `sha_scratch` (64) + `sha_block_buf` (128) + `sha_block_len` (1) + `sha_total_len` (16) + `sha384_digest` (48) + `sha384_msg_buf` (1024 test scratch) ≈ 2065 B total. K[80] round constants (640 B) live in RODATA inside `src/sha384.s`. |
 | Zero-page | ~20 bytes, see `zp_config.s` | `$02`-`$03`, `$04`-`$0B` (SHA), `$1A`-`$1D`, `$22`-`$2D`, `$3B`, `$FB`-`$FE` by default. |
 | REU bank 0-1 | `$00_0000`-`$01_FFFF` | 128 KB full 8x8 -> 16 multiply table, built once by `reu_mul_init`. |
@@ -85,7 +85,7 @@ or point routine is used. All of them are defined in `main.s` / `points256.s`
    ```
 
 2. **`jsr sqtab_init`** — builds the quarter-square lookup tables at
-   `$7800`-`$7BFF`. Required for any multiply.
+   `$9C00`-`$9FFF`. Required for any multiply.
 
 3. **`jsr reu_mul_init`** — fills REU banks 0-1 with the full 128 KB 8x8 -> 16
    multiply table and pre-configures the REU DMA registers. Required for any
@@ -238,7 +238,8 @@ identically to the P-256 version.
 | Name | Source | Inputs | Output | Notes |
 |---|---|---|---|---|
 | `ec_point_double` / `ec_point_double_384` | points256/384 | `ec_p1` / `ec384_p1` (Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Handles Z=0 (infinity) input. Uses curve-specific `a = -3` formula. |
-| `ec_point_add` / `ec_point_add_384` | points256/384 | `ec_p1` / `ec384_p1` (Jacobian), `ec_p2` / `ec384_p2` (affine X in first half, Y in second half; Z ignored) | `ec_p3` / `ec384_p3` (Jacobian) | Mixed Jacobian+affine addition. Handles both-infinity / same-point cases. |
+| `ec_point_add` / `ec_point_add_384` | points256/384 | `ec_p1` / `ec384_p1` (Jacobian), `ec_p2` / `ec384_p2` (affine X in first half, Y in second half; Z ignored) | `ec_p3` / `ec384_p3` (Jacobian) | Mixed Jacobian+affine addition (7M + 4S). Handles both-infinity / same-point cases. The Lim-Lee comb evaluate loop uses this primitive. |
+| `ec_point_add_jj` / `ec_point_add_jj_384` | points256/384 | `ec_p1` / `ec384_p1` (full Jacobian), `ec_p2` / `ec384_p2` (full Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Full Jacobian+Jacobian addition (Bernstein-Lange add-2007-bl, 11M + 5S). Reads Z2 from `ec_p2+64` (or `ec384_p2+96`) — caller must populate it. Handles P1∞, P2∞, both∞, same projective point (tail-calls `ec_point_double`), and P1=-P2 natively. Used by `ecdsa_verify_256/384` at the `u1*G + u2*Q` join. |
 | `ec_scalar_mul` | points256 | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. |
 | `ec_scalar_mul_384` | points384 | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
 | `ec_jacobian_to_affine` | points256 | `ec_p3` | `ec_affine_x`, `ec_affine_y` | Sets `fp_misc` to p256 internally. |
@@ -485,7 +486,7 @@ overlap:
 | C64 page $4B (`mul_dma_lo`) | $4B00–$4BFF | Do not use; page-aligned DMA target |
 | C64 page $4C (`mul_dma_hi`) | $4C00–$4CFF | Do not use |
 | C64 pages ~$46–$58 | field / point buffers, Lim-Lee anchors | See §2 for the full map |
-| C64 pages $78–$7B | Quarter-square multiply tables (`sqtab_lo/hi`) | Do not use |
+| C64 pages $9C–$9F | Quarter-square multiply tables (`sqtab_lo/hi`) | Do not use |
 | C64 zero-page | ~16 slots; see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
 | REU bank 0 / bank 1 | Full 128 KB multiply table | Do not write; initialized by `reu_mul_init` |
 | REU bank 2, $0000–$3FFF | P-256 Lim-Lee anchors (16 KB, 256 × 64) | Do not write |

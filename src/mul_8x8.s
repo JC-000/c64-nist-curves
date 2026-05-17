@@ -3,8 +3,27 @@
 ; =============================================================================
 ; mul_8x8.s - Quarter-square 8x8->16 multiply + table init
 ;
-; Quarter-square table: sqtab_lo/hi at $7800-$7BFF (1024 bytes)
+; Quarter-square table: sqtab_lo/hi at $9C00-$9FFF (1024 bytes)
 ; Identity: a*b = floor((a+b)^2/4) - floor((a-b)^2/4)
+;
+; The sqtab table lives at a fixed equate (rather than as a linker-managed
+; segment) because mul_8x8 uses page-aligned SMC patching on the
+; `lda sqtab_lo,x` / `lda sqtab_hi,x` opcode hi bytes (the linker can't
+; rewrite those embedded constants at link time). The address was moved
+; from the original $7800-$7BFF to $9C00-$9FFF on 2026-05-17 as part of
+; the cofactor J+J add work: code growth (from new primitive +
+; SHA-384 LUTs + h=8 Lim-Lee comb anchors) was pushing the linker-
+; placed TABLES segment (mul_dma_lo / mul_dma_hi page-aligned slots in
+; src/data.s) past $7800, silently overlapping sqtab_lo and silently
+; producing all-zero multiply rows after sqtab_init clobbered the DMA
+; staging area. The new address gives ~$0400 of headroom above the
+; current top of DATA (~$988A) and is well below BASIC ROM at $A000
+; (which the library banks out at boot anyway). If future code growth
+; threatens to push DATA past $9C00, bump sqtab_lo/hi higher (any
+; page-aligned address that satisfies sqtab_hi = sqtab_lo + $0200 works;
+; the mul_8x8 SMC dispatch uses the page-delta equate below).
+; Issue mirrored in c64-x25519's PR #27 reland investigation
+; (MEMORY.md "w-NAF (PR #27) re-land is BLOCKED" note).
 ; =============================================================================
 
 .importzp poly_i, poly_j, poly_carry, poly_tmp
@@ -16,8 +35,8 @@
 .import reu_reu_hi, reu_reu_bank, reu_command
 
 ; Quarter-square table addresses (page-aligned for speed)
-sqtab_lo        = $7800         ; 512 bytes: low bytes of floor(n^2/4)
-sqtab_hi        = $7a00         ; 512 bytes: high bytes of floor(n^2/4)
+sqtab_lo        = $9c00         ; 512 bytes: low bytes of floor(n^2/4)
+sqtab_hi        = $9e00         ; 512 bytes: high bytes of floor(n^2/4)
 
 .export sqtab_lo, sqtab_hi
 

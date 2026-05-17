@@ -40,18 +40,17 @@
 .import ec_set_modp, ec_set_modn
 .import ec_mulp, ec_sqrp
 .import ec_n256, ec_p256
-.import ec_scalar_mul, ec_scalar_mul_var, ec_point_add, ec_jacobian_to_affine
+.import ec_scalar_mul, ec_scalar_mul_var, ec_point_add_jj
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
 .import fp_r0
 .import ec_p1, ec_p2, ec_p3
 .import ec_t1, ec_t2, ec_t3
-.import ec_affine_x, ec_affine_y
 .import ec_base_x, ec_base_y
 .import ecdsa_r, ecdsa_s, ecdsa_h, ecdsa_qx, ecdsa_qy
 .import ecdsa_w, ecdsa_u1, ecdsa_u2
 .import ecdsa_u1_be, ecdsa_u2_be
-.import ecdsa_u1g_x, ecdsa_u1g_y
+.import ecdsa_u1g_jac
 .import fp_rev_buf
 
 ; Use zp_ptr2 ($fd-$fe by default) as the struct base pointer.
@@ -252,32 +251,18 @@ ecdsa_verify_256:
         sta ec_scalar_ptr+1
         jsr ec_scalar_mul       ; ec_p3 = u1 * G (Jacobian)
 
-        ; Convert to affine -> ec_affine_x / ec_affine_y.
-        ; ec_jacobian_to_affine maps Z=0 to all-zero affine, so all-zero
-        ; in ecdsa_u1g_{x,y} marks "u1*G == infinity".
-        jsr ec_jacobian_to_affine
-
-        ; Copy ec_affine_x -> ecdsa_u1g_x
-        lda #<ec_affine_x
-        sta fp_src1
-        lda #>ec_affine_x
-        sta fp_src1+1
-        lda #<ecdsa_u1g_x
-        sta fp_dst
-        lda #>ecdsa_u1g_x
-        sta fp_dst+1
-        jsr fp_copy
-
-        ; Copy ec_affine_y -> ecdsa_u1g_y
-        lda #<ec_affine_y
-        sta fp_src1
-        lda #>ec_affine_y
-        sta fp_src1+1
-        lda #<ecdsa_u1g_y
-        sta fp_dst
-        lda #>ecdsa_u1g_y
-        sta fp_dst+1
-        jsr fp_copy
+        ; Stash full 96 B Jacobian u1*G into ecdsa_u1g_jac so it survives
+        ; the u2*Q scalar_mul that overwrites ec_p3 below. The Jacobian
+        ; form is the input we need for the J+J add at @ev_do_add; the
+        ; previous affine-conversion path paid one binary-GCD inversion
+        ; here that is now skipped (approach (a) follow-up to the
+        ; cofactor-compare landing in PR #26).
+        ldy #95
+@evcp_u1g_jac:
+        lda ec_p3,y
+        sta ecdsa_u1g_jac,y
+        dey
+        bpl @evcp_u1g_jac
 
         ; --- Step 8: u2 * Q (variable-base). ---
         ; Move Q into ec_base_x / ec_base_y.
@@ -318,8 +303,8 @@ ecdsa_verify_256:
         sta ec_scalar_ptr+1
         jsr ec_scalar_mul_var   ; ec_p3 = u2 * Q (Jacobian)
 
-        ; --- Step 9: R = u1*G + u2*Q ---
-        ; u2*Q currently in ec_p3 (Jacobian). Copy it to ec_p1.
+        ; --- Step 9: R = u1*G + u2*Q via full Jacobian+Jacobian add ---
+        ; u2*Q is currently in ec_p3 (Jacobian). Copy 96 B to ec_p1.
         ldy #95
 @evcpq:
         lda ec_p3,y
@@ -327,75 +312,27 @@ ecdsa_verify_256:
         dey
         bpl @evcpq
 
-        ; Is u2*Q infinity? (ec_p1+64..95 all zero)
-        lda #<(ec_p1+64)
-        sta fp_src1
-        lda #>(ec_p1+64)
-        sta fp_src1+1
-        jsr fp_is_zero
-        bne @ev_u2q_ok          ; NE -> nonzero, normal path
-
-        ; u2*Q is infinity: R = u1*G.
-        ; If u1*G is ALSO infinity, R = infinity -> fail.
-        ; Otherwise u1*G affine is already in ecdsa_u1g_{x,y}; use those as R.x
-        ; directly and skip the Jacobian-path entirely.
-        lda #<ecdsa_u1g_x
-        sta fp_src1
-        lda #>ecdsa_u1g_x
-        sta fp_src1+1
-        jsr fp_is_zero
-        beq @ev_u1gx_zero
-        jmp @ev_r_from_u1g      ; u1*G.x != 0 -> use it as R.x
-@ev_u1gx_zero:
-        lda #<ecdsa_u1g_y
-        sta fp_src1
-        lda #>ecdsa_u1g_y
-        sta fp_src1+1
-        jsr fp_is_zero
-        beq @ev_fail_jmp        ; both x and y zero: R = infinity -> fail
-        jmp @ev_r_from_u1g
-@ev_fail_jmp:
-        jmp @ev_fail
-
-@ev_u2q_ok:
-        ; Is u1*G infinity? (ecdsa_u1g_x == 0 AND ecdsa_u1g_y == 0)
-        ; ecdsa_u1g_x and _y are stored back-to-back (32+32 B) in data.s,
-        ; so a single 64-byte OR-fold replaces the two fp_is_zero calls
-        ; and their address setup.
-        lda #0
-        ldy #63
-@ev_u1g_orfold:
-        ora ecdsa_u1g_x,y
-        dey
-        bpl @ev_u1g_orfold
-        bne @ev_do_add          ; any nonzero byte -> not infinity
-        ; u1*G == infinity. R = u2*Q, already Jacobian in ec_p1.
+        ; Copy stashed u1*G Jacobian into ec_p2 (full 96 B including Z).
         ldy #95
-@evcpq2:
-        lda ec_p1,y
-        sta ec_p3,y
-        dey
-        bpl @evcpq2
-        jmp @ev_cofactor_cmp
-
-@ev_do_add:
-        ; Load u1*G affine into ec_p2 (X at +0, Y at +32). ec_point_add is
-        ; a mixed Jacobian+affine add; Z2 is implicitly 1 and never read.
-        ldy #31
-@evcpx:
-        lda ecdsa_u1g_x,y
+@evcp_u1g_to_p2:
+        lda ecdsa_u1g_jac,y
         sta ec_p2,y
         dey
-        bpl @evcpx
-        ldy #31
-@evcpy:
-        lda ecdsa_u1g_y,y
-        sta ec_p2+32,y
-        dey
-        bpl @evcpy
+        bpl @evcp_u1g_to_p2
 
-        jsr ec_set_modp         ; point-add works mod p
-        jsr ec_point_add        ; ec_p3 = ec_p1 + ec_p2
+        ; ec_point_add_jj handles all infinity cases natively:
+        ;   P1 inf -> ec_p3 := P2 (== u1*G)
+        ;   P2 inf -> ec_p3 := P1 (== u2*Q)
+        ;   both inf -> ec_p3 := infinity (caught by the post-add Z-test below)
+        ;   same projective point -> jmp ec_point_double on P1
+        ;   negation -> ec_p3 := infinity
+        ; The mixed-add @ev_r_from_u1g shortcut from PR #26 is now subsumed by
+        ; the cofactor compare: when u2*Q is infinity and u1*G is the result,
+        ; the J+J primitive copies u1*G's original (non-unit) Z into ec_p3,
+        ; and the cofactor compare's r * Z^2 ≡ X (mod p) gate handles both
+        ; the Z=1 and Z!=1 cases uniformly.
+        jsr ec_set_modp         ; J+J body uses mod p
+        jsr ec_point_add_jj     ; ec_p3 = ec_p1 + ec_p2
 
         ; --- Step 10: if R == infinity (ec_p3+64..95 all zero) fail. ---
         lda #<(ec_p3+64)
@@ -515,56 +452,6 @@ ecdsa_verify_256:
         rts
 @ev_cof_cmp2_fail:
         jmp @ev_fail
-
-@ev_r_from_u1g:
-        ; R is affine (u2*Q was infinity). Skip cofactor path: reduce
-        ; ecdsa_u1g_x mod n then byte-compare against ecdsa_r.
-        ; Compare ecdsa_u1g_x to ec_n256.
-        lda #<ecdsa_u1g_x
-        sta fp_src1
-        lda #>ecdsa_u1g_x
-        sta fp_src1+1
-        lda #<ec_n256
-        sta fp_src2
-        lda #>ec_n256
-        sta fp_src2+1
-        jsr fp_cmp
-        bcc @ev_u1g_cmp         ; u1g_x < n: nothing to do
-
-        ; ec_affine_x = ecdsa_u1g_x - n
-        lda #<ecdsa_u1g_x
-        sta fp_src1
-        lda #>ecdsa_u1g_x
-        sta fp_src1+1
-        lda #<ec_n256
-        sta fp_src2
-        lda #>ec_n256
-        sta fp_src2+1
-        lda #<ec_affine_x
-        sta fp_dst
-        lda #>ec_affine_x
-        sta fp_dst+1
-        jsr fp_sub
-        ldy #31
-@ev_u1g_cmp_sub:
-        lda ec_affine_x,y
-        cmp ecdsa_r,y
-        bne @ev_fail
-        dey
-        bpl @ev_u1g_cmp_sub
-        clc
-        rts
-
-@ev_u1g_cmp:
-        ldy #31
-@ev_u1g_cmp_loop:
-        lda ecdsa_u1g_x,y
-        cmp ecdsa_r,y
-        bne @ev_fail
-        dey
-        bpl @ev_u1g_cmp_loop
-        clc
-        rts
 
 @ev_fail:
         sec

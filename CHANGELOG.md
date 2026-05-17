@@ -14,6 +14,60 @@ contract).
 
 ### Added
 
+- **`ec_point_add_jj` / `ec_point_add_jj_384`** — full Jacobian + Jacobian
+  point addition primitives (Bernstein-Lange add-2007-bl, 11M + 5S +
+  ~10 add/sub) in `src/points256.s` and `src/points384.s`. Inputs read
+  ec_p1 and ec_p2 as full Jacobian points (both Z values consumed,
+  unlike the existing `ec_point_add` mixed-add which treats Z2 as 1).
+  Result lands in ec_p3. Handles all degenerate cases natively: P1 or
+  P2 = infinity (verbatim copy of the other), same projective point
+  (tail-call to `ec_point_double`), P1 = -P2 (zero output), both
+  infinity. New scratch slot per curve (`ec_jj_tmp` 32 B and
+  `ec384_jj_tmp` 48 B in `src/data.s`); existing `ec_t1..t6` cover the
+  rest of the formula. Cycle cost is roughly 2x `ec_point_add` (which
+  is 7M + 4S mixed-add) — the extra Z2 work is the price for
+  eliminating a final inversion in the verify pipeline below.
+  Tested via new `test_point_add_jj` / `test_point_add_jj_384` cases
+  in `tools/test_points{256,384}.py`: 5 edge cases (P1∞, P2∞, both∞,
+  P+P with different Z lifts → 2P, P+(-P) → ∞) + 3 random pairs each
+  with independent random Z lifts; oracle = `loader.affine_add` on the
+  affine projections.
+
+### Changed
+
+- **ECDSA verify pipeline** (`src/ecdsa256.s`, `src/ecdsa384.s`) — replace
+  the final `u1*G + u2*Q` mixed-add (and its preceding affine conversion
+  of u1*G) with the new full Jacobian + Jacobian add. Saves one binary-
+  GCD inversion + three mod-p multiplies per verify on top of the PR #26
+  cofactor-compare landing (which removed the final-point inversion).
+  The `@ev_r_from_u1g` short-circuit branch (handling the rare
+  u2*Q = infinity case via affine compare of u1*G.x mod n vs r) is
+  deleted; the cofactor compare's `r * R.Z² ≡ R.X (mod p)` gate handles
+  both Z = 1 and Z ≠ 1 cases uniformly, so it subsumes the special path.
+  Replaces `ecdsa_u1g_x` / `ecdsa_u1g_y` (32 + 32 B P-256, 48 + 48 B
+  P-384) with `ecdsa_u1g_jac` / `ecdsa384_u1g_jac` (96 B / 144 B) —
+  net DATA delta is +96 B for P-256 and +96 B for P-384 (the affine
+  pair was 64 B / 96 B; the Jacobian buffer is 96 B / 144 B). Combined
+  with the J+J primitives, total PRG delta is +1440 B (35862 → 37302).
+
+### Fixed
+
+- **`sqtab` memory-map collision** (`src/mul_8x8.s`). The quarter-square
+  multiply table at the hard-coded equate `sqtab_lo = $7800` had no
+  guard against the linker-managed `mul_dma_lo` / `mul_dma_hi` page-
+  aligned slots (`src/data.s` TABLES segment) growing into the same
+  address as code expanded. The `ec_point_add_jj` primitive's ~1 KB of
+  new code pushed `mul_dma_hi` from `$7500` to `$7800`, silently
+  aliasing `sqtab_lo` — which `sqtab_init` then clobbered, leaving
+  multiply rows zero and hanging the boot sentinel. Same bug shape as
+  the PR #27 / w-NAF re-land hang. Surgical fix: move sqtab equates
+  to `$9C00` / `$9E00`, ~1 KB of headroom above the current top of
+  DATA (~$988A). The SMC-page-delta math in `mul_8x8` is computed
+  from the equates so the page-aligned-base constant-time invariant is
+  preserved automatically. See the file header comment for the full
+  rationale and the page-bump procedure if future growth threatens
+  the new address.
+
 - **SHA-384 streaming hash** (`src/sha384.s`, ~970 lines). FIPS 180-4 §6.4
   compression with SHA-384 IV and 48-byte BE truncated output. Streaming
   ABI: `sha384_init` (clear + IV) / `sha384_update` (absorb sha_len bytes
