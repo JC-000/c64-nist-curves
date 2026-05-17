@@ -68,6 +68,14 @@ ec_t5:  .res 32, 0
 .export ec_t6
 ec_t6:  .res 32, 0
 
+; --- J+J point-add scratch (used by ec_point_add_jj, src/points256.s).
+;     One additional 32-byte slot beyond ec_t1..t6 needed for the
+;     add-2007-bl formula. Not touched by the mixed-add ec_point_add
+;     or by ec_point_double, so safe to share across nested calls
+;     within scalar_mul / verify pipelines (which serialize anyway).
+.export ec_jj_tmp
+ec_jj_tmp: .res 32, 0
+
 ; --- Affine output ---
 .export ec_affine_x
 ec_affine_x:    .res 32, 0
@@ -199,6 +207,10 @@ ec384_t4: .res 48, 0
 ec384_t5: .res 48, 0
 .export ec384_t6
 ec384_t6: .res 48, 0
+
+; --- P-384 J+J point-add scratch (mirrors ec_jj_tmp; see note above). ---
+.export ec384_jj_tmp
+ec384_jj_tmp: .res 48, 0
 
 ; --- P-384 affine output ---
 .export ec384_affine_x
@@ -337,10 +349,16 @@ ecdsa_u2:       .res 32, 0      ; LE u2 = r*w mod n
 ecdsa_u1_be:    .res 32, 0      ; BE u1 (scalar_mul input)
 .export ecdsa_u2_be
 ecdsa_u2_be:    .res 32, 0      ; BE u2 (scalar_mul_var input)
-.export ecdsa_u1g_x
-ecdsa_u1g_x:    .res 32, 0      ; LE affine X of u1*G
-.export ecdsa_u1g_y
-ecdsa_u1g_y:    .res 32, 0      ; LE affine Y of u1*G
+.export ecdsa_u1g_jac
+ecdsa_u1g_jac:  .res 96, 0      ; Jacobian u1*G (X@0, Y@32, Z@64), held
+                                 ; across the u2*Q scalar_mul so that the
+                                 ; u1*G + u2*Q join can use ec_point_add_jj
+                                 ; instead of paying for j2a inversion.
+                                 ; Replaces the previous ecdsa_u1g_x/y
+                                 ; affine pair (and the @ev_r_from_u1g
+                                 ; short-circuit branch they served);
+                                 ; the cofactor compare handles the
+                                 ; u2*Q=infinity case uniformly.
 
 ; --- fp_reverse32 staging buffer (one 32-byte scratch). Owned by ecdsa256.s.
 .export fp_rev_buf
@@ -368,10 +386,9 @@ ecdsa384_u2:    .res 48, 0      ; LE u2 = r*w mod n
 ecdsa384_u1_be: .res 48, 0      ; BE u1 (scalar_mul input)
 .export ecdsa384_u2_be
 ecdsa384_u2_be: .res 48, 0      ; BE u2 (scalar_mul_var input)
-.export ecdsa384_u1g_x
-ecdsa384_u1g_x: .res 48, 0      ; LE affine X of u1*G
-.export ecdsa384_u1g_y
-ecdsa384_u1g_y: .res 48, 0      ; LE affine Y of u1*G
+.export ecdsa384_u1g_jac
+ecdsa384_u1g_jac: .res 144, 0   ; Jacobian u1*G (X@0, Y@48, Z@96); see
+                                 ; ecdsa_u1g_jac for the rationale.
 
 ; --- fp_reverse48 staging buffer (one 48-byte scratch). Owned by ecdsa384.s.
 .export fp_rev_buf_384

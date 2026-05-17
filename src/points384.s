@@ -13,7 +13,7 @@
 .segment "CODE"
 
 ; --- Exports ---
-.export ec_point_double_384, ec_point_add_384
+.export ec_point_double_384, ec_point_add_384, ec_point_add_jj_384
 .export ec_precompute_384, ec_scalar_mul_384
 .export ec_scalar_mul_var_384
 .export ec_jacobian_to_affine_384
@@ -34,7 +34,7 @@
 
 ; --- data imports ---
 .import ec384_p1, ec384_p2, ec384_p3
-.import ec384_t1, ec384_t2, ec384_t3, ec384_t4, ec384_t5, ec384_t6
+.import ec384_t1, ec384_t2, ec384_t3, ec384_t4, ec384_t5, ec384_t6, ec384_jj_tmp
 .import ec384_affine_x, ec384_affine_y
 .import fp384_r0, fp384_tmp1
 .import ec_anchor1_384_x, ec_anchor2_384_x, ec_anchor3_384_x, ec_anchor4_384_x
@@ -763,6 +763,514 @@ ec_point_add_384:
         lda #>(ec384_p3+96)
         sta fp_dst+1
         jsr ec_mulp_384         ; Z3 = H*Z1
+
+        rts
+
+; =============================================================================
+; ec_point_add_jj_384: ec384_p3 = ec384_p1 + ec384_p2 (full Jacobian + Jacobian)
+;
+; P-384 analogue of ec_point_add_jj. Both P1 and P2 are 144-byte Jacobian
+; points (X@0..47, Y@48..95, Z@96..143). Formula: Bernstein-Lange add-2007-bl
+; (11M + 5S + ~10 add/sub) -- see src/points256.s ec_point_add_jj for the
+; full op-by-op derivation. Edge cases identical to the 32-byte variant.
+;
+; Scratch slot map (peak 7 simultaneously live):
+;   t1 = Z1Z1                 t5 = S1
+;   t2 = Z2Z2 / J             t6 = S2 / (S2 - S1) / r
+;   t3 = U1                   jj_tmp = scratch (Y1*Z2, Y2*Z1, I, ...)
+;   t4 = U2 / H / V
+;
+; Loop hazards (see CLAUDE.md "Known issues"):
+;   * 144-byte copies use X-counter countdown (ldx #144 / dex / bne) because
+;     LDA ...,y inside the loop clobbers Z; BNE must test the DEX-set N/Z,
+;     not the loaded byte. Also bit 7 of 143 ($8F) is set so ldy #143 / bpl
+;     never branches on iteration 0 (the original BPL infinity-fill bug).
+;   * 144-byte infinity-zero uses count-down-through-0 / BNE.
+; =============================================================================
+ec_point_add_jj_384:
+        ; If P1 is infinity (Z1 == 0) -> ec_p3 := P2 verbatim (144-byte copy).
+        lda #<(ec384_p1+96)
+        sta fp_src1
+        lda #>(ec384_p1+96)
+        sta fp_src1+1
+        jsr fp_is_zero_384
+        bne @jj384_p1ok
+        ldx #144
+        ldy #0
+@jj384_cp_p2:
+        lda ec384_p2,y
+        sta ec384_p3,y
+        iny
+        dex
+        bne @jj384_cp_p2
+        rts
+
+@jj384_p1ok:
+        ; If P2 is infinity (Z2 == 0) -> ec_p3 := P1 verbatim.
+        lda #<(ec384_p2+96)
+        sta fp_src1
+        lda #>(ec384_p2+96)
+        sta fp_src1+1
+        jsr fp_is_zero_384
+        bne @jj384_p2ok
+        ldx #144
+        ldy #0
+@jj384_cp_p1:
+        lda ec384_p1,y
+        sta ec384_p3,y
+        iny
+        dex
+        bne @jj384_cp_p1
+        rts
+
+@jj384_p2ok:
+        jsr ec_set_modp_384
+
+        ; t1 = Z1^2
+        lda #<(ec384_p1+96)
+        sta fp_src1
+        lda #>(ec384_p1+96)
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_dst
+        lda #>ec384_t1
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; t2 = Z2^2
+        lda #<(ec384_p2+96)
+        sta fp_src1
+        lda #>(ec384_p2+96)
+        sta fp_src1+1
+        lda #<ec384_t2
+        sta fp_dst
+        lda #>ec384_t2
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; t3 = U1 = X1 * Z2Z2
+        lda #<ec384_p1
+        sta fp_src1
+        lda #>ec384_p1
+        sta fp_src1+1
+        lda #<ec384_t2
+        sta fp_src2
+        lda #>ec384_t2
+        sta fp_src2+1
+        lda #<ec384_t3
+        sta fp_dst
+        lda #>ec384_t3
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; t4 = U2 = X2 * Z1Z1
+        lda #<ec384_p2
+        sta fp_src1
+        lda #>ec384_p2
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_src2
+        lda #>ec384_t1
+        sta fp_src2+1
+        lda #<ec384_t4
+        sta fp_dst
+        lda #>ec384_t4
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; jj_tmp = Y1 * Z2
+        lda #<(ec384_p1+48)
+        sta fp_src1
+        lda #>(ec384_p1+48)
+        sta fp_src1+1
+        lda #<(ec384_p2+96)
+        sta fp_src2
+        lda #>(ec384_p2+96)
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; t5 = S1 = (Y1*Z2) * Z2Z2 = jj_tmp * t2
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t2
+        sta fp_src2
+        lda #>ec384_t2
+        sta fp_src2+1
+        lda #<ec384_t5
+        sta fp_dst
+        lda #>ec384_t5
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; jj_tmp = Y2 * Z1
+        lda #<(ec384_p2+48)
+        sta fp_src1
+        lda #>(ec384_p2+48)
+        sta fp_src1+1
+        lda #<(ec384_p1+96)
+        sta fp_src2
+        lda #>(ec384_p1+96)
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; t6 = S2 = (Y2*Z1) * Z1Z1 = jj_tmp * t1
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_src2
+        lda #>ec384_t1
+        sta fp_src2+1
+        lda #<ec384_t6
+        sta fp_dst
+        lda #>ec384_t6
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; t4 = H = U2 - U1
+        lda #<ec384_t4
+        sta fp_src1
+        lda #>ec384_t4
+        sta fp_src1+1
+        lda #<ec384_t3
+        sta fp_src2
+        lda #>ec384_t3
+        sta fp_src2+1
+        lda #<ec384_t4
+        sta fp_dst
+        lda #>ec384_t4
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; t6 = S2 - S1
+        lda #<ec384_t6
+        sta fp_src1
+        lda #>ec384_t6
+        sta fp_src1+1
+        lda #<ec384_t5
+        sta fp_src2
+        lda #>ec384_t5
+        sta fp_src2+1
+        lda #<ec384_t6
+        sta fp_dst
+        lda #>ec384_t6
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; Check H == 0
+        lda #<ec384_t4
+        sta fp_src1
+        lda #>ec384_t4
+        sta fp_src1+1
+        jsr fp_is_zero_384
+        bne @jj384_h_nonzero
+
+        ; H == 0. Check (S2 - S1).
+        lda #<ec384_t6
+        sta fp_src1
+        lda #>ec384_t6
+        sta fp_src1+1
+        jsr fp_is_zero_384
+        bne @jj384_set_inf
+        jmp ec_point_double_384
+
+@jj384_set_inf:
+        ; H==0, S2!=S1: result = infinity (zero 144 B of ec384_p3).
+        ; Count-down-through-0 / BNE: ldy #143 / bpl would never branch on
+        ; iteration 0 (bit 7 of $8F set). Original BPL infinity-fill bug.
+        ldy #144
+        lda #0
+@jj384_sinf:
+        dey
+        sta ec384_p3,y
+        bne @jj384_sinf
+        rts
+
+@jj384_h_nonzero:
+        ; t6 = r = 2*(S2 - S1)
+        lda #<ec384_t6
+        sta fp_src1
+        lda #>ec384_t6
+        sta fp_src1+1
+        lda #<ec384_t6
+        sta fp_src2
+        lda #>ec384_t6
+        sta fp_src2+1
+        lda #<ec384_t6
+        sta fp_dst
+        lda #>ec384_t6
+        sta fp_dst+1
+        jsr fp_mod_add_384
+
+        ; --- Z3 first (uses Z1Z1=t1, Z2Z2=t2, H=t4, then frees them).
+        ; jj_tmp = Z1 + Z2
+        lda #<(ec384_p1+96)
+        sta fp_src1
+        lda #>(ec384_p1+96)
+        sta fp_src1+1
+        lda #<(ec384_p2+96)
+        sta fp_src2
+        lda #>(ec384_p2+96)
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_add_384
+
+        ; jj_tmp = (Z1+Z2)^2
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; jj_tmp = (Z1+Z2)^2 - Z1Z1
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_src2
+        lda #>ec384_t1
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; jj_tmp = jj_tmp - Z2Z2  (== 2 Z1 Z2)
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t2
+        sta fp_src2
+        lda #>ec384_t2
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; ec_p3+96 = Z3 = jj_tmp * H
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t4
+        sta fp_src2
+        lda #>ec384_t4
+        sta fp_src2+1
+        lda #<(ec384_p3+96)
+        sta fp_dst
+        lda #>(ec384_p3+96)
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; --- I = (2H)^2 (t1 free, use it)
+        lda #<ec384_t4
+        sta fp_src1
+        lda #>ec384_t4
+        sta fp_src1+1
+        lda #<ec384_t4
+        sta fp_src2
+        lda #>ec384_t4
+        sta fp_src2+1
+        lda #<ec384_t1
+        sta fp_dst
+        lda #>ec384_t1
+        sta fp_dst+1
+        jsr fp_mod_add_384
+
+        ; t1 = I = (2H)^2
+        lda #<ec384_t1
+        sta fp_src1
+        lda #>ec384_t1
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_dst
+        lda #>ec384_t1
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; t2 = J = H * I (t2 free; was Z2Z2)
+        lda #<ec384_t4
+        sta fp_src1
+        lda #>ec384_t4
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_src2
+        lda #>ec384_t1
+        sta fp_src2+1
+        lda #<ec384_t2
+        sta fp_dst
+        lda #>ec384_t2
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; t4 = V = U1 * I (reuses H slot)
+        lda #<ec384_t3
+        sta fp_src1
+        lda #>ec384_t3
+        sta fp_src1+1
+        lda #<ec384_t1
+        sta fp_src2
+        lda #>ec384_t1
+        sta fp_src2+1
+        lda #<ec384_t4
+        sta fp_dst
+        lda #>ec384_t4
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; jj_tmp = r^2
+        lda #<ec384_t6
+        sta fp_src1
+        lda #>ec384_t6
+        sta fp_src1+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; jj_tmp = r^2 - J
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t2
+        sta fp_src2
+        lda #>ec384_t2
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; t3 = 2V (reuses U1 slot, now free)
+        lda #<ec384_t4
+        sta fp_src1
+        lda #>ec384_t4
+        sta fp_src1+1
+        lda #<ec384_t4
+        sta fp_src2
+        lda #>ec384_t4
+        sta fp_src2+1
+        lda #<ec384_t3
+        sta fp_dst
+        lda #>ec384_t3
+        sta fp_dst+1
+        jsr fp_mod_add_384
+
+        ; ec384_p3 = X3 = jj_tmp - 2V
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t3
+        sta fp_src2
+        lda #>ec384_t3
+        sta fp_src2+1
+        lda #<ec384_p3
+        sta fp_dst
+        lda #>ec384_p3
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; jj_tmp = V - X3
+        lda #<ec384_t4
+        sta fp_src1
+        lda #>ec384_t4
+        sta fp_src1+1
+        lda #<ec384_p3
+        sta fp_src2
+        lda #>ec384_p3
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; jj_tmp = r * (V - X3)
+        lda #<ec384_t6
+        sta fp_src1
+        lda #>ec384_t6
+        sta fp_src1+1
+        lda #<ec384_jj_tmp
+        sta fp_src2
+        lda #>ec384_jj_tmp
+        sta fp_src2+1
+        lda #<ec384_jj_tmp
+        sta fp_dst
+        lda #>ec384_jj_tmp
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; t3 = S1 * J
+        lda #<ec384_t5
+        sta fp_src1
+        lda #>ec384_t5
+        sta fp_src1+1
+        lda #<ec384_t2
+        sta fp_src2
+        lda #>ec384_t2
+        sta fp_src2+1
+        lda #<ec384_t3
+        sta fp_dst
+        lda #>ec384_t3
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; t3 = 2*S1*J
+        lda #<ec384_t3
+        sta fp_src1
+        lda #>ec384_t3
+        sta fp_src1+1
+        lda #<ec384_t3
+        sta fp_src2
+        lda #>ec384_t3
+        sta fp_src2+1
+        lda #<ec384_t3
+        sta fp_dst
+        lda #>ec384_t3
+        sta fp_dst+1
+        jsr fp_mod_add_384
+
+        ; ec384_p3+48 = Y3 = jj_tmp - 2*S1*J
+        lda #<ec384_jj_tmp
+        sta fp_src1
+        lda #>ec384_jj_tmp
+        sta fp_src1+1
+        lda #<ec384_t3
+        sta fp_src2
+        lda #>ec384_t3
+        sta fp_src2+1
+        lda #<(ec384_p3+48)
+        sta fp_dst
+        lda #>(ec384_p3+48)
+        sta fp_dst+1
+        jsr fp_mod_sub_384
 
         rts
 

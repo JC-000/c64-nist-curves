@@ -44,7 +44,7 @@
 ;   fp_r0, fp_r1, fp_r2, fp_r3,
 ;   fp_inv_u, fp_inv_v, fp_inv_x1, fp_inv_x2, fp_inv_iter,
 ;   ec_p1, ec_p2, ec_p3,
-;   ec_t1, ec_t2, ec_t3, ec_t4, ec_t5, ec_t6,
+;   ec_t1, ec_t2, ec_t3, ec_t4, ec_t5, ec_t6, ec_jj_tmp,
 ;   ec_affine_x, ec_affine_y,
 ;   ec_base_x, ec_base_y,
 ;   ec_base384_x, ec_base384_y,
@@ -55,7 +55,7 @@
 ;   fp384_r0, fp384_r1, fp384_r2, fp384_r3,
 ;   fp384_inv_u, fp384_inv_v, fp384_inv_x1, fp384_inv_x2,
 ;   ec384_p1, ec384_p2, ec384_p3,
-;   ec384_t1, ec384_t2, ec384_t3, ec384_t4, ec384_t5, ec384_t6,
+;   ec384_t1, ec384_t2, ec384_t3, ec384_t4, ec384_t5, ec384_t6, ec384_jj_tmp,
 ;   ec384_affine_x, ec384_affine_y,
 ;   ec384_sc_byte, ec384_sc_mask, ec384_sc_nibble, ec384_sc_half,
 ;   ec384_precomp_i,
@@ -68,12 +68,12 @@
 ;   ecdsa_r, ecdsa_s, ecdsa_h, ecdsa_qx, ecdsa_qy,
 ;   ecdsa_w, ecdsa_u1, ecdsa_u2,
 ;   ecdsa_u1_be, ecdsa_u2_be,
-;   ecdsa_u1g_x, ecdsa_u1g_y,
+;   ecdsa_u1g_jac,
 ;   fp_rev_buf,
 ;   ecdsa384_r, ecdsa384_s, ecdsa384_h, ecdsa384_qx, ecdsa384_qy,
 ;   ecdsa384_w, ecdsa384_u1, ecdsa384_u2,
 ;   ecdsa384_u1_be, ecdsa384_u2_be,
-;   ecdsa384_u1g_x, ecdsa384_u1g_y,
+;   ecdsa384_u1g_jac,
 ;   fp_rev_buf_384,
 ;   ecdsa_inputs_256, ecdsa_result_256,
 ;   ecdsa_inputs_384, ecdsa_result_384,
@@ -127,7 +127,7 @@
 
 ; -----------------------------------------------------------------------------
 ; points256.s — P-256 point operations + scalar_mul + precompute
-; EXPORTS: ec_point_double, ec_point_add,
+; EXPORTS: ec_point_double, ec_point_add, ec_point_add_jj,
 ;          ec_precompute_256, ec_scalar_mul, ec_scalar_mul_var,
 ;          ec_jacobian_to_affine
 ; IMPORTS:
@@ -163,7 +163,7 @@
 ;           ecdsa_r, ecdsa_s, ecdsa_h, ecdsa_qx, ecdsa_qy,
 ;           ecdsa_w, ecdsa_u1, ecdsa_u2,
 ;           ecdsa_u1_be, ecdsa_u2_be,
-;           ecdsa_u1g_x, ecdsa_u1g_y, fp_rev_buf
+;           ecdsa_u1g_jac, fp_rev_buf
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
@@ -186,7 +186,7 @@
 ;           ecdsa384_r, ecdsa384_s, ecdsa384_h, ecdsa384_qx, ecdsa384_qy,
 ;           ecdsa384_w, ecdsa384_u1, ecdsa384_u2,
 ;           ecdsa384_u1_be, ecdsa384_u2_be,
-;           ecdsa384_u1g_x, ecdsa384_u1g_y, fp_rev_buf_384,
+;           ecdsa384_u1g_jac, fp_rev_buf_384,
 ;           ecdsa384_msg_struct_ptr, ecdsa_inputs_384, ecdsa_result_msg_384
 ; -----------------------------------------------------------------------------
 
@@ -226,7 +226,7 @@
 
 ; -----------------------------------------------------------------------------
 ; points384.s — P-384 point operations + scalar_mul + precompute
-; EXPORTS: ec_point_double_384, ec_point_add_384,
+; EXPORTS: ec_point_double_384, ec_point_add_384, ec_point_add_jj_384,
 ;          ec_precompute_384, ec_scalar_mul_384, ec_scalar_mul_var_384,
 ;          ec_jacobian_to_affine_384
 ; IMPORTS:

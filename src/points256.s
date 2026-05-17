@@ -12,7 +12,7 @@
 .segment "CODE"
 
 ; --- Exports ---
-.export ec_point_double, ec_point_add
+.export ec_point_double, ec_point_add, ec_point_add_jj
 .export ec_precompute_256, ec_scalar_mul, ec_scalar_mul_var
 .export ec_jacobian_to_affine
 
@@ -31,7 +31,7 @@
 
 ; --- data imports ---
 .import ec_p1, ec_p2, ec_p3
-.import ec_t1, ec_t2, ec_t3, ec_t4, ec_t5, ec_t6
+.import ec_t1, ec_t2, ec_t3, ec_t4, ec_t5, ec_t6, ec_jj_tmp
 .import ec_affine_x, ec_affine_y
 .import fp_r0, fp_tmp1
 .import ec_aff2g_256_x, ec_aff2g_256_y
@@ -756,6 +756,532 @@ ec_point_add:
         lda #>(ec_p3+64)
         sta fp_dst+1
         jsr ec_mulp             ; Z3 = H*Z1
+
+        rts
+
+; =============================================================================
+; ec_point_add_jj: ec_p3 = ec_p1 + ec_p2 (full Jacobian + Jacobian)
+;
+; Both P1 and P2 are Jacobian (X,Y,Z each 32 bytes); unlike ec_point_add
+; above (which is a mixed Jacobian+affine add and treats Z2 as implicitly
+; 1), this routine reads Z2 from ec_p2+64. Formula: Bernstein-Lange
+; add-2007-bl (11M + 5S + ~10 add/sub):
+;
+;   Z1Z1 = Z1^2
+;   Z2Z2 = Z2^2
+;   U1   = X1 * Z2Z2
+;   U2   = X2 * Z1Z1
+;   S1   = Y1 * Z2 * Z2Z2
+;   S2   = Y2 * Z1 * Z1Z1
+;   H    = U2 - U1
+;   I    = (2H)^2
+;   J    = H * I
+;   r    = 2 * (S2 - S1)
+;   V    = U1 * I
+;   X3   = r^2 - J - 2*V
+;   Y3   = r*(V - X3) - 2*S1*J
+;   Z3   = ((Z1+Z2)^2 - Z1Z1 - Z2Z2) * H
+;
+; Edge cases handled:
+;   * P1 = infinity (Z1=0) -> ec_p3 := P2
+;   * P2 = infinity (Z2=0) -> ec_p3 := P1
+;   * P1 == P2 (H==0 and r==0)  -> tail-call ec_point_double on P1
+;   * P1 == -P2 (H==0 and r!=0) -> ec_p3 := infinity
+;   * Both infinity -> ec_p3 := P2 (which is also infinity)
+;
+; Scratch slot map (peak 7 simultaneously live):
+;   t1 = Z1Z1                 t5 = S1
+;   t2 = Z2Z2 / J             t6 = S2 / (S2 - S1) / r
+;   t3 = U1                   jj_tmp = scratch (Y1*Z2, Y2*Z1, I, ...)
+;   t4 = U2 / H / V
+;
+; Output: ec_p3 (Jacobian).
+; =============================================================================
+ec_point_add_jj:
+        ; If P1 is infinity (Z1==0): result = P2 (verbatim copy, 96 B).
+        lda #<(ec_p1+64)
+        sta fp_src1
+        lda #>(ec_p1+64)
+        sta fp_src1+1
+        jsr fp_is_zero
+        bne @jj_p1ok
+        ; Copy ec_p2 -> ec_p3 (96 B). ldy #95 / dey / bpl is safe (95 = $5F,
+        ; bit 7 clear) AND BPL tests N from DEY, not from the LDA byte (no
+        ; LDA-clobbers-Z hazard here because BPL reads N, which DEY just set).
+        ldy #95
+@jj_cp_p2:
+        lda ec_p2,y
+        sta ec_p3,y
+        dey
+        bpl @jj_cp_p2
+        rts
+
+@jj_p1ok:
+        ; If P2 is infinity (Z2==0): result = P1.
+        lda #<(ec_p2+64)
+        sta fp_src1
+        lda #>(ec_p2+64)
+        sta fp_src1+1
+        jsr fp_is_zero
+        bne @jj_p2ok
+        ldy #95
+@jj_cp_p1:
+        lda ec_p1,y
+        sta ec_p3,y
+        dey
+        bpl @jj_cp_p1
+        rts
+
+@jj_p2ok:
+        jsr ec_set_modp
+
+        ; t1 = Z1^2
+        lda #<(ec_p1+64)
+        sta fp_src1
+        lda #>(ec_p1+64)
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_dst
+        lda #>ec_t1
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; t2 = Z2^2
+        lda #<(ec_p2+64)
+        sta fp_src1
+        lda #>(ec_p2+64)
+        sta fp_src1+1
+        lda #<ec_t2
+        sta fp_dst
+        lda #>ec_t2
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; t3 = U1 = X1 * Z2Z2 = X1 * t2
+        lda #<ec_p1
+        sta fp_src1
+        lda #>ec_p1
+        sta fp_src1+1
+        lda #<ec_t2
+        sta fp_src2
+        lda #>ec_t2
+        sta fp_src2+1
+        lda #<ec_t3
+        sta fp_dst
+        lda #>ec_t3
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; t4 = U2 = X2 * Z1Z1 = X2 * t1
+        lda #<ec_p2
+        sta fp_src1
+        lda #>ec_p2
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_src2
+        lda #>ec_t1
+        sta fp_src2+1
+        lda #<ec_t4
+        sta fp_dst
+        lda #>ec_t4
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; jj_tmp = Y1 * Z2
+        lda #<(ec_p1+32)
+        sta fp_src1
+        lda #>(ec_p1+32)
+        sta fp_src1+1
+        lda #<(ec_p2+64)
+        sta fp_src2
+        lda #>(ec_p2+64)
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; t5 = S1 = (Y1*Z2) * Z2Z2 = jj_tmp * t2
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t2
+        sta fp_src2
+        lda #>ec_t2
+        sta fp_src2+1
+        lda #<ec_t5
+        sta fp_dst
+        lda #>ec_t5
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; jj_tmp = Y2 * Z1
+        lda #<(ec_p2+32)
+        sta fp_src1
+        lda #>(ec_p2+32)
+        sta fp_src1+1
+        lda #<(ec_p1+64)
+        sta fp_src2
+        lda #>(ec_p1+64)
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; t6 = S2 = (Y2*Z1) * Z1Z1 = jj_tmp * t1
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_src2
+        lda #>ec_t1
+        sta fp_src2+1
+        lda #<ec_t6
+        sta fp_dst
+        lda #>ec_t6
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; t4 = H = U2 - U1 = t4 - t3
+        lda #<ec_t4
+        sta fp_src1
+        lda #>ec_t4
+        sta fp_src1+1
+        lda #<ec_t3
+        sta fp_src2
+        lda #>ec_t3
+        sta fp_src2+1
+        lda #<ec_t4
+        sta fp_dst
+        lda #>ec_t4
+        sta fp_dst+1
+        jsr fp_mod_sub
+
+        ; t6 = S2 - S1 = t6 - t5
+        lda #<ec_t6
+        sta fp_src1
+        lda #>ec_t6
+        sta fp_src1+1
+        lda #<ec_t5
+        sta fp_src2
+        lda #>ec_t5
+        sta fp_src2+1
+        lda #<ec_t6
+        sta fp_dst
+        lda #>ec_t6
+        sta fp_dst+1
+        jsr fp_mod_sub          ; t6 = S2 - S1
+
+        ; Check H == 0.
+        lda #<ec_t4
+        sta fp_src1
+        lda #>ec_t4
+        sta fp_src1+1
+        jsr fp_is_zero
+        bne @jj_h_nonzero
+
+        ; H == 0. Check (S2 - S1). If also 0 -> double; else -> infinity.
+        lda #<ec_t6
+        sta fp_src1
+        lda #>ec_t6
+        sta fp_src1+1
+        jsr fp_is_zero
+        bne @jj_set_inf
+        ; Same projective point (H==0 && r==0): double P1.
+        jmp ec_point_double
+
+@jj_set_inf:
+        ; H==0, S2!=S1: P1 == -P2, result = infinity (zero all of ec_p3).
+        ldy #95
+        lda #0
+@jj_sinf:
+        sta ec_p3,y
+        dey
+        bpl @jj_sinf
+        rts
+
+@jj_h_nonzero:
+        ; t6 = r = 2 * (S2 - S1) = t6 + t6 (mod p)
+        lda #<ec_t6
+        sta fp_src1
+        lda #>ec_t6
+        sta fp_src1+1
+        lda #<ec_t6
+        sta fp_src2
+        lda #>ec_t6
+        sta fp_src2+1
+        lda #<ec_t6
+        sta fp_dst
+        lda #>ec_t6
+        sta fp_dst+1
+        jsr fp_mod_add
+
+        ; --- Z3 first (uses Z1Z1=t1, Z2Z2=t2, H=t4, then frees them).
+        ; jj_tmp = Z1 + Z2
+        lda #<(ec_p1+64)
+        sta fp_src1
+        lda #>(ec_p1+64)
+        sta fp_src1+1
+        lda #<(ec_p2+64)
+        sta fp_src2
+        lda #>(ec_p2+64)
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_add
+
+        ; jj_tmp = (Z1+Z2)^2
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; jj_tmp = (Z1+Z2)^2 - Z1Z1 = jj_tmp - t1
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_src2
+        lda #>ec_t1
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub
+
+        ; jj_tmp = jj_tmp - Z2Z2 = jj_tmp - t2    (== 2 Z1 Z2)
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t2
+        sta fp_src2
+        lda #>ec_t2
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub
+
+        ; ec_p3+64 = Z3 = (...) * H = jj_tmp * t4
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t4
+        sta fp_src2
+        lda #>ec_t4
+        sta fp_src2+1
+        lda #<(ec_p3+64)
+        sta fp_dst
+        lda #>(ec_p3+64)
+        sta fp_dst+1
+        jsr ec_mulp             ; Z3 written.  t1, t2 are now free.
+
+        ; --- I = (2H)^2 (t1 free, use it)
+        ; t1 = 2H = H + H
+        lda #<ec_t4
+        sta fp_src1
+        lda #>ec_t4
+        sta fp_src1+1
+        lda #<ec_t4
+        sta fp_src2
+        lda #>ec_t4
+        sta fp_src2+1
+        lda #<ec_t1
+        sta fp_dst
+        lda #>ec_t1
+        sta fp_dst+1
+        jsr fp_mod_add
+
+        ; t1 = I = (2H)^2
+        lda #<ec_t1
+        sta fp_src1
+        lda #>ec_t1
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_dst
+        lda #>ec_t1
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; --- J = H * I (use t2, which is free)
+        lda #<ec_t4
+        sta fp_src1
+        lda #>ec_t4
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_src2
+        lda #>ec_t1
+        sta fp_src2+1
+        lda #<ec_t2
+        sta fp_dst
+        lda #>ec_t2
+        sta fp_dst+1
+        jsr ec_mulp             ; t2 = J. H (t4) is no longer needed; reuse it for V.
+
+        ; --- V = U1 * I = t3 * t1 -> t4
+        lda #<ec_t3
+        sta fp_src1
+        lda #>ec_t3
+        sta fp_src1+1
+        lda #<ec_t1
+        sta fp_src2
+        lda #>ec_t1
+        sta fp_src2+1
+        lda #<ec_t4
+        sta fp_dst
+        lda #>ec_t4
+        sta fp_dst+1
+        jsr ec_mulp             ; t4 = V. U1 (t3) is no longer needed.
+
+        ; --- X3 = r^2 - J - 2*V
+        ; jj_tmp = r^2 = t6^2
+        lda #<ec_t6
+        sta fp_src1
+        lda #>ec_t6
+        sta fp_src1+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; jj_tmp = r^2 - J = jj_tmp - t2
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t2
+        sta fp_src2
+        lda #>ec_t2
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub
+
+        ; t3 = 2V = V + V = t4 + t4
+        lda #<ec_t4
+        sta fp_src1
+        lda #>ec_t4
+        sta fp_src1+1
+        lda #<ec_t4
+        sta fp_src2
+        lda #>ec_t4
+        sta fp_src2+1
+        lda #<ec_t3
+        sta fp_dst
+        lda #>ec_t3
+        sta fp_dst+1
+        jsr fp_mod_add
+
+        ; ec_p3 = X3 = jj_tmp - 2V = jj_tmp - t3
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t3
+        sta fp_src2
+        lda #>ec_t3
+        sta fp_src2+1
+        lda #<ec_p3
+        sta fp_dst
+        lda #>ec_p3
+        sta fp_dst+1
+        jsr fp_mod_sub          ; X3 written.
+
+        ; --- Y3 = r*(V - X3) - 2*S1*J
+        ; jj_tmp = V - X3 = t4 - ec_p3
+        lda #<ec_t4
+        sta fp_src1
+        lda #>ec_t4
+        sta fp_src1+1
+        lda #<ec_p3
+        sta fp_src2
+        lda #>ec_p3
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr fp_mod_sub
+
+        ; jj_tmp = r * (V - X3) = t6 * jj_tmp
+        lda #<ec_t6
+        sta fp_src1
+        lda #>ec_t6
+        sta fp_src1+1
+        lda #<ec_jj_tmp
+        sta fp_src2
+        lda #>ec_jj_tmp
+        sta fp_src2+1
+        lda #<ec_jj_tmp
+        sta fp_dst
+        lda #>ec_jj_tmp
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; t3 = S1 * J = t5 * t2
+        lda #<ec_t5
+        sta fp_src1
+        lda #>ec_t5
+        sta fp_src1+1
+        lda #<ec_t2
+        sta fp_src2
+        lda #>ec_t2
+        sta fp_src2+1
+        lda #<ec_t3
+        sta fp_dst
+        lda #>ec_t3
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; t3 = 2*S1*J = t3 + t3
+        lda #<ec_t3
+        sta fp_src1
+        lda #>ec_t3
+        sta fp_src1+1
+        lda #<ec_t3
+        sta fp_src2
+        lda #>ec_t3
+        sta fp_src2+1
+        lda #<ec_t3
+        sta fp_dst
+        lda #>ec_t3
+        sta fp_dst+1
+        jsr fp_mod_add
+
+        ; ec_p3+32 = Y3 = jj_tmp - 2*S1*J = jj_tmp - t3
+        lda #<ec_jj_tmp
+        sta fp_src1
+        lda #>ec_jj_tmp
+        sta fp_src1+1
+        lda #<ec_t3
+        sta fp_src2
+        lda #>ec_t3
+        sta fp_src2+1
+        lda #<(ec_p3+32)
+        sta fp_dst
+        lda #>(ec_p3+32)
+        sta fp_dst+1
+        jsr fp_mod_sub
 
         rts
 

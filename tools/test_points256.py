@@ -293,6 +293,148 @@ def test_point_add(transport, labels, rng, n_random):
     return passed, failed
 
 
+def c64_add_jj(transport, labels, p1x, p1y, p1z, p2x, p2y, p2z):
+    """Drive ec_point_add_jj (full Jacobian+Jacobian add)."""
+    write_jacobian_point(transport, labels["ec_p1"], p1x, p1y, p1z)
+    write_jacobian_point(transport, labels["ec_p2"], p2x, p2y, p2z)
+    write_bytes(transport, labels["ec_p3"], b"\x5A" * 96)
+    jsr(transport, labels["ec_point_add_jj"], timeout=1200.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    return jacobian_to_affine(p3x, p3y, p3z, "p256")
+
+
+def _random_z_lift(x, y, z, p):
+    """Project an affine (x, y) onto Jacobian (X, Y, Z) with X = x*Z^2, Y = y*Z^3."""
+    return (x * z * z) % p, (y * z * z * z) % p, z
+
+
+def test_point_add_jj(transport, labels, rng, n_random):
+    """ec_point_add_jj (full J+J add) - edge cases + random pairs with random Z lifts.
+
+    Edge cases:
+      1. P1 = infinity (Z1=0)     -> ec_p3 := P2
+      2. P2 = infinity (Z2=0)     -> ec_p3 := P1
+      3. Both infinity            -> ec_p3 := infinity
+      4. P1 == P2 (same point with different Z lifts) -> 2*P1
+      5. P1 == -P2 (same x, neg y, with different Z lifts) -> infinity
+
+    Then n_random pairs of distinct random points each lifted to random Z's.
+    """
+    passed = failed = 0
+
+    kats = load_nist_scalar_mul_kats("p256")
+    Px, Py = kats[0]["qx"], kats[0]["qy"]
+    Qx, Qy = G_X, G_Y
+
+    # Edge 1: P1 infinity (Z1 = 0). Expect ec_p3 == P2 verbatim (lifted Z2).
+    print("  Edge: P1 = infinity, P2 = random Jacobian")
+    z2 = rng.randrange(2, P256 - 1)
+    P2x, P2y, P2z = _random_z_lift(Qx, Qy, z2, P256)
+    write_jacobian_point(transport, labels["ec_p1"], 0, 0, 0)
+    write_jacobian_point(transport, labels["ec_p2"], P2x, P2y, P2z)
+    write_bytes(transport, labels["ec_p3"], b"\xA5" * 96)
+    jsr(transport, labels["ec_point_add_jj"], timeout=300.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    if (p3x, p3y, p3z) == (P2x, P2y, P2z):
+        passed += 1
+        print("  PASS: infinity + P2 yielded P2 verbatim")
+    else:
+        failed += 1
+        print(f"  FAIL: infinity + P2 mismatch; X={p3x:#x} Y={p3y:#x} Z={p3z:#x}")
+
+    # Edge 2: P2 infinity (Z2 = 0). Expect ec_p3 == P1 verbatim.
+    print("  Edge: P1 = random Jacobian, P2 = infinity")
+    z1 = rng.randrange(2, P256 - 1)
+    P1x, P1y, P1z = _random_z_lift(Px, Py, z1, P256)
+    write_jacobian_point(transport, labels["ec_p1"], P1x, P1y, P1z)
+    write_jacobian_point(transport, labels["ec_p2"], 0, 0, 0)
+    write_bytes(transport, labels["ec_p3"], b"\xA5" * 96)
+    jsr(transport, labels["ec_point_add_jj"], timeout=300.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    if (p3x, p3y, p3z) == (P1x, P1y, P1z):
+        passed += 1
+        print("  PASS: P1 + infinity yielded P1 verbatim")
+    else:
+        failed += 1
+        print(f"  FAIL: P1 + infinity mismatch; X={p3x:#x} Y={p3y:#x} Z={p3z:#x}")
+
+    # Edge 3: both infinity
+    print("  Edge: both infinity")
+    write_jacobian_point(transport, labels["ec_p1"], 0, 0, 0)
+    write_jacobian_point(transport, labels["ec_p2"], 0, 0, 0)
+    write_bytes(transport, labels["ec_p3"], b"\xA5" * 96)
+    jsr(transport, labels["ec_point_add_jj"], timeout=300.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    if (p3x, p3y, p3z) == (0, 0, 0):
+        passed += 1
+        print("  PASS: inf + inf -> inf")
+    else:
+        failed += 1
+        print(f"  FAIL: inf + inf gave non-zero; X={p3x:#x} Y={p3y:#x} Z={p3z:#x}")
+
+    # Edge 4: same projective point, different Z lifts -> 2*P
+    print("  Edge: P + P (different Z lifts) -> 2*P")
+    z1 = rng.randrange(2, P256 - 1)
+    z2 = rng.randrange(2, P256 - 1)
+    P1x, P1y, P1z = _random_z_lift(Px, Py, z1, P256)
+    P2x, P2y, P2z = _random_z_lift(Px, Py, z2, P256)
+    got = c64_add_jj(transport, labels, P1x, P1y, P1z, P2x, P2y, P2z)
+    expected = affine_double((Px, Py), "p256")
+    if got == expected:
+        passed += 1
+        print("  PASS: P + P (different Z) = 2*P")
+    else:
+        failed += 1
+        print(f"  FAIL: P + P (different Z) mismatch; got={got} expected={expected}")
+
+    # Edge 5: P + (-P) -> infinity
+    print("  Edge: P + (-P) -> infinity")
+    z1 = rng.randrange(2, P256 - 1)
+    z2 = rng.randrange(2, P256 - 1)
+    P1x, P1y, P1z = _random_z_lift(Px, Py, z1, P256)
+    P2x, P2y, P2z = _random_z_lift(Px, (-Py) % P256, z2, P256)
+    write_jacobian_point(transport, labels["ec_p1"], P1x, P1y, P1z)
+    write_jacobian_point(transport, labels["ec_p2"], P2x, P2y, P2z)
+    write_bytes(transport, labels["ec_p3"], b"\xA5" * 96)
+    jsr(transport, labels["ec_point_add_jj"], timeout=300.0)
+    p3x, p3y, p3z = read_jacobian_point(transport, labels["ec_p3"])
+    if (p3x, p3y, p3z) == (0, 0, 0):
+        passed += 1
+        print("  PASS: P + (-P) -> infinity (all-zero Jacobian)")
+    else:
+        failed += 1
+        print(f"  FAIL: P + (-P) gave non-zero; X={p3x:#x} Y={p3y:#x} Z={p3z:#x}")
+
+    # Random pairs with random Z lifts
+    for i in range(n_random):
+        for _ in range(5):
+            ax, ay = random_affine_point(rng)
+            bx, by = random_affine_point(rng)
+            if ax != bx:
+                break
+        else:
+            continue
+        z1 = rng.randrange(2, P256 - 1)
+        z2 = rng.randrange(2, P256 - 1)
+        P1x, P1y, P1z = _random_z_lift(ax, ay, z1, P256)
+        P2x, P2y, P2z = _random_z_lift(bx, by, z2, P256)
+        print(f"  Random pair[{i}] with Z lifts...")
+        t0 = time.time()
+        got = c64_add_jj(transport, labels, P1x, P1y, P1z, P2x, P2y, P2z)
+        dt = time.time() - t0
+        expected = affine_add((ax, ay), (bx, by), "p256")
+        if got == expected:
+            passed += 1
+            print(f"  PASS ({dt:.1f}s): random[{i}]")
+        else:
+            failed += 1
+            print(f"  FAIL ({dt:.1f}s): random[{i}]")
+            print(f"    expected={expected}")
+            print(f"    got     ={got}")
+
+    return passed, failed
+
+
 def test_jacobian_to_affine(transport, labels, rng, n_random):
     """Feed ec_point_double random Jacobian points with Z != 1.
 
@@ -594,6 +736,8 @@ def run_tests(transport, labels, rng, run_full):
          lambda: test_point_double(transport, labels, rng, n_dbl)),
         (f"Point addition ({n_add} random + 1 NIST)",
          lambda: test_point_add(transport, labels, rng, n_add)),
+        (f"Point add J+J ({n_add} random pairs + 5 edge cases)",
+         lambda: test_point_add_jj(transport, labels, rng, n_add)),
         (f"Jacobian doubling with random Z ({n_j2a})",
          lambda: test_jacobian_to_affine(transport, labels, rng, n_j2a)),
         ("Point at infinity (double)",

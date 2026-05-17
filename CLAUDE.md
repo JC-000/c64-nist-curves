@@ -29,7 +29,7 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   source-level stepping / breakpoints / span lookup. `.dbg` is a separate
   artifact; the .prg is byte-identical with or without `-g` (verified by
   sha256 round-trip).
-Current PRG size: ~23.8 KB (24322 bytes), loaded at $0801.
+Current PRG size: ~36.4 KB (37302 bytes), loaded at $0801.
 
 `src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
 ACME build path used in side-by-side diff testing only — do not edit
@@ -247,16 +247,44 @@ gets stale otherwise).
 
 ### Jacobian addition naming
 
-`ec_point_add` (src/points256.s) and `ec_point_add_384` (src/points384.s) are
-**mixed Jacobian+affine addition** routines (7M + 4S), NOT full
-Jacobian+Jacobian adds. The second operand P2 is treated as affine with Z2
-implicitly 1; the function body never reads a Z2 byte. The Lim-Lee comb
-evaluate loop relies on this — table entries are stored X,Y only in REU
-bank 2, fetched into P2, and folded via ec_point_add without any Z=1 fill
-step. The name is retained for historical continuity but the body is a
-mixed-add formula. The only place a real Z=1 fill happens is the comb
-*seeding* branch (first non-zero column when the accumulator is still ∞,
-src/points256.s:1393-1400 and src/points384.s:1318-1325).
+The library provides **two** point-add primitives per curve, with
+different operand contracts and different consumers:
+
+- **`ec_point_add` / `ec_point_add_384`** (src/points256.s, src/points384.s):
+  **mixed Jacobian + affine addition** (7M + 4S). P1 (ec_p1/ec384_p1) is
+  read as full Jacobian; P2 (ec_p2/ec384_p2) is treated as affine with Z2
+  implicitly 1 — the function body never reads a Z2 byte. The Lim-Lee
+  comb evaluate loop relies on this: table entries are stored X,Y only
+  in REU bank 2, fetched into P2, and folded via the mixed add without a
+  Z=1 fill step. The only place a real Z=1 fill happens is the comb
+  *seeding* branch (first non-zero column when the accumulator is still
+  ∞, src/points256.s:1393-1400 and src/points384.s:1318-1325).
+
+- **`ec_point_add_jj` / `ec_point_add_jj_384`** (Bernstein-Lange
+  add-2007-bl, 11M + 5S + ~10 add/sub): **full Jacobian + Jacobian
+  addition**. Both ec_p1 and ec_p2 are read as Jacobian points
+  (including Z). Handles P1∞, P2∞, both∞, same projective point
+  (tail-calls `ec_point_double`), and P1=-P2 (zeros ec_p3) natively.
+  One added scratch slot per curve (`ec_jj_tmp` 32 B / `ec384_jj_tmp`
+  48 B in src/data.s); the rest of the formula maps onto the existing
+  `ec_t1..t6` slots.
+
+The ECDSA verify pipeline (`ecdsa_verify_256` / `ecdsa_verify_384`)
+uses `ec_point_add_jj` at the `u1*G + u2*Q` join: u1*G is held in a
+persistent Jacobian buffer (`ecdsa_u1g_jac` 96 B / `ecdsa384_u1g_jac`
+144 B in src/data.s) across the u2*Q scalar_mul, copied into ec_p2
+just before the J+J call. This eliminates the affine conversion that
+PR #26's cofactor compare landing had left in place (one binary-GCD
+inversion + 3 mod-p multiplies per verify). The `@ev_r_from_u1g`
+short-circuit branch from PR #26 is no longer needed: the J+J
+primitive's native P2-infinity handling plus the cofactor compare's
+`r * R.Z² ≡ R.X (mod p)` gate cover the u2*Q=infinity case uniformly
+for both Z=1 and Z≠1 result lifts.
+
+The mixed `ec_point_add` is still load-bearing for the Lim-Lee comb
+evaluate loop — its affine-only fast path saves the 2 Z² multiplies the
+J+J version pays. Both primitives stay in the library; consumers pick by
+operand-shape need.
 
 ### ECDSA verify API
 
@@ -282,11 +310,14 @@ consumption by TLS callers (planned `c64-https` integration path).
   `fp_mod_inv` (mod n for `w = s^-1`), and `fp_mod_mul_n` (mod-n multiply
   for `u1 = h*w`, `u2 = r*w`). All of those remain callable directly for
   consumers who want to drive the LE primitives without the BE wrapper.
-- **Buffers:** ~416 B P-256 scratch (`ecdsa_r/s/h/qx/qy`, `ecdsa_w/u1/u2`,
-  `ecdsa_u1_be/u2_be`, `ecdsa_u1g_x/y`, `fp_rev_buf`) + ~627 B P-384
-  equivalents (includes `ecdsa384_msg_struct_ptr` (2 B) and
-  `ecdsa_result_msg_384` (1 B) added by `ecdsa_verify_with_message_384`),
-  all declared in src/data.s.
+- **Buffers:** ~448 B P-256 scratch (`ecdsa_r/s/h/qx/qy`, `ecdsa_w/u1/u2`,
+  `ecdsa_u1_be/u2_be`, `ecdsa_u1g_jac` 96 B, `fp_rev_buf`) + ~675 B P-384
+  equivalents (includes `ecdsa384_u1g_jac` 144 B, `ecdsa384_msg_struct_ptr`
+  (2 B) and `ecdsa_result_msg_384` (1 B) added by
+  `ecdsa_verify_with_message_384`), all declared in src/data.s. The
+  `_u1g_jac` buffers replace the previous `ecdsa_u1g_x/y` affine pair
+  (eliminated when the join switched from mixed `ec_point_add` to
+  `ec_point_add_jj`; see "Jacobian addition naming" above).
 - **`ecdsa_verify_with_message_384` (src/ecdsa384.s):** one-shot
   hash-then-verify wrapper. Same A/X-pointer ABI and 240 B BE struct
   layout as `ecdsa_verify_384` (the `h` slot is overwritten with the
@@ -378,6 +409,22 @@ keep all library calls on a single thread of control.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
+- **`sqtab` memory-map equate (`src/mul_8x8.s` line 19-20)**. The
+  quarter-square multiply tables `sqtab_lo` and `sqtab_hi` live at the
+  hard-coded equates `$9C00` / `$9E00` (1 KB total), bumped from the
+  original `$7800` / `$7A00` on 2026-05-17 because code growth from the
+  J+J primitives + SHA-384 LUTs + h=8 Lim-Lee anchors was pushing the
+  linker-managed `mul_dma_lo` / `mul_dma_hi` page-aligned TABLES slots
+  (in `src/data.s`) into the same address as `sqtab_lo`, silently
+  clobbering the multiply table at `sqtab_init` time and hanging the
+  `$02A7` boot sentinel. Same bug shape as the PR #27 / w-NAF re-land
+  hang noted in MEMORY.md. The new address gives ~$0400 of headroom
+  above the current top of DATA (~$988A) and stays below BASIC ROM
+  `$A000`. The SMC page-delta math in `mul_8x8` is computed from the
+  equates so the page-aligned-base constant-time invariant is preserved
+  automatically. If future code growth threatens the new address, bump
+  `sqtab_lo` / `sqtab_hi` higher (any page-aligned pair satisfying
+  `sqtab_hi = sqtab_lo + $0200` works).
 - **Issue #33-class REU register-residue defence (ported from
   c64-x25519 commit 817f525, 2026-05-10)**. The library's per-row REU
   DMA fetch in `fp_mul`/`fp_sqr` (256+384) writes only 3 of 8 REU
