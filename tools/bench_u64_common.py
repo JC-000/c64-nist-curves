@@ -29,7 +29,6 @@ if os.path.isdir(_HARNESS_SRC) and _HARNESS_SRC not in sys.path:
 from c64_test_harness.backends.ultimate64 import Ultimate64Transport  # noqa: E402
 from c64_test_harness.backends.ultimate64_client import (  # noqa: E402
     Ultimate64Client,
-    Ultimate64Error,
 )
 from c64_test_harness.backends.ultimate64_helpers import (  # noqa: E402
     get_turbo_mhz,
@@ -42,7 +41,10 @@ from c64_test_harness.backends.device_lock import (  # noqa: E402
     DeviceLock,
     DeviceLockTimeout,
 )
-from c64_test_harness.backends.ultimate64_probe import probe_u64  # noqa: E402
+from c64_test_harness.backends.ultimate64_probe import (  # noqa: E402
+    probe_u64,
+    liveness_probe,
+)
 from c64_test_harness.labels import Labels  # noqa: E402
 
 
@@ -419,87 +421,6 @@ def acquire_device_lock_or_exit(host, *,
     else:
         print("  [lock] acquired", flush=True)
     return lock
-
-
-# ---------------------------------------------------------------------------
-# Writemem health probe (POST 404 detection)
-# ---------------------------------------------------------------------------
-
-#: Scratch address used by :func:`writemem_health_probe`.  Adjacent to the
-#: existing $02A7 init sentinel and $02A8 done sentinel but DISTINCT —
-#: deliberately avoids those bytes so the probe never collides with a
-#: post-init poll.  Within the BASIC RS-232 stash area which the C64
-#: KERNAL never touches without explicit I/O.
-WRITEMEM_PROBE_ADDR = 0x02A9
-
-#: Distinctive payload (avoids 0x00 / 0xFF so a stuck readback can't masquerade
-#: as success).  Length 64 forces the POST raw-byte path when paired with
-#: ``write_mem_query_threshold=0`` — see :func:`writemem_health_probe`.
-_WRITEMEM_PROBE_PAYLOAD = bytes(((0xA5 ^ i) & 0xFF) for i in range(64))
-
-
-def writemem_health_probe(host, *, password=None,
-                          addr=WRITEMEM_PROBE_ADDR,
-                          timeout=10.0):
-    """Detect the U64E 3.14d POST /v1/machine:writemem 404 degradation.
-
-    The firmware bug surfaces as **HTTP 404 "Could not read data from
-    attachment"** on the POST raw-byte form of ``write_mem``; the PUT
-    ``?data=<hex>`` form keeps working through it.  ``probe_u64(...).reachable``
-    only exercises GET endpoints and so cannot see this state.  The bug
-    clears only via physical power-cycle; ``reset`` / ``reboot`` over REST
-    may NOT recover it, and repeated POST hits against the degraded endpoint
-    can wedge the entire TCP stack.
-
-    This probe builds a one-shot :class:`Ultimate64Client` with
-    ``write_mem_query_threshold=0`` to FORCE the POST path regardless of
-    detected firmware version, writes a 64-byte distinctive payload to
-    *addr*, reads it back, and verifies the round-trip.  On a healthy
-    device this is a few hundred ms.
-
-    Returns ``(ok: bool, reason: str)``.  ``ok=True`` only when the
-    round-trip matches byte-for-byte.  On HTTP 404 the *reason* names
-    the bug explicitly so the operator knows a power-cycle is needed.
-    """
-    try:
-        # write_mem_query_threshold=0 forces POST for any non-empty
-        # payload, bypassing the autodetected 128-byte cutoff that
-        # would otherwise route this through the safe PUT path.
-        probe_client = Ultimate64Client(
-            host=host, password=password, timeout=timeout,
-            write_mem_query_threshold=0,
-        )
-    except Exception as e:
-        return False, f"client construct failed: {type(e).__name__}: {e}"
-    try:
-        probe_client.write_mem(addr, _WRITEMEM_PROBE_PAYLOAD)
-    except Ultimate64Error as e:
-        status = getattr(e, "status", None)
-        body = getattr(e, "body", "") or ""
-        if status == 404 and "attachment" in body.lower():
-            return False, (
-                "POST /v1/machine:writemem returned HTTP 404 "
-                "'Could not read data from attachment' — device is in "
-                "writemem-degraded state, physical power-cycle required "
-                "(reset/reboot over REST does NOT clear this)"
-            )
-        return False, (
-            f"write_mem failed: HTTP {status} {type(e).__name__}: "
-            f"{str(e)[:200]}"
-        )
-    except Exception as e:
-        return False, f"write_mem raised {type(e).__name__}: {e}"
-    try:
-        got = probe_client.read_mem(addr, len(_WRITEMEM_PROBE_PAYLOAD))
-    except Exception as e:
-        return False, f"read_mem raised {type(e).__name__}: {e}"
-    if got != _WRITEMEM_PROBE_PAYLOAD:
-        return False, (
-            f"readback mismatch (wrote {len(_WRITEMEM_PROBE_PAYLOAD)} bytes, "
-            f"got {len(got)} bytes; first 8 wrote="
-            f"{_WRITEMEM_PROBE_PAYLOAD[:8].hex()} got={got[:8].hex()})"
-        )
-    return True, "writemem POST round-trip OK"
 
 
 def run_one_routine(transport, labels, main_loop_addr,
