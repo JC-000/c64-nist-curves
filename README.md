@@ -120,9 +120,27 @@ markers at `$BFFF` and `DebugCapture` parses the cycle delta between them.
 | Primitive              | 16 MHz cyc   | 16 MHz wall | 48 MHz cyc   | 48 MHz wall |
 |------------------------|-------------:|------------:|-------------:|------------:|
 | ec_scalar_mul_var      |   37,618,315 |      2.35 s |   27,766,305 |      0.58 s |
-| ec_scalar_mul_var_384  |   95,469,045 |      5.97 s |   66,884,580 |      1.39 s |
-| ecdsa_verify_256       |   43,226,120 |      2.70 s |   31,823,015 |      0.66 s |
-| ecdsa_verify_384       |  111,235,670 |      6.95 s |   77,691,110 |      1.62 s |
+| ec_scalar_mul_var_384  |   95,486,090 |      5.97 s |   66,884,580 |      1.39 s |
+| ecdsa_verify_256       |   43,157,940 |      2.70 s |   31,805,970 |      0.66 s |
+| ecdsa_verify_384       |  111,048,175 |      6.94 s |   77,639,975 |      1.62 s |
+
+Numbers above are the **measured-2026-05-18** values at master HEAD `788adc3`
+(post-PR-#34 cofactor approach (a)).
+
+**Measured vs predicted savings — PR #26 + PR #34 retrospective.**
+Both PRs predicted ~800 kcy P-256 / ~1.7 Mcy P-384 ECDSA verify
+savings from eliminating `fp_mod_inv` calls. Three-point bench
+comparison on the same U64E (fw 3.14d) shows measured savings are
+10-20× smaller: combined PR #19 → PR #34 delta is only −68 kcy
+P-256 / −187 kcy P-384 (≈ 0.16% of verify cycles). Likely cause:
+`fp_mod_inv` is binary GCD with input-sensitive runtime, and the Z
+coordinates emerging from `ec_scalar_mul` consistently hit fast paths
+in the GCD loop — making the eliminated inversions cheap in context
+even though the primitive bench averages ~750 kcy on random input.
+See CLAUDE.md "Negative findings" §PR #26+#34 entry and memory
+`feedback_empirical_validation_required.md` for the full data and
+methodology lesson. **Optimization PRs touching the verify path MUST
+cite measured cycles before/after, not extrapolated savings.**
 
 **1-MHz-equivalent cycle convention.** The "cyc" columns are 1-MHz-equivalent
 wall-clock microseconds (jiffies × 17045), NOT machine cycles at turbo. The

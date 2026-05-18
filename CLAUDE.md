@@ -244,6 +244,41 @@ gets stale otherwise).
   `beq` without a refined fast-path (e.g. a mini-body that only advances
   the loop counter) that preserves the sparse-input skip, and only after
   A/B-benching compound callers in addition to primitives.
+- **PR #26 cofactor-compare and PR #34 cofactor approach (a) ECDSA verify
+  optimizations** (both merged; measured 2026-05-18). Both PRs predicted
+  ~800 kcy P-256 / ~1.7 Mcy P-384 verify savings from "eliminating 1
+  `fp_mod_inv` call (~750 kcy from primitive bench) + 3 `ec_mulp` calls
+  per verify". Three-point U64E bench comparison (PR #19 README baseline
+  / PR #26 build at `460de8f` / PR #34 master at `788adc3`):
+
+  | Stage | Predicted | Measured P-256 @16 MHz | Measured P-384 @16 MHz |
+  |---|---|---|---|
+  | PR #19 → PR #26 | ~800 kcy / ~1700 kcy | **−51 kcy (3 jiffies)** | **−85 kcy (5 jiffies)** |
+  | PR #26 → PR #34 | ~800 kcy / ~1700 kcy | **−17 kcy (1 jiffy)** | **−102 kcy (6 jiffies)** |
+  | Combined | ~1.6 Mcy / ~3.4 Mcy | **−68 kcy (~0.16%)** | **−187 kcy (~0.17%)** |
+
+  10-20× short. RAM cost: PR #26 +512 B PRG; PR #34 +1440 B PRG +192 B
+  DATA (96 B per curve for `ecdsa_u1g_jac`). Combined ~2 KB PRG + 192 B
+  DATA for ~70 kcy / ~190 kcy verify savings — roughly an order of
+  magnitude worse than the prediction implied.
+
+  Root-cause hypothesis: `fp_mod_inv` is binary GCD with input-sensitive
+  runtime. The primitive bench averages random-input cost (~750 kcy);
+  the Z coordinates emerging from `ec_scalar_mul` likely hit GCD fast
+  paths (byte alignment, low Hamming weight, or small magnitude),
+  making the actual inversions consistently cheap and their elimination
+  near-pointless. Symmetric to the Wave 8a `beq`-removal case above:
+  primitive benchmarks can mislead about compound-caller behaviour in
+  BOTH directions (Wave 8a primitive-fast / compound-slow; PR #26+#34
+  primitive-says-big-savings / compound-shows-tiny-savings). Lesson:
+  **for any optimization costing PRG or DATA bytes, measure on the
+  integrated bench (`bench_ecdsa_u64.py`, `bench_p256/p384_u64.py`)
+  before merge, not just predict from primitive costs.** PR descriptions
+  must cite measured cycles before/after, not extrapolated savings.
+  Do not re-attempt similar inversion-elimination opts without first
+  measuring the actual `fp_mod_inv` cost on the specific inputs the
+  callsite receives (instrumentation of `ec_jacobian_to_affine` against
+  the bench fixture would suffice).
 
 ### Jacobian addition naming
 
