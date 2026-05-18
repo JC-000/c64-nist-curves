@@ -12,6 +12,42 @@ contract).
 
 ## [Unreleased]
 
+### Measured (post-merge retrospective, 2026-05-18)
+
+- **PR #26 and PR #34 ECDSA verify savings are 10-20× smaller than
+  predicted.** Both PRs forecast ~800 kcy P-256 / ~1.7 Mcy P-384
+  per-verify savings from eliminating `fp_mod_inv` calls (primitive
+  bench: ~750 kcy/call). Three-point U64E bench at fw 3.14d (PR #19
+  README baseline at `d53971e` / PR #26 build at `460de8f` /
+  PR #34 master at `788adc3`):
+
+  | Stage | Predicted | Measured P-256 @16 MHz | Measured P-384 @16 MHz |
+  |---|---|---|---|
+  | PR #19 → PR #26 | ~800 kcy / ~1700 kcy | −51 kcy (3 jiffies) | −85 kcy (5 jiffies) |
+  | PR #26 → PR #34 | ~800 kcy / ~1700 kcy | −17 kcy (1 jiffy) | −102 kcy (6 jiffies) |
+  | Combined | ~1.6 Mcy / ~3.4 Mcy | −68 kcy (≈0.16%) | −187 kcy (≈0.17%) |
+
+  Combined RAM cost: ~2 KB PRG + 192 B DATA. RAM-per-cycle-saved is
+  dramatically worse than the predictions implied. Likely root cause:
+  `fp_mod_inv` is binary GCD with input-sensitive runtime; the Z
+  coordinates emerging from `ec_scalar_mul` consistently hit GCD
+  fast paths (byte alignment, low Hamming weight, or small magnitude),
+  so the eliminated inversions were already cheap in context.
+
+  No code reverted — PR #34 added the `ec_point_add_jj` primitive as
+  a useful building block and the sqtab/mul_dma collision fix is
+  independently valuable. But the verify-rewiring portion of PR #34
+  buys very little measured benefit for its RAM cost.
+
+  **Process change going forward:** any optimization PR that costs
+  PRG or DATA bytes must measure on the integrated bench
+  (`bench_ecdsa_u64.py`, `bench_p256/p384_u64.py`) before merge and
+  cite measured cycles before/after in the PR description. Primitive-
+  cost extrapolation is unreliable when the eliminated primitive has
+  data-dependent runtime — sibling to the Wave 8a `beq`-removal
+  negative finding in the opposite direction. See CLAUDE.md "Negative
+  findings" §PR #26+#34 entry for the full lesson.
+
 ### Added
 
 - **`ec_point_add_jj` / `ec_point_add_jj_384`** — full Jacobian + Jacobian
