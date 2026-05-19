@@ -81,6 +81,49 @@ def setup_point_add(t, l):
     write_le(t, ec + 48, G2Y, 48)
 
 
+# --- J+J operands: lifts of (3G, 5G) to Jacobian with non-trivial Z values.
+JJ_K1_384 = 3
+JJ_K2_384 = 5
+JJ_Z1_384 = 0x4C2A19F8DDB36C150E97F3A24B81C5E067D094EAB173C58F19A0276EBC3D4915F8E0235B1C8047A6D9E5037F12BCA0E4
+JJ_Z2_384 = 0x7B9FA0E2154C638DEF09572630CBA48F176C9D053AE21084F7B0C8D5697A4123E5D810ABCB72FC9034E18605F7CD2491
+
+
+def _lift_to_jacobian_p384(k, z):
+    ax, ay = scalar_mul_oracle(k, "p384")
+    z2 = (z * z) % P384_P
+    z3 = (z2 * z) % P384_P
+    jx = (ax * z2) % P384_P
+    jy = (ay * z3) % P384_P
+    return jx, jy, z
+
+
+def setup_point_add_jj_384(t, l):
+    jx1, jy1, jz1 = _lift_to_jacobian_p384(JJ_K1_384, JJ_Z1_384)
+    jx2, jy2, jz2 = _lift_to_jacobian_p384(JJ_K2_384, JJ_Z2_384)
+    ec_p1 = l["ec384_p1"]
+    ec_p2 = l["ec384_p2"]
+    write_le(t, ec_p1 + 0,  jx1, 48)
+    write_le(t, ec_p1 + 48, jy1, 48)
+    write_le(t, ec_p1 + 96, jz1, 48)
+    write_le(t, ec_p2 + 0,  jx2, 48)
+    write_le(t, ec_p2 + 48, jy2, 48)
+    write_le(t, ec_p2 + 96, jz2, 48)
+
+
+# --- mod-n multiply operands. fp_mod_mul_n_384 hardcodes ec_n384 at source.
+P384_N = P384_ORDER
+MODN_A_384 = OPERAND_A % P384_N
+MODN_B_384 = OPERAND_B % P384_N
+
+
+def setup_fp_mod_mul_n_384(t, l):
+    write_le(t, l["fp384_tmp1"], MODN_A_384, 48)
+    write_le(t, l["fp384_tmp2"], MODN_B_384, 48)
+    set_ptr(t, l["fp_src1"], l["fp384_tmp1"])
+    set_ptr(t, l["fp_src2"], l["fp384_tmp2"])
+    set_ptr(t, l["fp_dst"], l["fp384_tmp3"])
+
+
 def setup_scalar_mul(t, l):
     k_be = SCALAR_MUL_K.to_bytes(48, "big")
     t.write_memory(SCALAR_MUL_BUF, k_be)
@@ -132,6 +175,18 @@ def verify_point_add(t, l):
     ax, ay = jacobian_to_affine(jx, jy, jz, "p384")
     return (ax, ay) == affine_add((GX, GY), (G2X, G2Y), "p384")
 
+def verify_point_add_jj_384(t, l):
+    jx = read_le(t, l["ec384_p3"], 48)
+    jy = read_le(t, l["ec384_p3"] + 48, 48)
+    jz = read_le(t, l["ec384_p3"] + 96, 48)
+    ax, ay = jacobian_to_affine(jx, jy, jz, "p384")
+    expected = affine_add(scalar_mul_oracle(JJ_K1_384, "p384"),
+                          scalar_mul_oracle(JJ_K2_384, "p384"), "p384")
+    return (ax, ay) == expected
+
+def verify_fp_mod_mul_n_384(t, l):
+    return read_le(t, l["fp384_tmp3"], 48) == (MODN_A_384 * MODN_B_384) % P384_N
+
 def verify_scalar_mul(t, l):
     jx = read_le(t, l["ec384_p3"], 48)
     jy = read_le(t, l["ec384_p3"] + 48, 48)
@@ -151,8 +206,12 @@ BENCH_PLAN = [
     ("fp_mod_mul_384",        20, setup_field_ab,      verify_fp_mod_mul,    240.0),
     ("fp_mod_sqr_384",        20, setup_field_a,       verify_fp_mod_sqr,    240.0),
     ("fp_mod_inv_384",         1, setup_field_a,       verify_fp_mod_inv,    900.0),
+    ("bench_fp_mod_mul_n_384_tramp",  5, setup_fp_mod_mul_n_384,
+        verify_fp_mod_mul_n_384, 1200.0),
     ("ec_point_double_384",    1, setup_point_double,  verify_point_double,  300.0),
     ("ec_point_add_384",       1, setup_point_add,     verify_point_add,     300.0),
+    ("bench_ec_point_add_jj_384_tramp", 3, setup_point_add_jj_384,
+        verify_point_add_jj_384, 900.0),
     ("ec_scalar_mul_384",      1, setup_scalar_mul,    verify_scalar_mul,  3600.0),
 ]
 

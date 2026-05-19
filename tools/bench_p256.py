@@ -211,6 +211,63 @@ def setup_point_add(transport, labels):
     write_bytes(transport, ec_p2 + 32, int_to_le_bytes(G2Y, 32))
 
 
+# --- J+J operands: lifts of (3G, 5G) to Jacobian with non-trivial Z values.
+# Both inputs are full Jacobian (X, Y, Z != 1) so the J+J formula must
+# execute the Z1*Z2/Z2^2/Z1^2 multiplies it would otherwise skip in the
+# mixed (affine-Z2) add. Chosen here as deterministic Python int constants;
+# the verify oracle composes affine(jj_p1) + affine(jj_p2) via the
+# library helpers.
+JJ_K1 = 3
+JJ_K2 = 5
+# Non-trivial Z lifts. For any affine (x, y) and any Z in F_p*, the
+# Jacobian (x*Z^2 mod p, y*Z^3 mod p, Z) represents the same affine point.
+JJ_Z1 = 0xA13F50C2B9D7E68417593E4F2B0CDA1567F801932E47B5C61D9A0F8E27634519
+JJ_Z2 = 0x55ED7B4029164CFA8B72190E63D80F47A98C25361EF7B0A8429D6E10B5C8347F
+
+def _lift_to_jacobian_p256(k, z):
+    ax, ay = scalar_mul_oracle(k, "p256")
+    z2 = (z * z) % P256_P
+    z3 = (z2 * z) % P256_P
+    jx = (ax * z2) % P256_P
+    jy = (ay * z3) % P256_P
+    return jx, jy, z
+
+
+def setup_point_add_jj(transport, labels):
+    """Both ec_p1 and ec_p2 as full Jacobian with non-trivial Z."""
+    jx1, jy1, jz1 = _lift_to_jacobian_p256(JJ_K1, JJ_Z1)
+    jx2, jy2, jz2 = _lift_to_jacobian_p256(JJ_K2, JJ_Z2)
+    ec_p1 = labels["ec_p1"]
+    ec_p2 = labels["ec_p2"]
+    write_bytes(transport, ec_p1 + 0,  int_to_le_bytes(jx1, 32))
+    write_bytes(transport, ec_p1 + 32, int_to_le_bytes(jy1, 32))
+    write_bytes(transport, ec_p1 + 64, int_to_le_bytes(jz1, 32))
+    write_bytes(transport, ec_p2 + 0,  int_to_le_bytes(jx2, 32))
+    write_bytes(transport, ec_p2 + 32, int_to_le_bytes(jy2, 32))
+    write_bytes(transport, ec_p2 + 64, int_to_le_bytes(jz2, 32))
+
+
+# --- mod-n multiply operands: ecdsa_h * ecdsa_w shape (post-w-stash).
+# fp_mod_mul_n hardcodes the ec_n256 pointer at the source-text level
+# (see src/mod256.s:651, 663) so the caller does NOT need to issue
+# ec_set_modn. Operand layout is fp_src1 (a) * fp_src2 (b) -> fp_dst (LE).
+P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+MODN_A = 0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296
+MODN_B = 0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5
+# Both operands must be in [0, n-1] per fp_mod_mul_n's caller contract.
+MODN_A %= P256_N
+MODN_B %= P256_N
+
+
+def setup_fp_mod_mul_n(transport, labels):
+    """Stage fp_src1 = MODN_A, fp_src2 = MODN_B, fp_dst = fp_tmp3."""
+    write_bytes(transport, labels["fp_tmp1"], int_to_le_bytes(MODN_A, 32))
+    write_bytes(transport, labels["fp_tmp2"], int_to_le_bytes(MODN_B, 32))
+    set_ptr(transport, labels["fp_src1"], labels["fp_tmp1"])
+    set_ptr(transport, labels["fp_src2"], labels["fp_tmp2"])
+    set_ptr(transport, labels["fp_dst"], labels["fp_tmp3"])
+
+
 # Representative 256-bit scalar: RFC 6979 sample-message private key.
 # (Same constant as TEST_PRIVKEY in test_points256.py.)
 SCALAR_MUL_K = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
@@ -300,6 +357,21 @@ def verify_point_add(transport, labels):
     return (ax, ay) == expected
 
 
+def verify_point_add_jj(transport, labels):
+    jx = _read_le(transport, labels["ec_p3"], 32)
+    jy = _read_le(transport, labels["ec_p3"] + 32, 32)
+    jz = _read_le(transport, labels["ec_p3"] + 64, 32)
+    ax, ay = jacobian_to_affine(jx, jy, jz, "p256")
+    expected = affine_add(scalar_mul_oracle(JJ_K1, "p256"),
+                          scalar_mul_oracle(JJ_K2, "p256"), "p256")
+    return (ax, ay) == expected
+
+
+def verify_fp_mod_mul_n(transport, labels):
+    got = _read_le(transport, labels["fp_tmp3"], 32)
+    return got == (MODN_A * MODN_B) % P256_N
+
+
 def verify_scalar_mul(transport, labels):
     jx = _read_le(transport, labels["ec_p3"], 32)
     jy = _read_le(transport, labels["ec_p3"] + 32, 32)
@@ -337,8 +409,12 @@ BENCH_PLAN = [
     ("fp_mod_mul",        10, setup_field_ab,     verify_fp_mod_mul,    120.0),
     ("fp_mod_sqr",        10, setup_field_a,      verify_fp_mod_sqr,    120.0),
     ("fp_mod_inv",         1, setup_field_a,      verify_fp_mod_inv,    600.0),
+    ("bench_fp_mod_mul_n_tramp",      5, setup_fp_mod_mul_n,
+        verify_fp_mod_mul_n,  300.0),
     ("ec_point_double",    1, setup_point_double, verify_point_double,  600.0),
     ("ec_point_add",       1, setup_point_add,    verify_point_add,     900.0),
+    ("bench_ec_point_add_jj_tramp",   1, setup_point_add_jj,
+        verify_point_add_jj,   900.0),
     ("ec_scalar_mul",      1, setup_scalar_mul,   verify_scalar_mul,   3600.0),
 ]
 

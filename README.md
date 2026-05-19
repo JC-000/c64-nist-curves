@@ -115,8 +115,10 @@ jiffy-clock pattern shared with `bench_p256_u64.py` (cycles = jiffies ×
 debug bus-stream (UDP :11002) for a second-opinion measurement: the bench
 trampolines in `src/main.s` emit $80/$81 (P-256 verify), $82/$83 (P-256
 scalar_mul_var), $84/$85 (P-384 scalar_mul_var), $86/$87 (P-384 verify),
-$88/$89 (P-384 hash-then-verify wrapper) markers at `$BFFF` and
-`DebugCapture` parses the cycle delta between them.
+$88/$89 (P-384 hash-then-verify wrapper), $8A/$8B (P-256 J+J point-add),
+$8C/$8D (P-384 J+J point-add), $8E/$8F (P-256 mod-n multiply), and
+$90/$91 (P-384 mod-n multiply) markers at `$BFFF` and `DebugCapture`
+parses the cycle delta between them.
 
 | Primitive                 | 16 MHz cyc   | 16 MHz wall | 48 MHz cyc   | 48 MHz wall |
 |---------------------------|-------------:|------------:|-------------:|------------:|

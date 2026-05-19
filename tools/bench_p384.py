@@ -156,6 +156,58 @@ def setup_point_add(transport, labels):
     write_bytes(transport, ec_p2 + 48, int_to_le_bytes(G2Y, 48))
 
 
+# --- J+J operands: lifts of (3G, 5G) to Jacobian with non-trivial Z values.
+# Both inputs are full Jacobian (X, Y, Z != 1) so the J+J formula must
+# execute the Z1*Z2/Z2^2/Z1^2 multiplies it would otherwise skip in the
+# mixed (affine-Z2) add. Verify oracle composes affine(jj_p1) +
+# affine(jj_p2) via the library helpers.
+JJ_K1_384 = 3
+JJ_K2_384 = 5
+JJ_Z1_384 = 0x4C2A19F8DDB36C150E97F3A24B81C5E067D094EAB173C58F19A0276EBC3D4915F8E0235B1C8047A6D9E5037F12BCA0E4
+JJ_Z2_384 = 0x7B9FA0E2154C638DEF09572630CBA48F176C9D053AE21084F7B0C8D5697A4123E5D810ABCB72FC9034E18605F7CD2491
+
+def _lift_to_jacobian_p384(k, z):
+    ax, ay = scalar_mul_oracle(k, "p384")
+    z2 = (z * z) % P384_P
+    z3 = (z2 * z) % P384_P
+    jx = (ax * z2) % P384_P
+    jy = (ay * z3) % P384_P
+    return jx, jy, z
+
+
+def setup_point_add_jj_384(transport, labels):
+    """Both ec384_p1 and ec384_p2 as full Jacobian with non-trivial Z."""
+    jx1, jy1, jz1 = _lift_to_jacobian_p384(JJ_K1_384, JJ_Z1_384)
+    jx2, jy2, jz2 = _lift_to_jacobian_p384(JJ_K2_384, JJ_Z2_384)
+    ec_p1 = labels["ec384_p1"]
+    ec_p2 = labels["ec384_p2"]
+    write_bytes(transport, ec_p1 + 0,  int_to_le_bytes(jx1, 48))
+    write_bytes(transport, ec_p1 + 48, int_to_le_bytes(jy1, 48))
+    write_bytes(transport, ec_p1 + 96, int_to_le_bytes(jz1, 48))
+    write_bytes(transport, ec_p2 + 0,  int_to_le_bytes(jx2, 48))
+    write_bytes(transport, ec_p2 + 48, int_to_le_bytes(jy2, 48))
+    write_bytes(transport, ec_p2 + 96, int_to_le_bytes(jz2, 48))
+
+
+# --- mod-n multiply operands. fp_mod_mul_n_384 hardcodes ec_n384 at the
+# source-text level (src/mod384.s:783, 795). Operand layout is
+# fp_src1 (a) * fp_src2 (b) -> fp_dst (LE).
+P384_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52973
+MODN_A_384 = 0xAA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7
+MODN_B_384 = 0x3617DE4A96262C6F5D9E98BF9292DC29F8F41DBD289A147CE9DA3113B5F0B8C00A60B1CE1D7E819D7A431D7C90EA0E5F
+MODN_A_384 %= P384_N
+MODN_B_384 %= P384_N
+
+
+def setup_fp_mod_mul_n_384(transport, labels):
+    """Stage fp_src1 = MODN_A_384, fp_src2 = MODN_B_384, fp_dst = fp384_tmp3."""
+    write_bytes(transport, labels["fp384_tmp1"], int_to_le_bytes(MODN_A_384, 48))
+    write_bytes(transport, labels["fp384_tmp2"], int_to_le_bytes(MODN_B_384, 48))
+    set_ptr(transport, labels["fp_src1"], labels["fp384_tmp1"])
+    set_ptr(transport, labels["fp_src2"], labels["fp384_tmp2"])
+    set_ptr(transport, labels["fp_dst"], labels["fp384_tmp3"])
+
+
 # Representative 384-bit scalar: P-384 group order minus a small constant.
 # Order n = 2**384 - 2**128 - ... (standard P-384 order). Using n - 7 gives a
 # near-full-length scalar exercising essentially all 96 comb iterations.
@@ -242,6 +294,21 @@ def verify_point_add_384(transport, labels):
     return (ax, ay) == affine_add((GX, GY), (G2X, G2Y), "p384")
 
 
+def verify_point_add_jj_384(transport, labels):
+    jx = _read_le(transport, labels["ec384_p3"], 48)
+    jy = _read_le(transport, labels["ec384_p3"] + 48, 48)
+    jz = _read_le(transport, labels["ec384_p3"] + 96, 48)
+    ax, ay = jacobian_to_affine(jx, jy, jz, "p384")
+    expected = affine_add(scalar_mul_oracle(JJ_K1_384, "p384"),
+                          scalar_mul_oracle(JJ_K2_384, "p384"), "p384")
+    return (ax, ay) == expected
+
+
+def verify_fp_mod_mul_n_384(transport, labels):
+    got = _read_le(transport, labels["fp384_tmp3"], 48)
+    return got == (MODN_A_384 * MODN_B_384) % P384_N
+
+
 def verify_scalar_mul_384(transport, labels):
     jx = _read_le(transport, labels["ec384_p3"], 48)
     jy = _read_le(transport, labels["ec384_p3"] + 48, 48)
@@ -272,8 +339,12 @@ BENCH_PLAN = [
     ("fp_mod_mul_384",        10, setup_field_ab,      verify_fp_mod_mul_384,   240.0),
     ("fp_mod_sqr_384",        10, setup_field_a,       verify_fp_mod_sqr_384,   240.0),
     ("fp_mod_inv_384",         1, setup_field_a,       verify_fp_mod_inv_384,   900.0),
+    ("bench_fp_mod_mul_n_384_tramp",  5, setup_fp_mod_mul_n_384,
+        verify_fp_mod_mul_n_384, 600.0),
     ("ec_point_double_384",    1, setup_point_double,  verify_point_double_384, 300.0),
     ("ec_point_add_384",       1, setup_point_add,     verify_point_add_384,    300.0),
+    ("bench_ec_point_add_jj_384_tramp", 1, setup_point_add_jj_384,
+        verify_point_add_jj_384, 900.0),
     ("ec_scalar_mul_384",      1, setup_scalar_mul_384, verify_scalar_mul_384, 3600.0),
 ]
 
