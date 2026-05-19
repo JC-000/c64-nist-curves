@@ -12,6 +12,51 @@ contract).
 
 ## [Unreleased]
 
+### Added (2026-05-19, second wave)
+
+- **Bench coverage for `ec_point_add_jj{,_384}` and `fp_mod_mul_n{,_384}`** —
+  four new primitive bench rows so the J+J point-add (load-bearing at
+  the ECDSA verify `u1*G + u2*Q` join since PR #34) and the mod-n
+  multiply (called twice per verify for `u1 = h*w` and `u2 = r*w`) are
+  finally measurable. Four new trampolines in `src/main.s` with marker
+  tokens `$8A`/`$8B` (P-256 J+J), `$8C`/`$8D` (P-384 J+J), `$8E`/`$8F`
+  (P-256 mod-n mul), `$90`/`$91` (P-384 mod-n mul). New `BENCH_PLAN`
+  rows in `tools/bench_p256.py`, `tools/bench_p384.py`,
+  `tools/bench_p256_u64.py`, `tools/bench_p384_u64.py`. PRG remains
+  37,302 bytes — the four trampolines absorbed cleanly into the
+  existing TABLES alignment pad (no new page needed). J+J operand
+  setup lifts `(3G, 5G)` to Jacobian with non-trivial Z values so the
+  formula must execute the `Z1*Z2` / `Z1^2` / `Z2^2` multiplies it
+  would otherwise skip in the mixed-add path; oracle verifier composes
+  `affine(3G) + affine(5G)` via the existing library helpers.
+  Motivation: the PR #26 + PR #34 measured-vs-predicted retrospective
+  showed primitive-bench extrapolation overshot real ECDSA savings by
+  10-20×; making the J+J and mod-n-mul primitives directly measurable
+  closes one of the gaps that retrospective identified (audit
+  Section 8 / `.research/audit_2026_05_18/a4_call_graph.md` §1.3, §1.9).
+  Measured @ VICE 1 MHz (cycles/call, 1-MHz-equivalent):
+
+  | Primitive            | P-256 cyc   | P-384 cyc   |
+  |----------------------|------------:|------------:|
+  | `fp_mod_mul_n`       |     463,624 |   1,036,336 |
+  | `ec_point_add_jj`    |   1,295,420 |   2,454,480 |
+
+  Measured @ U64E NTSC (cycles/call, 1-MHz-equivalent wall-clock — see
+  CLAUDE.md "Jiffy-clock / REU-DMA wall-clock non-linearity" known
+  issue):
+
+  | Primitive            | P-256 @16 MHz | P-256 @48 MHz | P-384 @16 MHz | P-384 @48 MHz |
+  |----------------------|--------------:|--------------:|--------------:|--------------:|
+  | `fp_mod_mul_n`       |        33,024 |        14,346 |        70,310 |        28,692 |
+  | `ec_point_add_jj`    |       168,958 |       122,866 |       284,438 |       194,833 |
+
+  48-MHz speedup is sub-linear (~2.3× for mod-n-mul, ~1.4× for J+J)
+  rather than the naïve 3×, because REU DMA fixed-rate dominates the
+  bench surface — consistent with the wall-clock non-linearity bound
+  documented in CLAUDE.md. Sweep was co-measured (both speeds in one
+  invocation) to immunise against the CIA Timer A drift documented at
+  48 MHz cross-run.
+
 ### Added (2026-05-19)
 
 - **`tools/bench_sha384.py` — VICE 1 MHz SHA-384 per-block bench.**

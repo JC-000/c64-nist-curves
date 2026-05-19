@@ -38,6 +38,10 @@
 ; --- variable-base scalar-mul imports (for U64E bench trampolines) ---
 .import ec_scalar_mul_var, ec_scalar_mul_var_384
 
+; --- J+J point-add + mod-n multiply imports (for bench trampolines) ---
+.import ec_point_add_jj, ec_point_add_jj_384
+.import fp_mod_mul_n, fp_mod_mul_n_384
+
 .segment "LOADADDR"
         .word $0801              ; CBM PRG load address
 
@@ -428,6 +432,56 @@ bench_ecdsa_verify_with_msg_384_tramp:
         rol a
         sta ecdsa_result_msg_384
         lda #$89
+        sta BENCH_DBG_MARK
+        rts
+
+; bench-marker-wrapped trampolines for the full Jacobian + Jacobian point-add
+; primitive (Bernstein-Lange add-2007-bl) and the mod-n multiply primitive.
+; Both are load-bearing for ECDSA verify (J+J at the u1*G+u2*Q join; mod-n
+; mul for u1=h*w / u2=r*w) but were previously absent from the primitive
+; bench surface — PR #26 + PR #34's measured-vs-predicted gap motivated
+; making them measurable. Caller pre-stages ec_p1/ec_p2 (J+J) or
+; fp_src1/fp_src2/fp_dst (mod-n mul); ec_set_modn is NOT needed since
+; fp_mod_mul_n hardcodes the curve order pointer at the source-text level.
+;
+; Marker tokens:
+;   $8A / $8B   ec_point_add_jj (P-256)
+;   $8C / $8D   ec_point_add_jj_384 (P-384)
+;   $8E / $8F   fp_mod_mul_n (P-256)
+;   $90 / $91   fp_mod_mul_n_384 (P-384)
+.export bench_ec_point_add_jj_tramp
+bench_ec_point_add_jj_tramp:
+        lda #$8a
+        sta BENCH_DBG_MARK
+        jsr ec_point_add_jj
+        lda #$8b
+        sta BENCH_DBG_MARK
+        rts
+
+.export bench_ec_point_add_jj_384_tramp
+bench_ec_point_add_jj_384_tramp:
+        lda #$8c
+        sta BENCH_DBG_MARK
+        jsr ec_point_add_jj_384
+        lda #$8d
+        sta BENCH_DBG_MARK
+        rts
+
+.export bench_fp_mod_mul_n_tramp
+bench_fp_mod_mul_n_tramp:
+        lda #$8e
+        sta BENCH_DBG_MARK
+        jsr fp_mod_mul_n
+        lda #$8f
+        sta BENCH_DBG_MARK
+        rts
+
+.export bench_fp_mod_mul_n_384_tramp
+bench_fp_mod_mul_n_384_tramp:
+        lda #$90
+        sta BENCH_DBG_MARK
+        jsr fp_mod_mul_n_384
+        lda #$91
         sta BENCH_DBG_MARK
         rts
 

@@ -98,6 +98,52 @@ def setup_point_add(transport, labels):
     write_le(transport, ec_p2 + 32, G2Y, 32)
 
 
+# --- J+J operands: lifts of (3G, 5G) to Jacobian with non-trivial Z values
+# so the J+J formula must execute the Z1*Z2/Z2^2/Z1^2 multiplies it would
+# otherwise skip in the mixed (affine-Z2) add path.
+JJ_K1 = 3
+JJ_K2 = 5
+JJ_Z1 = 0xA13F50C2B9D7E68417593E4F2B0CDA1567F801932E47B5C61D9A0F8E27634519
+JJ_Z2 = 0x55ED7B4029164CFA8B72190E63D80F47A98C25361EF7B0A8429D6E10B5C8347F
+
+
+def _lift_to_jacobian_p256(k, z):
+    ax, ay = scalar_mul_oracle(k, "p256")
+    z2 = (z * z) % P256_P
+    z3 = (z2 * z) % P256_P
+    jx = (ax * z2) % P256_P
+    jy = (ay * z3) % P256_P
+    return jx, jy, z
+
+
+def setup_point_add_jj(transport, labels):
+    jx1, jy1, jz1 = _lift_to_jacobian_p256(JJ_K1, JJ_Z1)
+    jx2, jy2, jz2 = _lift_to_jacobian_p256(JJ_K2, JJ_Z2)
+    ec_p1 = labels["ec_p1"]
+    ec_p2 = labels["ec_p2"]
+    write_le(transport, ec_p1 + 0,  jx1, 32)
+    write_le(transport, ec_p1 + 32, jy1, 32)
+    write_le(transport, ec_p1 + 64, jz1, 32)
+    write_le(transport, ec_p2 + 0,  jx2, 32)
+    write_le(transport, ec_p2 + 32, jy2, 32)
+    write_le(transport, ec_p2 + 64, jz2, 32)
+
+
+# --- mod-n multiply operands. fp_mod_mul_n hardcodes ec_n256 at the source
+# level; caller only needs to stage fp_src1/fp_src2/fp_dst.
+P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+MODN_A = OPERAND_A % P256_N
+MODN_B = OPERAND_B % P256_N
+
+
+def setup_fp_mod_mul_n(transport, labels):
+    write_le(transport, labels["fp_tmp1"], MODN_A, 32)
+    write_le(transport, labels["fp_tmp2"], MODN_B, 32)
+    set_ptr(transport, labels["fp_src1"], labels["fp_tmp1"])
+    set_ptr(transport, labels["fp_src2"], labels["fp_tmp2"])
+    set_ptr(transport, labels["fp_dst"], labels["fp_tmp3"])
+
+
 def setup_scalar_mul(transport, labels):
     k_be = SCALAR_MUL_K.to_bytes(32, "big")
     transport.write_memory(SCALAR_MUL_BUF, k_be)
@@ -153,6 +199,18 @@ def verify_point_add(t, l):
     ax, ay = jacobian_to_affine(jx, jy, jz, "p256")
     return (ax, ay) == affine_add((GX, GY), (G2X, G2Y), "p256")
 
+def verify_point_add_jj(t, l):
+    jx = read_le(t, l["ec_p3"], 32)
+    jy = read_le(t, l["ec_p3"] + 32, 32)
+    jz = read_le(t, l["ec_p3"] + 64, 32)
+    ax, ay = jacobian_to_affine(jx, jy, jz, "p256")
+    expected = affine_add(scalar_mul_oracle(JJ_K1, "p256"),
+                          scalar_mul_oracle(JJ_K2, "p256"), "p256")
+    return (ax, ay) == expected
+
+def verify_fp_mod_mul_n(t, l):
+    return read_le(t, l["fp_tmp3"], 32) == (MODN_A * MODN_B) % P256_N
+
 def verify_scalar_mul(t, l):
     jx = read_le(t, l["ec_p3"], 32)
     jy = read_le(t, l["ec_p3"] + 32, 32)
@@ -177,8 +235,12 @@ BENCH_PLAN = [
     ("fp_mod_mul",        20, setup_field_ab,     verify_fp_mod_mul,    180.0),
     ("fp_mod_sqr",        20, setup_field_a,      verify_fp_mod_sqr,    180.0),
     ("fp_mod_inv",         1, setup_field_a,      verify_fp_mod_inv,    600.0),
+    ("bench_fp_mod_mul_n_tramp",     10, setup_fp_mod_mul_n,
+        verify_fp_mod_mul_n,  600.0),
     ("ec_point_double",    1, setup_point_double, verify_point_double,  600.0),
     ("ec_point_add",       1, setup_point_add,    verify_point_add,     900.0),
+    ("bench_ec_point_add_jj_tramp",   5, setup_point_add_jj,
+        verify_point_add_jj,  900.0),
     ("ec_scalar_mul",      1, setup_scalar_mul,   verify_scalar_mul,   3600.0),
 ]
 
