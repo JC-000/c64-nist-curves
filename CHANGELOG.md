@@ -41,9 +41,21 @@ contract).
   | `fp_mod_mul_n`       |     463,624 |   1,036,336 |
   | `ec_point_add_jj`    |   1,295,420 |   2,454,480 |
 
-  U64E rows in `bench_p256_u64.py` / `bench_p384_u64.py` are wired
-  syntactically (same shape as existing VICE rows) but NOT measured
-  in this PR — needs hardware run.
+  Measured @ U64E NTSC (cycles/call, 1-MHz-equivalent wall-clock — see
+  CLAUDE.md "Jiffy-clock / REU-DMA wall-clock non-linearity" known
+  issue):
+
+  | Primitive            | P-256 @16 MHz | P-256 @48 MHz | P-384 @16 MHz | P-384 @48 MHz |
+  |----------------------|--------------:|--------------:|--------------:|--------------:|
+  | `fp_mod_mul_n`       |        33,024 |        14,346 |        70,310 |        28,692 |
+  | `ec_point_add_jj`    |       168,958 |       122,866 |       284,438 |       194,833 |
+
+  48-MHz speedup is sub-linear (~2.3× for mod-n-mul, ~1.4× for J+J)
+  rather than the naïve 3×, because REU DMA fixed-rate dominates the
+  bench surface — consistent with the wall-clock non-linearity bound
+  documented in CLAUDE.md. Sweep was co-measured (both speeds in one
+  invocation) to immunise against the CIA Timer A drift documented at
+  48 MHz cross-run.
 
 ### Added (2026-05-19)
 
