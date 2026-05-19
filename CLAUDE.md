@@ -444,6 +444,28 @@ keep all library calls on a single thread of control.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
+- **U64E CIA Timer A jiffy-rate drift between runs at 48 MHz** (observed
+  2026-05-19, fw 3.14d). Two back-to-back ECDSA bench runs against
+  the same `master` HEAD, on the same U64E (cold power-cycled between
+  runs), produced 48-MHz jiffy counts ~3.8 % apart on every routine
+  (`ec_scalar_mul_var`, `ec_scalar_mul_var_384`, `ecdsa_verify_256`,
+  `ecdsa_verify_384` all drifted in lock-step), while Python-side
+  `time.time()` wall-clock measurements matched within ±0.3 s. The
+  CIA Timer A IRQ that ticks the C64 jiffy clock at $A0-$A2 is running
+  ~3.8 % faster in some boot configurations than in others, despite
+  identical fw, identical source, and identical bench tool. **16 MHz
+  measurements are unaffected — today matches yesterday within
+  ±1 jiffy across all routines.** Within-run deltas (e.g., comparing
+  two routines in the same sweep) are unaffected because both
+  measurements share the same wrong-by-3.8 % clock. Cross-day absolute
+  comparison at 48 MHz needs a ±4 % tolerance band; for tighter
+  cross-day comparison, either re-measure both endpoints in one run
+  or compute the within-run delta against a reference primitive in
+  the same sweep. Possibly related to U64E PAL/NTSC mode switching
+  side effects across reboots; not fully diagnosed. Future bench
+  tools that report "% improvement" across builds should measure
+  baseline and target in the same bench invocation to immunise
+  against this.
 - **`sqtab` memory-map equate (`src/mul_8x8.s` line 19-20)**. The
   quarter-square multiply tables `sqtab_lo` and `sqtab_hi` live at the
   hard-coded equates `$9C00` / `$9E00` (1 KB total), bumped from the

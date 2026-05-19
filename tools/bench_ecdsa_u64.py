@@ -180,6 +180,27 @@ def setup_ecdsa_verify_384(t, l):
     t.write_memory(l["ecdsa_result_384"], b"\xFF")
 
 
+def setup_ecdsa_verify_with_msg_384(t, l):
+    """Stage the 240 B verify struct + the raw message bytes for the
+    one-shot ecdsa_verify_with_message_384 wrapper.
+
+    The library hashes the message itself, so we leave the h slot zero;
+    the wrapper splices in the computed SHA-384 digest before tail-calling
+    ecdsa_verify_384. RFC 6979 A.3.1 message "sample".
+    """
+    v = RFC6979_P384
+    msg = v["msg"]
+    # h slot left zero (overwritten by the wrapper after sha384_final).
+    payload = _pack_verify_struct_384(v["r"], v["s"], b"\x00" * 48,
+                                      v["Ux"], v["Uy"])
+    t.write_memory(l["ecdsa_inputs_384"], payload)
+    # Stage message bytes at sha384_msg_buf and point sha_src / sha_len at it.
+    t.write_memory(l["sha384_msg_buf"], msg)
+    set_ptr(t, l["sha_src"], l["sha384_msg_buf"])
+    set_ptr(t, l["sha_len"], len(msg))
+    t.write_memory(l["ecdsa_result_msg_384"], b"\xFF")
+
+
 # ---------------------------------------------------------------------------
 # Verifiers (oracle gates)
 # ---------------------------------------------------------------------------
@@ -212,6 +233,12 @@ def verify_ecdsa_verify_384(t, l):
     return t.read_memory(l["ecdsa_result_384"], 1)[0] == 0
 
 
+def verify_ecdsa_verify_with_msg_384(t, l):
+    """Expect result byte 0 (valid) for the RFC 6979 A.3.1 positive vector
+    with the message hashed in-place by the library wrapper."""
+    return t.read_memory(l["ecdsa_result_msg_384"], 1)[0] == 0
+
+
 # ---------------------------------------------------------------------------
 # Bench plan
 # ---------------------------------------------------------------------------
@@ -235,6 +262,11 @@ BENCH_PLAN = [
     ("bench_ecdsa_verify_384_tramp",      "ecdsa_verify_384",        1,
      setup_ecdsa_verify_384,     verify_ecdsa_verify_384,    3600.0,
      0x86, 0x87),
+    ("bench_ecdsa_verify_with_msg_384_tramp",
+     "ecdsa_verify_with_msg_384", 1,
+     setup_ecdsa_verify_with_msg_384, verify_ecdsa_verify_with_msg_384,
+     3600.0,
+     0x88, 0x89),
 ]
 
 
@@ -532,6 +564,8 @@ def main():
         "ec_p3", "ec384_p3",
         "ecdsa_inputs_256", "ecdsa_inputs_384",
         "ecdsa_result_256", "ecdsa_result_384",
+        "ecdsa_result_msg_384",
+        "sha384_msg_buf", "sha_src", "sha_len",
     ]
     required += [t for (t, *_r) in BENCH_PLAN]
     missing = [n for n in required if labels.address(n) is None]

@@ -12,6 +12,45 @@ contract).
 
 ## [Unreleased]
 
+### Added (2026-05-19)
+
+- **Bench coverage for `ecdsa_verify_with_message_384`** — the one-shot
+  SHA-384 + ECDSA verify wrapper now has a U64E bench row. Added
+  `bench_ecdsa_verify_with_msg_384_tramp` to `src/main.s` (marker
+  tokens `$88` / `$89`; the 24-byte trampoline is absorbed into the
+  existing TABLES alignment pad, so PRG remains 37,302 bytes — exactly
+  byte-neutral). Added `setup_ecdsa_verify_with_msg_384` +
+  `verify_ecdsa_verify_with_msg_384` + BENCH_PLAN row to
+  `tools/bench_ecdsa_u64.py`. Message = RFC 6979 A.3.1 "sample"
+  (6 bytes). Oracle gate (`cryptography.hazmat` ECDSA verify on the
+  same vector) passed. Measured @ 16 MHz / 48 MHz:
+
+  | Speed   | `ecdsa_verify_384` | `ecdsa_verify_with_msg_384` | Δ (SHA cost) |
+  |---------|-------------------:|----------------------------:|-------------:|
+  | 16 MHz  | 111,065,220 cyc    | 111,082,265 cyc             | +17,045 cyc (1 jiffy) |
+  | 48 MHz  |  80,605,805 cyc    |  80,605,805 cyc             | 0 cyc (sub-jiffy)     |
+
+  SHA-384 hash overhead for a 6-byte message is bounded above by
+  17,045 cyc (1-MHz-equivalent) at both speeds, including `sha384_init`
+  + `sha384_update` + `sha384_final` (one compress for the padding
+  block). The earlier audit-internal estimate of ~1.2 Mcy per
+  `sha_compress` block is revised downward by **~70×**; actual compress
+  is sub-jiffy at U64E turbo. Resolving the per-block compress cost
+  precisely will need a dedicated SHA-384 bench at canonical TLS
+  message lengths {0, 55, 56, 111, 112, 200, 1024, 4096 B}, ideally
+  run at VICE 1 MHz where one block lands at ~3-9 jiffies (not
+  implemented in this PR).
+
+### Fixed (2026-05-19)
+
+- **`tools/bench_p384.py:331` init-sentinel timeout** raised from 180 s
+  → 600 s (matching `tools/bench_p256.py:406`). The h=8 Lim-Lee
+  precompute boot path takes ~205-246 s at HEAD; the previous 180 s
+  ceiling made the tracked bench script broken-at-HEAD without source
+  modification. P-256 already used 600 s for the same sentinel and
+  passed. The 600 s budget gives ~2.5×-3× headroom over the observed
+  init wall time across both VICE and U64E.
+
 ### Measured (post-merge retrospective, 2026-05-18)
 
 - **PR #26 and PR #34 ECDSA verify savings are 10-20× smaller than
