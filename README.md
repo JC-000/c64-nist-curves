@@ -43,6 +43,7 @@ python3 tools/bench_p256_u64.py   # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_ecdsa_u64.py  # ECDSA verify + variable-base scalar_mul on U64E
 python3 tools/test_sha384.py      # SHA-384 streaming hash (FIPS 180-4 KAT + boundary lengths)
+python3 tools/bench_sha384.py     # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 ```
 
 U64 benchmarks require `U64_HOST` set or the device at the default address.
@@ -68,9 +69,11 @@ oracle invariant and refresh procedure.
 | fp_mod_reduce (Solinas)     |         6.667 |         6.667 |         1.00x |
 | fp_mod_mul                  |        81.666 |       150.000 |         1.84x |
 | fp_mod_sqr                  |        76.667 |       128.333 |         1.67x |
+| fp_mod_mul_n (mod curve n)  |       463.624 |      1036.336 |         2.24x |
 | fp_mod_inv (binary GCD)     |       716.667 |      1550.000 |         2.16x |
 | ec_point_double (Jacobian)  |       533.333 |       950.000 |         1.78x |
 | ec_point_add (Jacobian)     |       633.333 |      1100.000 |         1.74x |
+| ec_point_add_jj (full J+J)  |      1295.420 |      2454.480 |         1.89x |
 | ec_scalar_mul (k=RFC 6979)  |       46733.3 |      131433.3 |         2.81x |
 
 S/M ratio after Wave 4e: P-256 fp_mod_sqr / fp_mod_mul = 0.94; P-384 = 0.86.
@@ -87,9 +90,11 @@ so DMA-heavy routines scale sub-linearly.
 | fp_sqr                      |    12,819 cyc |    10,522 cyc |    20,294 cyc |    16,210 cyc |
 | fp_mod_mul                  |     9,374 cyc |     6,320 cyc |    15,873 cyc |    10,102 cyc |
 | fp_mod_sqr                  |    13,209 cyc |    10,670 cyc |    20,720 cyc |    16,370 cyc |
+| fp_mod_mul_n (mod curve n)  |    33,024 cyc |    14,346 cyc |    70,310 cyc |    28,692 cyc |
 | fp_mod_inv (binary GCD)     |    51,135 cyc |    17,045 cyc |   102,270 cyc |    34,090 cyc |
 | ec_point_double (Jacobian)  |    68,180 cyc |    51,135 cyc |   136,360 cyc |    85,225 cyc |
 | ec_point_add (Jacobian)     |    85,225 cyc |    68,180 cyc |   136,360 cyc |   102,270 cyc |
+| ec_point_add_jj (full J+J)  |   168,958 cyc |   122,866 cyc |   284,438 cyc |   194,833 cyc |
 | ec_scalar_mul (h=8 comb)    | 6,323,695 cyc | 4,636,240 cyc |16,005,255 cyc |11,130,385 cyc |
 
 At 48 MHz, P-256 `ec_scalar_mul` completes in ~4.5 s wall-clock (vs ~47 s

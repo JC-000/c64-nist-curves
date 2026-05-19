@@ -47,6 +47,7 @@ python3 tools/bench_p256_u64.py      # P-256 on Ultimate 64 Elite (16/48 MHz tur
 python3 tools/bench_p384_u64.py      # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAVP SigVer)
 python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
+python3 tools/bench_sha384.py        # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
 
