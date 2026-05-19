@@ -14,6 +14,21 @@ contract).
 
 ### Added (2026-05-19)
 
+- **`tools/bench_sha384.py` — VICE 1 MHz SHA-384 per-block bench.**
+  New primitive bench that resolves the per-block `sha_compress` cost
+  that the U64E turbo bench (`bench_ecdsa_u64.py`) can only bound from
+  above at 17,045 1-MHz-equivalent cycles (one jiffy) for short
+  messages. Length sweep `{0, 55, 56, 111, 112, 127, 128, 129, 200,
+  1024, 4096}` covers SHA-2 padding boundaries (55/56 and 111/112),
+  block-boundary transitions (127/128/129), and multi-block
+  amortisation (1024, 4096). Oracle gate is `hashlib.sha384` for each
+  length. Trampoline at `$C000` (no `src/main.s` edits — reuses
+  `bench_start` / `bench_stop`); PRG byte-identical to master at 37,302
+  bytes. Measured per-block compress cost = **~517 kcy / block at
+  1 MHz** (~30 jiffies), stable across the L=1024 → L=4096 and
+  L=0 → L=1024 differencing rows. Resolves the audit Tier-1 #2
+  follow-up from `.research/audit_2026_05_18/perf_audit_2026_05_18.md`
+  §10 / §11.
 - **Bench coverage for `ecdsa_verify_with_message_384`** — the one-shot
   SHA-384 + ECDSA verify wrapper now has a U64E bench row. Added
   `bench_ecdsa_verify_with_msg_384_tramp` to `src/main.s` (marker
