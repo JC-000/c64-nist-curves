@@ -31,8 +31,9 @@
 
 ; --- ecdsa imports (for test trampolines) ---
 .import ecdsa_verify_256, ecdsa_verify_384
+.import ecdsa_verify_with_message_384
 .import ecdsa_inputs_256, ecdsa_inputs_384
-.import ecdsa_result_256, ecdsa_result_384
+.import ecdsa_result_256, ecdsa_result_384, ecdsa_result_msg_384
 
 ; --- variable-base scalar-mul imports (for U64E bench trampolines) ---
 .import ec_scalar_mul_var, ec_scalar_mul_var_384
@@ -407,6 +408,26 @@ bench_ec_scalar_mul_var_384_tramp:
         sta BENCH_DBG_MARK
         jsr ec_scalar_mul_var_384
         lda #$85
+        sta BENCH_DBG_MARK
+        rts
+
+; bench-marker-wrapped trampoline for the one-shot ecdsa_verify_with_message_384
+; wrapper. Caller must pre-stage sha_src/sha_len (ZP) at the message and poke
+; the message bytes into sha384_msg_buf; the 240 B verify struct at
+; ecdsa_inputs_384 may leave the h slot zero (the wrapper overwrites it with
+; the computed SHA-384 digest before tail-calling ecdsa_verify_384). Marker
+; tokens $88/$89.
+.export bench_ecdsa_verify_with_msg_384_tramp
+bench_ecdsa_verify_with_msg_384_tramp:
+        lda #$88
+        sta BENCH_DBG_MARK
+        lda #<ecdsa_inputs_384
+        ldx #>ecdsa_inputs_384
+        jsr ecdsa_verify_with_message_384
+        lda #0
+        rol a
+        sta ecdsa_result_msg_384
+        lda #$89
         sta BENCH_DBG_MARK
         rts
 

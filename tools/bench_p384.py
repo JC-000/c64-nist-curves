@@ -328,7 +328,7 @@ def main():
         print("Waiting for init sentinel...")
         start = time.time()
         sentinel_ok = False
-        while time.time() - start < 180.0:
+        while time.time() - start < 600.0:
             sentinel = read_bytes(transport, 0x02A7, 1)
             if sentinel[0] == 0x42:
                 sentinel_ok = True

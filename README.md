@@ -114,18 +114,32 @@ jiffy-clock pattern shared with `bench_p256_u64.py` (cycles = jiffies ×
 17045). `tools/bench_ecdsa_u64.py` optionally enables the U64E cycle-accurate
 debug bus-stream (UDP :11002) for a second-opinion measurement: the bench
 trampolines in `src/main.s` emit $80/$81 (P-256 verify), $82/$83 (P-256
-scalar_mul_var), $84/$85 (P-384 scalar_mul_var), $86/$87 (P-384 verify)
-markers at `$BFFF` and `DebugCapture` parses the cycle delta between them.
+scalar_mul_var), $84/$85 (P-384 scalar_mul_var), $86/$87 (P-384 verify),
+$88/$89 (P-384 hash-then-verify wrapper) markers at `$BFFF` and
+`DebugCapture` parses the cycle delta between them.
 
-| Primitive              | 16 MHz cyc   | 16 MHz wall | 48 MHz cyc   | 48 MHz wall |
-|------------------------|-------------:|------------:|-------------:|------------:|
-| ec_scalar_mul_var      |   37,618,315 |      2.35 s |   27,766,305 |      0.58 s |
-| ec_scalar_mul_var_384  |   95,486,090 |      5.97 s |   66,884,580 |      1.39 s |
-| ecdsa_verify_256       |   43,157,940 |      2.70 s |   31,805,970 |      0.66 s |
-| ecdsa_verify_384       |  111,048,175 |      6.94 s |   77,639,975 |      1.62 s |
+| Primitive                 | 16 MHz cyc   | 16 MHz wall | 48 MHz cyc   | 48 MHz wall |
+|---------------------------|-------------:|------------:|-------------:|------------:|
+| ec_scalar_mul_var         |   37,618,315 |      2.35 s |   27,766,305 |      0.58 s |
+| ec_scalar_mul_var_384     |   95,486,090 |      5.97 s |   66,884,580 |      1.39 s |
+| ecdsa_verify_256          |   43,157,940 |      2.70 s |   31,805,970 |      0.66 s |
+| ecdsa_verify_384          |  111,048,175 |      6.94 s |   77,639,975 |      1.62 s |
+| ecdsa_verify_with_msg_384 |  111,082,265 |      6.94 s |   80,605,805 |      1.68 s |
 
 Numbers above are the **measured-2026-05-18** values at master HEAD `788adc3`
-(post-PR-#34 cofactor approach (a)).
+(post-PR-#34 cofactor approach (a)); the `ecdsa_verify_with_msg_384`
+row was added 2026-05-19 against the same source state (master HEAD
+`7d71773`, code byte-identical to `788adc3`).
+
+The `ecdsa_verify_with_msg_384` row exercises the one-shot
+`ecdsa_verify_with_message_384` wrapper (SHA-384 of the message + ECDSA
+verify). Message = RFC 6979 A.3.1 "sample" (6 bytes). The within-run
+Δ vs `ecdsa_verify_384` is **+1 jiffy at 16 MHz / 0 jiffies at 48 MHz**
+— the SHA-384 cost on a 6-byte message is below jiffy quantization
+(<17,045 cyc 1-MHz-equivalent) at U64E turbo. Resolving the per-block
+compress cost at sub-jiffy precision requires a dedicated SHA-384
+bench at multiple message lengths, run at VICE 1 MHz where one block
+lands at ~3-9 jiffies (not yet implemented).
 
 **Measured vs predicted savings — PR #26 + PR #34 retrospective.**
 Both PRs predicted ~800 kcy P-256 / ~1.7 Mcy P-384 ECDSA verify
