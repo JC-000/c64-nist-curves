@@ -12,7 +12,7 @@ DBG = $(BUILD_DIR)/nist-curves.dbg
 CFG = $(SRC_DIR)/c64.cfg
 
 # Source modules (order matters for linking — matches original !source chain)
-MODULES = main constants zp_config lib_version reu_config mul_8x8 \
+MODULES = main constants zp_config lib_version reu_config lib_manifest mul_8x8 \
           fp256 mod256 curve256 points256 inv256 ecdsa256 \
           fp384 mod384 curve384 points384 ecdsa384 \
           sha384 \
