@@ -12,6 +12,36 @@ contract).
 
 ## [Unreleased]
 
+### Shared-primitives shape (2026-05-20)
+
+- **`sqtab` migrated to c64-lib-contract SPEC §8.1 placement contract.**
+  `sqtab_lo` / `sqtab_hi` in `src/mul_8x8.s` now derive from
+  `LIB_SHARED_SQTAB_BASE` — `.ifndef`-guarded with the historical `$9c00`
+  default for standalone builds, overridable by consumers linking against
+  multiple sqtab-using sibling libs into one PRG via
+  `ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<addr>`. Two `.assert` guards
+  catch the failure mode that drove the 2026-05-17 `$7800 → $9c00` move
+  at assemble time rather than at boot:
+  `(LIB_SHARED_SQTAB_BASE & $00ff) = 0` (page-aligned base for cycle-stable
+  `abs,x`) and `sqtab_hi = sqtab_lo + $0200` (SMC dispatch's lo→hi delta).
+- **`sqtab_init` body gated on `.ifndef SHARED_SQTAB_INIT`.** When a
+  consumer defines `SHARED_SQTAB_INIT`, the library's per-lib init body
+  (and its scratch) is excluded so a shared-primitives module can supply
+  the canonical `mul_tables_init` per SPEC §8.1 without source patching.
+  Standalone build behavior unchanged.
+- **Manifest equate `LIB_NISTCURVES_SHARED_PRIMITIVES`** added to
+  `src/lib_manifest.s` per SPEC §5 + §8.0, OR-composed from the §8.x bit
+  constants the library consumes. Currently
+  `LIB_SHARED_PRIMITIVES_SQTAB = $0001` only. Lets consumers
+  `.assert (LIB_NISTCURVES_SHARED_PRIMITIVES .and LIB_X_SHARED_PRIMITIVES) = 0`
+  to catch duplicate ownership at assemble time. Append-only — future §8.x
+  primitives get the next free bit.
+- **No build-output change.** PRG byte-identical (37302 B); `sqtab_lo`
+  still at `$9c00`, `sqtab_hi` still at `$9e00`. Tracking issue
+  [JC-000/c64-lib-contract#5](https://github.com/JC-000/c64-lib-contract/issues/5);
+  paired with c64-lib-contract PR #6 (SPEC §8 patch) and
+  c64-https PR #46 (stub size fix).
+
 ### Library packaging (2026-05-20)
 
 - **`c64-lib-contract` SPEC §1 + §3 + §4 + §5 adoption** — landed across
