@@ -89,12 +89,14 @@ bench-u64: $(PRG)
 # Object-set composition is computed below as Make variables so the inventory
 # stays self-describing.
 
-# Shared objects every archive includes: version + zp config (consumers will
-# .import LIB_VERSION_* and need our ZP slots reserved when they don't
-# pre-define them). lib_manifest.o is omitted because there is no such file
-# in this repository -- the manifest equates live in reu_config.o
-# (LIB_NISTCURVES_REU_BANK_*) and lib_version.o.
-LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/zp_config.o
+# Shared objects every archive includes: version + manifest + zp config.
+# Consumers .import LIB_VERSION_* (semver), LIB_NISTCURVES_REU_BANKS_USED /
+# ZP_USAGE_BYTES / RESIDENT_BYTES / COLD_BYTES (manifest, SPEC §5), and need
+# our ZP slots reserved when they don't pre-define them. The library's own
+# REU bank/offset equates (LIB_NISTCURVES_REU_BANK_*, SPEC §3) live in
+# reu_config.o and are pulled in by LIB_MUL_OBJS below.
+LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/lib_manifest.o \
+                $(BUILD_DIR)/zp_config.o
 
 # Field / multiply machinery (shared by every curve-using archive).
 LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
