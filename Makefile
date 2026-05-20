@@ -27,7 +27,10 @@ CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
 OBJECTS   = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(MODULES)))
 ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 
-.PHONY: all clean build-acme bench-u64 dist
+LIB_DIR = $(BUILD_DIR)/lib
+
+.PHONY: all clean build-acme bench-u64 dist \
+        lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve
 
 all: $(PRG)
 
@@ -56,11 +59,114 @@ build-acme: $(ASM_SRCS) | $(BUILD_DIR)
 bench-u64: $(PRG)
 	python3 tools/bench_ecdsa_u64.py
 
+# --- Library archives (c64-lib-contract SPEC §6) -----------------------------
+#
+# Consumers fetch one of these `.a` files and link directly; no source patching
+# or sed staging required (the pre-PR-#40 approach in c64-https). Each archive
+# contains exactly the symbols a specific consumer use-case needs:
+#
+#   nistcurves.a               -- full library minus the test PRG driver.
+#                                 Reasonable default for whole-library
+#                                 consumers.
+#   nistcurves-p256-verify.a   -- P-256 ECDSA verify only. Excludes the
+#                                 Lim-Lee fixed-base comb (points256_comb,
+#                                 data_p256_limlee), all P-384, all SHA-384,
+#                                 inv256.o (Fermat-based modular inverse
+#                                 reference -- production uses the binary-GCD
+#                                 path in mod256.o), and the test driver.
+#   nistcurves-p384-verify.a   -- P-384 ECDSA verify only. Mirror of p256-
+#                                 verify for the P-384 side. Excludes the
+#                                 hash-then-verify wrapper ecdsa384_msg.o
+#                                 (consumers drive streaming SHA themselves).
+#   nistcurves-p384-sha384.a   -- SHA-384 streaming hash only. Self-contained
+#                                 (no REU, no multiply tables); minimal
+#                                 dependency set.
+#   nistcurves-p384-curve.a    -- P-384 ECDSA verify + SHA-384 +
+#                                 ecdsa_verify_with_message_384 one-shot
+#                                 wrapper. Suitable for the TLS 1.3
+#                                 secp384r1+SHA-384 cipher-suite path.
+#
+# Object-set composition is computed below as Make variables so the inventory
+# stays self-describing.
+
+# Shared objects every archive includes: version + zp config (consumers will
+# .import LIB_VERSION_* and need our ZP slots reserved when they don't
+# pre-define them). lib_manifest.o is omitted because there is no such file
+# in this repository -- the manifest equates live in reu_config.o
+# (LIB_NISTCURVES_REU_BANK_*) and lib_version.o.
+LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/zp_config.o
+
+# Field / multiply machinery (shared by every curve-using archive).
+LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
+                $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/data_shared.o
+
+# Per-curve verify object sets (core point ops only -- no comb).
+LIB_P256_VERIFY_OBJS = $(BUILD_DIR)/fp256.o $(BUILD_DIR)/mod256.o \
+                      $(BUILD_DIR)/curve256.o $(BUILD_DIR)/points256_core.o \
+                      $(BUILD_DIR)/ecdsa256.o $(BUILD_DIR)/data_p256.o
+LIB_P384_VERIFY_OBJS = $(BUILD_DIR)/fp384.o $(BUILD_DIR)/mod384.o \
+                      $(BUILD_DIR)/curve384.o $(BUILD_DIR)/points384_core.o \
+                      $(BUILD_DIR)/ecdsa384.o $(BUILD_DIR)/data_p384.o
+
+# SHA-384 object set: self-contained.
+LIB_SHA384_OBJS      = $(BUILD_DIR)/sha384.o $(BUILD_DIR)/data_sha.o
+
+# Lim-Lee fixed-base comb objects (only the full / curve archives need them).
+LIB_P256_COMB_OBJS = $(BUILD_DIR)/points256_comb.o \
+                    $(BUILD_DIR)/data_p256_limlee.o
+LIB_P384_COMB_OBJS = $(BUILD_DIR)/points384_comb.o \
+                    $(BUILD_DIR)/data_p384_limlee.o
+
+# The full archive bundles every shipping object. The test-driver translation
+# units (main.o + data_test.o) are deliberately excluded -- consumers provide
+# their own main and never use ecdsa_inputs_* / sha384_msg_buf. inv256.o
+# stays in `lib.a` for whole-library consumers that may want the Fermat
+# inverse reference path; it is excluded from minimal archives.
+LIB_FULL_OBJS = $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) \
+                $(LIB_P256_VERIFY_OBJS) $(LIB_P256_COMB_OBJS) \
+                $(LIB_P384_VERIFY_OBJS) $(LIB_P384_COMB_OBJS) \
+                $(LIB_SHA384_OBJS) \
+                $(BUILD_DIR)/inv256.o $(BUILD_DIR)/ecdsa384_msg.o
+
+lib:             $(LIB_DIR)/nistcurves.a
+lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a
+lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a
+lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a
+lib-p384-curve:  $(LIB_DIR)/nistcurves-p384-curve.a
+
+$(LIB_DIR):
+	mkdir -p $(LIB_DIR)
+
+# ar65 a <archive> <objs>... creates / appends; we rm -f first so each rebuild
+# starts from an empty archive (ar65 has no replace-all flag).
+$(LIB_DIR)/nistcurves.a: $(LIB_FULL_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_FULL_OBJS)
+
+$(LIB_DIR)/nistcurves-p256-verify.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_VERIFY_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_VERIFY_OBJS)
+
+$(LIB_DIR)/nistcurves-p384-verify.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS)
+
+# SHA-384 is self-contained: no REU, no multiply tables. Drop the entire
+# LIB_MUL_OBJS set to keep the archive minimal.
+$(LIB_DIR)/nistcurves-p384-sha384.a: $(LIB_CORE_OBJS) $(LIB_SHA384_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_SHA384_OBJS)
+
+$(LIB_DIR)/nistcurves-p384-curve.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 clean:
 	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/nist-curves.prg $(BUILD_DIR)/labels.txt $(BUILD_DIR)/labels_raw.txt $(BUILD_DIR)/nist-curves.dbg
+	rm -rf $(LIB_DIR)
 
 # --- Reproducible release tarball --------------------------------------------
 #
