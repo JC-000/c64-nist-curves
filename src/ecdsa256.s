@@ -27,7 +27,7 @@
 ;   arbitrarily.
 ; ===========================================================================
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P256_CODE"
 
 .export ecdsa_verify_256
 .export fp_reverse32

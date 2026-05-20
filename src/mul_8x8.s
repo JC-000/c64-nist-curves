@@ -37,6 +37,8 @@
 ; --- REU layout contract (SPEC §3) ---
 .import LIB_NISTCURVES_REU_BANK_MUL
 
+.segment "LIB_NISTCURVES_MUL_CODE"
+
 ; Quarter-square table addresses (page-aligned for speed)
 sqtab_lo        = $9c00         ; 512 bytes: low bytes of floor(n^2/4)
 sqtab_hi        = $9e00         ; 512 bytes: high bytes of floor(n^2/4)

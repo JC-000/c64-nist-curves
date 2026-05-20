@@ -5,7 +5,7 @@
 ; All field elements stored LITTLE-ENDIAN (byte 0 = LSB)
 ; =============================================================================
 
-.segment "DATA"
+.segment "LIB_NISTCURVES_BSS"
 
 ; --- Field arithmetic working buffers (32 bytes each for P-256) ---
 .export fp_wide
@@ -122,7 +122,7 @@ mul_src2_buf:
 
 ; --- REU DMA target buffers (page-aligned for LDA abs,Y without penalty) ---
 ; SHARED between P-256 and P-384 code paths - see re-entrancy note above.
-.segment "TABLES"
+.segment "LIB_NISTCURVES_TABLES"
 .export mul_dma_lo
 mul_dma_lo:
         .res 256, 0           ; DMA target: lo bytes of a*b for current a
@@ -130,7 +130,7 @@ mul_dma_lo:
 mul_dma_hi:
         .res 256, 0           ; DMA target: hi bytes of a*b for current a
 
-.segment "DATA"
+.segment "LIB_NISTCURVES_BSS"
 
 ; --- Solinas reduction scratch (for P-256 fast reduction) ---
 ; 33 bytes to hold intermediate sum with carry byte

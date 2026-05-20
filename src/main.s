@@ -48,7 +48,7 @@
 .segment "LOADADDR"
         .word $0801              ; CBM PRG load address
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_MAIN_CODE"
 
 ; BASIC stub: 10 SYS 2064
 basic_stub:
@@ -491,7 +491,7 @@ bench_fp_mod_mul_n_384_tramp:
 ; =============================================================================
 ; Strings
 ; =============================================================================
-.segment "RODATA"
+.segment "LIB_NISTCURVES_MAIN_RODATA"
 
 title_msg:
         .byte 147              ; clear screen (PETSCII)

@@ -1,6 +1,6 @@
 .setcpu "6502"
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P256_CODE"
 
 ; Imports from zp_config
 .importzp fp_src1, fp_src2, fp_dst, fp_carry, fp_mul_i, fp_mul_j

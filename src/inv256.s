@@ -1,6 +1,6 @@
 .setcpu "6502"
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P256_CODE"
 
 ; Imports from zp_config
 .importzp fp_src1, fp_src2, fp_misc
@@ -15,14 +15,14 @@
 .export fp_mod_inv_fast
 
 ; Exponent p-2 as 32 big-endian bytes
-.segment "RODATA"
+.segment "LIB_NISTCURVES_P256_RODATA"
 fp_inv_exp_p2:
         .byte $FF, $FF, $FF, $FF, $00, $00, $00, $01
         .byte $00, $00, $00, $00, $00, $00, $00, $00
         .byte $00, $00, $00, $00, $FF, $FF, $FF, $FF
         .byte $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FD
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P256_CODE"
 
 ; Scratch state for the inversion loop
 fp_inv_bytepos: .byte 0

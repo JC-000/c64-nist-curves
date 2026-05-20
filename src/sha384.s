@@ -44,7 +44,7 @@
 ; not apply. The only ZP slots used (sha_src, sha_len) are dedicated.
 ; ===========================================================================
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_SHA384_CODE"
 
 .export sha384_init
 .export sha384_update
@@ -841,7 +841,7 @@ shr_7:
 ; canonical big-endian hex form for cross-reference with the spec.
 ; ===========================================================================
 
-.segment "RODATA"
+.segment "LIB_NISTCURVES_SHA384_RODATA"
 
 sha384_iv:
         .byte $d8, $9e, $05, $c1, $5d, $9d, $bb, $cb   ; H0 = cbbb9d5dc1059ed8
@@ -959,7 +959,7 @@ sha384_k:
 ; never page-cross.
 ; ===========================================================================
 
-.segment "TABLES"
+.segment "LIB_NISTCURVES_SHA384_TABLES"
 
 lo_2_tbl:
         .repeat 256, i

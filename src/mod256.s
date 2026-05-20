@@ -1,6 +1,6 @@
 .setcpu "6502"
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P256_CODE"
 
 ; Imports from zp_config
 .importzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry
@@ -22,7 +22,7 @@
 ; P-256 prime and group order constants (little-endian)
 ; =============================================================================
 
-.segment "RODATA"
+.segment "LIB_NISTCURVES_P256_RODATA"
 
 ec_p256:
         .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
@@ -36,7 +36,7 @@ ec_n256:
         .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
         .byte $00,$00,$00,$00,$FF,$FF,$FF,$FF
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P256_CODE"
 
 ; =============================================================================
 ; fp_mod_add - (fp_dst) = ((fp_src1) + (fp_src2)) mod (fp_misc)

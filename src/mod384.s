@@ -23,7 +23,7 @@
 .export fp_mod_mul_384, fp_mod_mul_n_384, fp_mod_sqr_384, fp_mod_inv_384, fp_chk_one_384
 .export ec_set_modp_384, ec_set_modn_384, ec_mulp_384, ec_sqrp_384
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P384_CODE"
 
 ; =============================================================================
 ; P-384 prime and group order constants (little-endian)

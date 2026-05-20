@@ -33,7 +33,7 @@
 ; because 47 ($2F) has bit 7 clear.
 ; ===========================================================================
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P384_CODE"
 
 .export ecdsa_verify_384
 .export ecdsa_verify_with_message_384
