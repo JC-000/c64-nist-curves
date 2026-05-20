@@ -14,6 +14,46 @@ contract).
 
 ### Library packaging (2026-05-20)
 
+- **`c64-lib-contract` SPEC §1 + §3 + §4 + §5 adoption** — landed across
+  PRs #43, #45, #46, #48 alongside the §6 work below. The library now
+  exposes every contract symbol downstream consumers (c64-https,
+  c64-wireguard, future TLS / IPsec clients) need to ingest it without
+  patching library sources at integration time:
+  - **§1 version equates.** Added the fourth SPEC §1 equate
+    `LIB_ABI_VERSION = 0` (matches `LIB_VERSION_MAJOR`; bumps in
+    lockstep on breaking exports) to `src/lib_version.s` alongside the
+    pre-existing `LIB_VERSION_MAJOR/MINOR/PATCH`. PR #48.
+  - **§3 REU symbol contract.** New `src/reu_config.s` exports four
+    `.ifndef`-guarded `:abs` equates: `LIB_NISTCURVES_REU_BANK_MUL`
+    (`$00`; claims banks MUL and MUL+1 for the 128 KB mul cache),
+    `LIB_NISTCURVES_REU_BANK_COMB` (`$02`; Lim-Lee anchors),
+    `LIB_NISTCURVES_REU_OFFSET_COMB_P256` (`$0000`),
+    `LIB_NISTCURVES_REU_OFFSET_COMB_P384` (`$4000`). Replaces hardcoded
+    REU bank/offset literals at every mul-row fetch and comb-table
+    stash/fetch site (`main.s`, `mul_8x8.s`, `fp256.s`, `fp384.s`,
+    `points256.s`, `points384.s`). Consumer override:
+    `ca65 --asm-define LIB_NISTCURVES_REU_BANK_COMB=$05 ...`. PR #43.
+  - **§4 segment naming.** Renamed every library `.segment "CODE"` /
+    `"RODATA"` / `"DATA"` / `"TABLES"` / `"BSS"` to per-variant
+    `LIB_NISTCURVES_*` segments: `LIB_NISTCURVES_P256_CODE` / `_RODATA`,
+    `LIB_NISTCURVES_P384_CODE` / `_RODATA` / `_BSS` (for fp384's small
+    BSS block), `LIB_NISTCURVES_SHA384_CODE` / `_RODATA` / `_TABLES`,
+    `LIB_NISTCURVES_MUL_CODE`, `LIB_NISTCURVES_MAIN_CODE` / `_RODATA`
+    (test-driver-only), `LIB_NISTCURVES_TABLES`, `LIB_NISTCURVES_BSS`.
+    `src/c64.cfg` gains a SEGMENTS{} alias block so the standalone test
+    PRG builds byte-identically. Closes #41. PR #45.
+  - **§5 aggregate manifest equates.** New `src/lib_manifest.s` exports
+    `LIB_NISTCURVES_REU_BANKS_USED = $07` (bitmask: banks 0+1 mul cache,
+    bank 2 comb anchors), `LIB_NISTCURVES_ZP_USAGE_BYTES = 31`,
+    `LIB_NISTCURVES_RESIDENT_BYTES = 27000`,
+    `LIB_NISTCURVES_COLD_BYTES = 2500`. Consumer cfgs use these for
+    assemble-time fit checks against ld65 `__<MEMORY>_SIZE__` symbols
+    before kicking off long compile + VICE test cycles. Closes #42.
+    PR #46.
+  - The PRG and every test pass without change. The adoption is purely
+    additive on the public symbol surface (no removals or renames). See
+    [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
+    adopters.md for the cross-library status table.
 - **Per-curve / per-feature `data.s` split + minimal-archive build
   targets** — implementing `c64-lib-contract` SPEC §6 (closes #40).
   The monolithic `src/data.s` is now split into seven self-describing
