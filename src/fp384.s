@@ -32,7 +32,7 @@
 .export fp_copy_384, fp_zero_384, fp_cmp_384, fp_add_384, fp_sub_384
 .export fp_is_zero_384, fp_rshift1_384, fp_mul_384, fp_sqr_384
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P384_CODE"
 
 ; =============================================================================
 ; fp_copy_384 - Copy 48 bytes: (fp_dst) = (fp_src1)
@@ -774,7 +774,7 @@ fp_sqr_384:
 @sqr_done:
         rts
 
-.segment "BSS"
+.segment "LIB_NISTCURVES_P384_BSS"
 
 ; Scratch byte for squaring
 fp384_sqr_extra:  .res 1

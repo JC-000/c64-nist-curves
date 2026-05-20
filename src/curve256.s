@@ -1,6 +1,6 @@
 .setcpu "6502"
 
-.segment "RODATA"
+.segment "LIB_NISTCURVES_P256_RODATA"
 
 ; Exports
 .export ec_a256, ec_b256, ec_gx256, ec_gy256

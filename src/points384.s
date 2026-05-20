@@ -10,7 +10,7 @@
 ; Point at infinity: Z = 0
 ; =============================================================================
 
-.segment "CODE"
+.segment "LIB_NISTCURVES_P384_CODE"
 
 ; --- Exports ---
 .export ec_point_double_384, ec_point_add_384, ec_point_add_jj_384

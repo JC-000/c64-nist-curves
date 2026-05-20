@@ -5,7 +5,7 @@
 ; All field elements stored LITTLE-ENDIAN (byte 0 = LSB)
 ; =============================================================================
 
-.segment "RODATA"
+.segment "LIB_NISTCURVES_P384_RODATA"
 
 ; =============================================================================
 ; P-384 Curve Parameters (little-endian)
