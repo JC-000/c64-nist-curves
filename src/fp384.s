@@ -25,6 +25,9 @@
 .import reu_reu_hi, reu_reu_bank, reu_command
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
+; --- REU layout contract (SPEC §3) ---
+.import LIB_NISTCURVES_REU_BANK_MUL
+
 ; --- Exports ---
 .export fp_copy_384, fp_zero_384, fp_cmp_384, fp_add_384, fp_sub_384
 .export fp_is_zero_384, fp_rshift1_384, fp_mul_384, fp_sqr_384
@@ -204,8 +207,8 @@ fp_mul_384:
         ; A already contains mul_cached_a
         asl                    ; A = multiplier * 2, carry = bit 7
         sta reu_reu_hi
-        lda #0
-        adc #0                 ; bank = carry from shift
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
+        adc #0                 ; bank = MUL_BASE + carry from shift
         sta reu_reu_bank
         lda #%10110001         ; execute + autoload + FETCH (REU->C64)
         sta reu_command
@@ -476,7 +479,7 @@ fp_sqr_384:
         ; DMA mul row for a[i] (inlined)
         asl
         sta reu_reu_hi
-        lda #0
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
         adc #0
         sta reu_reu_bank
         lda #%10110001
@@ -727,7 +730,7 @@ fp_sqr_384:
         ; ~12-cy jsr/rts round trip × 48 diag iterations per call).
         asl
         sta reu_reu_hi
-        lda #0
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
         adc #0
         sta reu_reu_bank
         lda #%10110001

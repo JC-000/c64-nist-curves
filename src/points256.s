@@ -48,6 +48,9 @@
 .import reu_reu_bank, reu_len_lo, reu_len_hi
 .import reu_addr_ctrl, reu_command
 
+; --- REU layout contract (SPEC §3) ---
+.import LIB_NISTCURVES_REU_BANK_COMB
+
 ; =============================================================================
 ; ec_point_double: ec_p3 = 2 * ec_p1 (Jacobian)
 ; Formula for a = -3 (P-256):
@@ -1311,7 +1314,7 @@ sm256_reu_stash_affine:
         sta reu_reu_lo
         lda sm256_reu_off_hi
         sta reu_reu_hi
-        lda #2
+        lda #<LIB_NISTCURVES_REU_BANK_COMB
         sta reu_reu_bank
         lda #64
         sta reu_len_lo
@@ -1335,7 +1338,7 @@ sm256_reu_fetch_affine:
         sta reu_reu_lo
         lda sm256_reu_off_hi
         sta reu_reu_hi
-        lda #2
+        lda #<LIB_NISTCURVES_REU_BANK_COMB
         sta reu_reu_bank
         lda #64
         sta reu_len_lo

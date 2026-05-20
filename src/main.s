@@ -19,6 +19,9 @@
 .import reu_reu_bank, reu_len_lo, reu_len_hi
 .import reu_addr_ctrl, reu_command
 
+; --- REU layout contract (SPEC §3) ---
+.import LIB_NISTCURVES_REU_BANK_MUL
+
 ; --- mul_8x8 imports ---
 .import sqtab_init, mul_8x8, poly_prod_lo, poly_prod_hi
 
@@ -260,8 +263,8 @@ reu_mul_init:
         lda reu_init_a
         asl                    ; A = a * 2 (high byte of offset)
         sta reu_reu_hi
-        lda #0
-        adc #0                 ; carry into bank if a >= 128
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
+        adc #0                 ; bank = MUL_BASE + carry (a >= 128 carries +1)
         sta reu_reu_bank
         lda #0
         sta reu_len_lo
@@ -281,8 +284,8 @@ reu_mul_init:
         sta reu_reu_lo
         lda reu_init_a
         asl                    ; a*2 (carry = bit 7 of a)
-        lda #0
-        adc #0                 ; bank = a >> 7
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
+        adc #0                 ; bank = MUL_BASE + (a >> 7)
         sta reu_reu_bank
         lda reu_init_a
         asl                    ; a*2

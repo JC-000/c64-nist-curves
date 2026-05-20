@@ -13,6 +13,9 @@
 .import reu_reu_hi, reu_reu_bank, reu_command
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
+; REU layout contract (SPEC §3)
+.import LIB_NISTCURVES_REU_BANK_MUL
+
 ; Exports
 .export fp_copy, fp_zero, fp_cmp, fp_add, fp_sub
 .export fp_is_zero, fp_rshift1, fp_mul, fp_sqr
@@ -166,7 +169,7 @@ fp_mul:
 
         asl
         sta reu_reu_hi
-        lda #0
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
         adc #0
         sta reu_reu_bank
         lda #%10110001
@@ -415,7 +418,7 @@ fp_sqr:
 
         asl
         sta reu_reu_hi
-        lda #0
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
         adc #0
         sta reu_reu_bank
         lda #%10110001
@@ -652,7 +655,7 @@ fp_sqr:
         sta mul_cached_a
         asl
         sta reu_reu_hi
-        lda #0
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
         adc #0
         sta reu_reu_bank
         lda #%10110001
