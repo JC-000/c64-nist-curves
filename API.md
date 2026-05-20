@@ -437,43 +437,61 @@ or any wave branch — see §8.5 for the version-stability policy.
 
 ### 8.2 Building against the library
 
-Your consumer project's Makefile must compile the library's `.s` files
-alongside your own source, then link the resulting `.o` objects into
-your PRG. A minimal Makefile fragment, assuming the library is
-submoduled at `lib/c64-nist-curves`:
+The recommended consumer build pattern (added in v0.2.x via c64-lib-contract
+SPEC §6) is to fetch one of the pre-built archive files from the library's
+`make lib-<variant>` targets and link directly. No source patching, no
+per-file `ca65` invocation, no `sed`-staging:
 
 ```make
-LIB          = lib/c64-nist-curves
-LIB_SRC      = $(LIB)/src
-LIB_BUILD    = $(BUILD_DIR)/lib/c64-nist-curves
+LIB             = lib/c64-nist-curves
+LIB_ARCHIVE     = $(LIB)/build/lib/nistcurves-p384-verify.a    # pick a variant
 
-# IMPORTANT: main is OMITTED from the library module list. main.s is
-# the test / bench driver for the library's own PRG and must not be
-# linked into a consumer PRG (the consumer provides its own main).
-LIB_MODULES = constants zp_config lib_version mul_8x8 \
-              fp256 mod256 curve256 points256 inv256 \
-              fp384 mod384 curve384 points384 \
-              data
+$(LIB_ARCHIVE):
+	$(MAKE) -C $(LIB) lib-p384-verify
 
-LIB_OBJECTS = $(addprefix $(LIB_BUILD)/,$(addsuffix .o,$(LIB_MODULES)))
-
-$(LIB_BUILD)/%.o: $(LIB_SRC)/%.s | $(LIB_BUILD)
-	ca65 --cpu 6502 -I $(LIB_SRC) -o $@ $<
-
-$(LIB_BUILD):
-	mkdir -p $@
-
-# Consumer PRG links its own objects plus the library objects.
-consumer.prg: $(CONSUMER_OBJECTS) $(LIB_OBJECTS) consumer.cfg
-	ld65 -o consumer.prg -C consumer.cfg $(CONSUMER_OBJECTS) $(LIB_OBJECTS)
+consumer.prg: $(CONSUMER_OBJECTS) $(LIB_ARCHIVE) consumer.cfg
+	ld65 -o consumer.prg -C consumer.cfg $(CONSUMER_OBJECTS) $(LIB_ARCHIVE)
 ```
 
-The consumer's linker config (`consumer.cfg`) must preserve the segment
-placement the library expects — in particular, the two multiply-table
-pages `mul_dma_lo` at $4B00 and `mul_dma_hi` at $4C00 must remain
-page-aligned and within the C64's RAM region. See `src/c64.cfg` in this
-repository for the canonical memory map; the simplest path is to start
-from a copy of `src/c64.cfg` and extend it with consumer segments.
+See §8.4 for the full archive-variant inventory.
+
+The library uses **library-prefixed segment names** (`LIB_NISTCURVES_*`,
+SPEC §4) so the consumer's `ld65` config can place each tier wherever its
+own memory map needs. The segments to define in the consumer's cfg:
+
+| Segment                              | Type | Constraint                          |
+|--------------------------------------|------|-------------------------------------|
+| `LIB_NISTCURVES_MUL_CODE`            | rw   | -                                   |
+| `LIB_NISTCURVES_P256_CODE`           | rw   | -                                   |
+| `LIB_NISTCURVES_P384_CODE`           | rw   | -                                   |
+| `LIB_NISTCURVES_SHA384_CODE`         | rw   | -                                   |
+| `LIB_NISTCURVES_P256_RODATA`         | ro   | -                                   |
+| `LIB_NISTCURVES_P384_RODATA`         | ro   | -                                   |
+| `LIB_NISTCURVES_SHA384_RODATA`       | ro   | -                                   |
+| `LIB_NISTCURVES_SHA384_TABLES`       | ro   | `align = $100` (rotr LUTs / K[80])  |
+| `LIB_NISTCURVES_TABLES`              | rw   | `align = $100` (`mul_dma_lo/hi`)    |
+| `LIB_NISTCURVES_BSS`                 | rw   | shared mul scratch                  |
+| `LIB_NISTCURVES_P256_BSS`            | rw   | P-256 field/point/ECDSA buffers     |
+| `LIB_NISTCURVES_P256_LIMLEE_BSS`     | rw   | P-256 Lim-Lee anchors + working k   |
+| `LIB_NISTCURVES_P384_BSS`            | bss  | `mul_src2_buf_384` (fp384 scratch)  |
+| `LIB_NISTCURVES_P384_DATA_BSS`       | rw   | P-384 field/point/ECDSA buffers     |
+| `LIB_NISTCURVES_P384_LIMLEE_BSS`     | rw   | P-384 Lim-Lee anchors + working k   |
+| `LIB_NISTCURVES_SHA384_BSS`          | rw   | SHA-384 stream state + digest       |
+
+Per-variant `_BSS` / `_LIMLEE_BSS` segments are declared `optional = yes`
+in `src/c64.cfg`, so consumers that pick a minimal archive (e.g.
+`lib-p256-verify`) will not see linker complaints about missing P-384
+or SHA-384 segments — they simply remain empty. The lone non-optional
+segments are the ones whose objects every archive ships (`LIB_NISTCURVES_BSS`,
+`LIB_NISTCURVES_TABLES`).
+
+The `LIB_NISTCURVES_TABLES` segment carries the only hard placement
+constraint: the two pages `mul_dma_lo` and `mul_dma_hi` must remain
+page-aligned (REU DMA target alignment + `lda abs,Y` no-page-penalty).
+`align = $100` on the segment in your consumer's cfg satisfies this.
+See `src/c64.cfg` for the canonical placement; the simplest path is to
+start from a copy of `src/c64.cfg` and override segment placements as
+the consumer's memory map requires.
 
 ### 8.3 Memory-layout constraints
 
@@ -503,9 +521,52 @@ assignments are currently hard-coded in the library source and would
 require a deeper refactor to change.
 
 Programs using only one curve may skip the other's `ec_precompute_*`
-call (§8.4), recovering its 16–24 KB of REU bank 2 for consumer use.
+call (§8.5), recovering its 16–24 KB of REU bank 2 for consumer use.
 
-### 8.4 Initialization sequence
+### 8.4 Archive build targets
+
+Per `c64-lib-contract` SPEC §6, the library publishes pre-built `ar65`
+archives in `build/lib/`. Consumers fetch the archive matching their
+use case and pass it to `ld65` directly; no source patching, no
+intermediate `.o` shuffling.
+
+| Target                       | Archive                              | Use case                                                                                 |
+|------------------------------|--------------------------------------|------------------------------------------------------------------------------------------|
+| `make lib`                   | `nistcurves.a`                       | Whole library minus the standalone test PRG driver. Default for whole-library consumers. |
+| `make lib-p256-verify`       | `nistcurves-p256-verify.a`           | P-256 ECDSA verify only (variable-base scalar mul). Excludes Lim-Lee fixed-base comb.    |
+| `make lib-p384-verify`       | `nistcurves-p384-verify.a`           | P-384 ECDSA verify only. Excludes Lim-Lee comb and the SHA-driving wrapper.              |
+| `make lib-p384-sha384`       | `nistcurves-p384-sha384.a`           | SHA-384 streaming hash only. Self-contained: no REU, no multiply tables.                 |
+| `make lib-p384-curve`        | `nistcurves-p384-curve.a`            | P-384 ECDSA verify + SHA-384 + `ecdsa_verify_with_message_384` one-shot wrapper.         |
+
+Exclusion summary (per minimal archive):
+
+- `lib-p256-verify` excludes: `main`, `inv256` (Fermat-inverse reference;
+  the binary-GCD path in `mod256` is what production uses), `points256_comb`
+  + `data_p256_limlee` (Lim-Lee anchors and `ec_scalar_mul`), all P-384,
+  all SHA-384, the test-driver staging buffers (`ecdsa_inputs_*`,
+  `sha384_msg_buf`).
+- `lib-p384-verify` excludes: `main`, all P-256, `points384_comb` +
+  `data_p384_limlee`, `ecdsa384_msg` (one-shot wrapper — consumers
+  driving streaming SHA themselves link this in via `lib-p384-curve`
+  instead), all SHA-384, the test-driver staging buffers.
+- `lib-p384-sha384` is the tightest archive: just `sha384.o`,
+  `data_sha.o`, `zp_config.o`, `lib_version.o`. No `mul_8x8`, no REU,
+  no `constants.o` — SHA-384 has no shared scratch with the field /
+  point / ECDSA code paths.
+- `lib-p384-curve` = `lib-p384-verify` ⊕ SHA-384 objects ⊕
+  `ecdsa384_msg.o`. Suitable for the TLS 1.3 secp384r1+SHA-384
+  cipher-suite use case where the consumer wants a single
+  hash-then-verify entry point.
+
+The standalone test PRG (`make` with no args, default target) continues
+to be byte-identical to the pre-PR-#40 baseline (37302 bytes loaded at
+$0801); only the source-file layout changed. Consumers that built
+their own integration scripts against the pre-split layout (e.g.
+`tools/integration/build_nistcurves_p256.sh` in `c64-https`) can
+collapse those scripts to a `make lib-p256-verify && cp` pattern when
+they next refresh.
+
+### 8.5 Initialization sequence
 
 Follow the call sequence documented in §3 — any deviation (skipping
 `sqtab_init`, calling `ec_scalar_mul` before `ec_precompute_256`, etc.)
@@ -527,7 +588,7 @@ arithmetic or point double/add on caller-supplied points) may omit both
 `ec_precompute_*` calls and save the full ~100 s precompute cost, at
 the price of losing `ec_scalar_mul` and `ec_scalar_mul_384`.
 
-### 8.5 Version compatibility checks
+### 8.6 Version compatibility checks
 
 The library exports three integer constants for assembly-time version
 checks, defined in `src/lib_version.s`:
@@ -557,7 +618,7 @@ mainline branch. The `src/lib_version.s` constants are the authoritative
 source; the `VERSION` file at the repository root is a convenience
 mirror for non-ca65 tooling (CI scripts, Makefile version variables).
 
-### 8.6 Reference integrations
+### 8.7 Reference integrations
 
 The `c64-https` and `c64-wireguard` projects are planned reference
 integrations. As of v0.2.0, both are still on the legacy ACME
@@ -566,7 +627,7 @@ and they adopt this library, this section will be updated with
 pointers to their integration patches as worked examples of the
 patterns described in §8.1–8.5.
 
-### 8.7 Releases
+### 8.8 Releases
 
 Tagged releases are published at
 https://github.com/JC-000/c64-nist-curves/releases. Consumers
