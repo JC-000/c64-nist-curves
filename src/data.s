@@ -102,6 +102,26 @@ ec_sc_byte:     .byte 0
 .export ec_sc_mask
 ec_sc_mask:     .byte 0
 
+; --- w-NAF (P-256) STUBS for bisect Experiment B: code-only test.
+;     Each is a 1-byte placeholder so the linker resolves the .imports
+;     in points256.s. ec_scalar_mul_var is NOT called during init
+;     (ec_precompute_256 doesn't go through it), so the small size is
+;     fine for the boot-hang bisect.
+.export var_wnaf
+var_wnaf:       .byte 0
+.export var_wnaf_len
+var_wnaf_len:   .byte 0
+.export var_wnaf_len_hi
+var_wnaf_len_hi: .byte 0
+.export var_tbl_base
+var_tbl_base:   .byte 0
+.export var_jac_save
+var_jac_save:   .byte 0
+.export var_neg_y
+var_neg_y:      .byte 0
+.export var_zero32
+var_zero32:     .byte 0
+
 ; --- fe_mul optimization buffers ---
 ; NOT RE-ENTRANT. The buffers below (mul_cached_a, mul_src2_buf, mul_dma_lo,
 ; mul_dma_hi) plus the fp_src1/fp_src2/fp_dst zero-page slots are SHARED
@@ -229,6 +249,28 @@ ec384_sc_nibble: .byte 0          ; current nibble index (0..95)
 ec384_sc_half:  .byte 0           ; 0=high nibble, 1=low nibble
 .export ec384_precomp_i
 ec384_precomp_i: .byte 0          ; precompute loop counter
+
+; --- w-NAF (P-384) STUBS for bisect Experiment B: code-only test.
+;     Each is a 1-byte placeholder; ec_scalar_mul_var_384 is not called
+;     during init.
+.export var384_wnaf
+var384_wnaf:    .byte 0
+.export var384_wnaf_len
+var384_wnaf_len: .byte 0
+.export var384_wnaf_len_hi
+var384_wnaf_len_hi: .byte 0
+.export var384_tbl_base
+var384_tbl_base: .byte 0
+.export var384_jac_save
+var384_jac_save: .byte 0
+.export var384_neg_y
+var384_neg_y:   .byte 0
+.export var384_zero48
+var384_zero48:  .byte 0
+.export var384_2q_x
+var384_2q_x:    .byte 0
+.export var384_2q_y
+var384_2q_y:    .byte 0
 
 ; --- P-384 Solinas reduction scratch ---
 .export fp384_red_tmp

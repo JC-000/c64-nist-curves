@@ -68,26 +68,40 @@ start:
 
         ; clear screen
         jsr clrscr
+        lda #$01
+        sta $02A8
 
         ; display title
         lda #<title_msg
         ldy #>title_msg
         jsr print_string
+        lda #$02
+        sta $02A9
 
         ; Initialize quarter-square table
         jsr sqtab_init
+        lda #$03
+        sta $02AA
 
         ; Initialize REU multiplication tables
         jsr reu_mul_init
+        lda #$04
+        sta $02AB
 
         ; Precompute windowed scalar multiplication tables into REU bank 2
         jsr ec_precompute_256
+        lda #$05
+        sta $02AC
         jsr ec_precompute_384
+        lda #$06
+        sta $02AD
 
         ; display ready message
         lda #<ready_msg
         ldy #>ready_msg
         jsr print_string
+        lda #$07
+        sta $02AE
 
         ; Signal test harness that initialization is complete
         lda #$42

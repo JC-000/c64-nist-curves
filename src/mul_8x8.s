@@ -35,8 +35,8 @@
 .import reu_reu_hi, reu_reu_bank, reu_command
 
 ; Quarter-square table addresses (page-aligned for speed)
-sqtab_lo        = $9c00         ; 512 bytes: low bytes of floor(n^2/4)
-sqtab_hi        = $9e00         ; 512 bytes: high bytes of floor(n^2/4)
+sqtab_lo        = $a800         ; 512 bytes: low bytes of floor(n^2/4)
+sqtab_hi        = $aa00         ; 512 bytes: high bytes of floor(n^2/4)
 
 .export sqtab_lo, sqtab_hi
 
