@@ -11,12 +11,17 @@ LABELS_RAW = $(BUILD_DIR)/labels_raw.txt
 DBG = $(BUILD_DIR)/nist-curves.dbg
 CFG = $(SRC_DIR)/c64.cfg
 
-# Source modules (order matters for linking — matches original !source chain)
+# Source modules (order matters for linking — matches original !source chain).
+# data.s was split per-curve / per-feature for issue #40 / SPEC §6 so the
+# minimal-archive build targets below can exclude buffers their use case
+# doesn't touch (Lim-Lee anchors, the other curve's state, SHA buffers,
+# test-driver scratch).
 MODULES = main constants zp_config lib_version reu_config lib_manifest mul_8x8 \
           fp256 mod256 curve256 points256 inv256 ecdsa256 \
           fp384 mod384 curve384 points384 ecdsa384 \
           sha384 \
-          data
+          data_shared data_p256 data_p256_limlee \
+          data_p384 data_p384_limlee data_sha data_test
 
 CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
 OBJECTS   = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(MODULES)))
