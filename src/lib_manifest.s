@@ -151,6 +151,23 @@
 .endif
 
 
+; -----------------------------------------------------------------------------
+; Shared-primitives ownership bitmask (SPEC §5 + §8.0)
+; -----------------------------------------------------------------------------
+; The library currently consumes one §8 primitive: the 8x8 quarter-square
+; multiply table (§8.1, bit $0001). A consumer linking multiple sibling libs
+; against the same PRG `.assert`s on the AND of every adopter's manifest
+; equate being zero to detect duplicate ownership at assemble time. See
+; SPEC §8.0 bit allocation table; bits are append-only.
+; -----------------------------------------------------------------------------
+.ifndef LIB_SHARED_PRIMITIVES_SQTAB
+  LIB_SHARED_PRIMITIVES_SQTAB = $0001
+.endif
+.ifndef LIB_NISTCURVES_SHARED_PRIMITIVES
+  LIB_NISTCURVES_SHARED_PRIMITIVES = LIB_SHARED_PRIMITIVES_SQTAB
+.endif
+
+
 ; --- Exports ---
 ; Force absolute address-size on the exports: the integer-equate values
 ; can fit in zero-page so ca65 would otherwise tag them as `zeropage` and
@@ -161,3 +178,4 @@
 .export LIB_NISTCURVES_ZP_USAGE_BYTES:abs
 .export LIB_NISTCURVES_RESIDENT_BYTES:abs
 .export LIB_NISTCURVES_COLD_BYTES:abs
+.export LIB_NISTCURVES_SHARED_PRIMITIVES:abs

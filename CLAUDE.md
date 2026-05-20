@@ -492,23 +492,28 @@ keep all library calls on a single thread of control.
   tools that report "% improvement" across builds should measure
   baseline and target in the same bench invocation to immunise
   against this.
-- **`sqtab` memory-map equate (`src/mul_8x8.s` line 19-20)**. The
-  quarter-square multiply tables `sqtab_lo` and `sqtab_hi` live at the
-  hard-coded equates `$9C00` / `$9E00` (1 KB total), bumped from the
-  original `$7800` / `$7A00` on 2026-05-17 because code growth from the
-  J+J primitives + SHA-384 LUTs + h=8 Lim-Lee anchors was pushing the
-  linker-managed `mul_dma_lo` / `mul_dma_hi` page-aligned TABLES slots
-  (in `src/data.s`, later split to `src/data_shared.s` by PR #47) into
-  the same address as `sqtab_lo`, silently
-  clobbering the multiply table at `sqtab_init` time and hanging the
-  `$02A7` boot sentinel. Same bug shape as the PR #27 / w-NAF re-land
-  hang noted in MEMORY.md. The new address gives ~$0400 of headroom
-  above the current top of DATA (~$988A) and stays below BASIC ROM
-  `$A000`. The SMC page-delta math in `mul_8x8` is computed from the
-  equates so the page-aligned-base constant-time invariant is preserved
-  automatically. If future code growth threatens the new address, bump
-  `sqtab_lo` / `sqtab_hi` higher (any page-aligned pair satisfying
-  `sqtab_hi = sqtab_lo + $0200` works).
+- **`sqtab` memory-map equate (`src/mul_8x8.s:42-58`, SPEC §8.1)**. The
+  quarter-square multiply tables `sqtab_lo` and `sqtab_hi` (1 KB total)
+  now derive from `LIB_SHARED_SQTAB_BASE` per c64-lib-contract SPEC §8.1
+  — `.ifndef`-guarded with a `$9c00` default for standalone builds, and
+  overridable by consumers via `ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<addr>`
+  so multiple sqtab-using libraries linked into the same PRG agree on
+  one placement. The previous failure mode that motivated the 2026-05-17
+  move from `$7800` to `$9C00` (code growth from J+J primitives +
+  SHA-384 LUTs + h=8 Lim-Lee anchors pushed the linker-managed
+  `mul_dma_lo`/`mul_dma_hi` slots into the prior `sqtab_lo` address,
+  silently corrupting the multiply table at `sqtab_init` time and
+  hanging the `$02A7` boot sentinel — same bug shape as the PR #27 /
+  w-NAF re-land hang in MEMORY.md) is now caught at assemble time by
+  the SPEC §8.1 `.assert` guards: `LIB_SHARED_SQTAB_BASE & $00ff = 0`
+  (page-aligned base for cycle-stable `abs,x`) and
+  `sqtab_hi = sqtab_lo + $0200` (SMC dispatch's lo→hi delta).
+  `sqtab_init` is additionally gated on `.ifndef SHARED_SQTAB_INIT` so
+  a future consumer can replace it with the canonical `mul_tables_init`
+  from a shared-primitives module without source patching. `mul_8x8`
+  body is unchanged — the SMC page-delta math is computed from the
+  equates, so any consumer-supplied page-aligned base preserves the CT
+  invariant automatically.
 - **Issue #33-class REU register-residue defence (ported from
   c64-x25519 commit 817f525, 2026-05-10)**. The library's per-row REU
   DMA fetch in `fp_mul`/`fp_sqr` (256+384) writes only 3 of 8 REU

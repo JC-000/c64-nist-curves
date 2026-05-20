@@ -3,27 +3,27 @@
 ; =============================================================================
 ; mul_8x8.s - Quarter-square 8x8->16 multiply + table init
 ;
-; Quarter-square table: sqtab_lo/hi at $9C00-$9FFF (1024 bytes)
+; Quarter-square table: sqtab_lo/hi, 1024 bytes, derived from
+;   LIB_SHARED_SQTAB_BASE per c64-lib-contract SPEC §8.1.
 ; Identity: a*b = floor((a+b)^2/4) - floor((a-b)^2/4)
 ;
-; The sqtab table lives at a fixed equate (rather than as a linker-managed
-; segment) because mul_8x8 uses page-aligned SMC patching on the
-; `lda sqtab_lo,x` / `lda sqtab_hi,x` opcode hi bytes (the linker can't
-; rewrite those embedded constants at link time). The address was moved
-; from the original $7800-$7BFF to $9C00-$9FFF on 2026-05-17 as part of
-; the cofactor J+J add work: code growth (from new primitive +
-; SHA-384 LUTs + h=8 Lim-Lee comb anchors) was pushing the linker-
-; placed TABLES segment (mul_dma_lo / mul_dma_hi page-aligned slots in
-; src/data.s) past $7800, silently overlapping sqtab_lo and silently
-; producing all-zero multiply rows after sqtab_init clobbered the DMA
-; staging area. The new address gives ~$0400 of headroom above the
-; current top of DATA (~$988A) and is well below BASIC ROM at $A000
-; (which the library banks out at boot anyway). If future code growth
-; threatens to push DATA past $9C00, bump sqtab_lo/hi higher (any
-; page-aligned address that satisfies sqtab_hi = sqtab_lo + $0200 works;
-; the mul_8x8 SMC dispatch uses the page-delta equate below).
-; Issue mirrored in c64-x25519's PR #27 reland investigation
-; (MEMORY.md "w-NAF (PR #27) re-land is BLOCKED" note).
+; SPEC §8.1 placement contract: the consumer supplies the base via
+;   `ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<addr>` so multiple
+;   sqtab-using libraries linked into the same PRG agree on one base.
+;   The standalone library build defaults to $9c00 (page-aligned,
+;   below BASIC ROM at $A000 which the library banks out anyway).
+;   The .assert guards below catch misconfigurations at assemble
+;   time -- the 2026-05-17 incident where code growth silently
+;   overlapped the previous $7800 base and corrupted sqtab at boot
+;   is now caught by the page-alignment assert + the consumer's
+;   §5 cfg fit checks against `__DATA_SIZE__`.
+;
+; The mul_8x8 body still uses SMC patching on the `lda sqtab_lo,x` /
+;   `lda sqtab_hi,x` opcode hi bytes (the page-delta `$0200` is folded
+;   into the SMC math below). ld65 can't rewrite those embedded
+;   constants at link time, so the equate-with-default shape (rather
+;   than a linker-managed segment) is the only mechanism that works
+;   with SMC dispatch -- ratified in SPEC §8.1's "Placement contract".
 ; =============================================================================
 
 .importzp poly_i, poly_j, poly_carry, poly_tmp
@@ -39,19 +39,38 @@
 
 .segment "LIB_NISTCURVES_MUL_CODE"
 
-; Quarter-square table addresses (page-aligned for speed)
-sqtab_lo        = $9c00         ; 512 bytes: low bytes of floor(n^2/4)
-sqtab_hi        = $9e00         ; 512 bytes: high bytes of floor(n^2/4)
+; --- Quarter-square table base (SPEC §8.1) ---
+; Consumer override via `ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<addr>`.
+; Default $9c00 was chosen on 2026-05-17 (see Known issues note) so the
+; standalone library build links cleanly without an override.
+.ifndef LIB_SHARED_SQTAB_BASE
+        LIB_SHARED_SQTAB_BASE = $9c00
+.endif
+
+sqtab_lo        = LIB_SHARED_SQTAB_BASE             ; 512 B: lo bytes of floor(n^2/4)
+sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n^2/4)
+
+; SPEC §8.1 assemble-time guards:
+;   - page-aligned base for cycle-stable `abs,x` indexing in CT mul_8x8
+;   - exact $0200 lo->hi delta for the SMC dispatch below
+.assert (LIB_SHARED_SQTAB_BASE & $00ff) = 0, error, "sqtab base must be page-aligned (SPEC §8.1)"
+.assert sqtab_hi = sqtab_lo + $0200,        error, "sqtab_hi must follow sqtab_lo by $0200 (SPEC §8.1)"
 
 .export sqtab_lo, sqtab_hi
 
 ; =============================================================================
-; sqtab_init - Build quarter-square lookup table at $7800-$7BFF
+; sqtab_init - Build quarter-square lookup table at sqtab_lo / sqtab_hi
 ;
 ; Computes floor(i^2/4) for i = 0..511 using recurrence i^2 = (i-1)^2 + 2i - 1
 ;
 ; Clobbers: A, X, Y
+;
+; SPEC §8.1 migration gate: when a consumer defines SHARED_SQTAB_INIT,
+;   this body (and its scratch) is gated out so the consumer's canonical
+;   `mul_tables_init` from a shared-primitives module owns the init.
+;   Idempotent per SPEC §8.1.
 ; =============================================================================
+.ifndef SHARED_SQTAB_INIT
 .export sqtab_init
 sqtab_init:
         lda #0
@@ -129,6 +148,7 @@ sq_acc: .res 3, 0              ; 24-bit accumulator for i^2
 sq_sh:  .res 3, 0              ; 24-bit shifted result (i^2 / 4)
 sq_ad:  .res 2, 0              ; 16-bit addition term (2i+1)
 sq_i:   .res 2, 0              ; 16-bit index counter (0..511)
+.endif  ; .ifndef SHARED_SQTAB_INIT
 
 ; =============================================================================
 ; mul_8x8 - Constant-time 8-bit x 8-bit -> 16-bit multiply
