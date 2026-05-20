@@ -7,6 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project overview
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
+Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
+SPEC §1–§6 (version equates, `.exportzp` ZP, REU symbol contract, segment
+naming, manifest equates, minimal-archive build targets). Consumer
+integration is a single `make lib-<variant>` + link; no source patching.
+See `API.md` §8.2–§8.4 for the archive contract.
+
 Companion docs (read alongside this file):
 - `README.md` — user-facing overview, full benchmark tables, ECDSA ABI walkthrough.
 - `API.md` — library API reference; §4 (re-entrancy contract) and §8 (consumer integration / submodule pinning) are load-bearing.
@@ -126,26 +132,44 @@ pattern.
 All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry propagation.
 
 ### Source files (src/)
+
+The file layout splits per c64-lib-contract SPEC §4 (segment naming) and §6
+(minimal-archive build targets) so consumers can link archives that include
+exactly the symbols their use case needs. See `API.md` §8.2-§8.4 for the
+archive contract.
+
 | File | Purpose |
 |------|---------|
 | main.s | Entry point, VIC blanking, REU DMA init (`reu_mul_init`), precompute table generation, benchmarking. Test/bench driver for the library's own PRG — NOT linked into consumer projects (see API.md §8.2). |
 | constants.s | Hardware addresses, REU registers |
-| zp_config.s | Zero-page allocations (consumer-tunable) |
+| zp_config.s | Zero-page allocations (consumer-tunable, `.exportzp` per SPEC §2) |
+| reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`), consumer-overridable via `ca65 --asm-define` |
+| lib_version.s | Semver + ABI version equates per SPEC §1 (`LIB_VERSION_MAJOR` / `_MINOR` / `_PATCH` / `LIB_ABI_VERSION`) |
+| lib_manifest.s | Aggregate manifest equates per SPEC §5 (`LIB_NISTCURVES_REU_BANKS_USED` / `_ZP_USAGE_BYTES` / `_RESIDENT_BYTES` / `_COLD_BYTES`) |
 | mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, the REU DMA row-fetch helper used by `fp_sqr_384` (moved here from main.s by issue #18 fix so standalone-link consumers resolve it). |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
 | curve256.s | P-256 parameters + RFC 6979 test vectors (little-endian) |
-| points256.s | P-256 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
+| points256_core.s | P-256 `ec_point_double` / `ec_point_add` / `ec_point_add_jj` / `ec_scalar_mul_var` / `ec_jacobian_to_affine`. Verify-path code — present in every P-256 archive. |
+| points256_comb.s | P-256 fixed-base Lim-Lee h=8 comb: `ec_precompute_256` + `ec_scalar_mul` + `sm256_reu_*` helpers. Excluded from `lib-p256-verify` (verify uses variable-base only). |
 | inv256.s | P-256 Fermat inversion via addition chain (reference only; 41x slower than binary GCD) |
 | fp384.s | 48-byte field arithmetic (add/sub/mul/sqr) for P-384 |
 | mod384.s | P-384 Solinas reduction, modular ops, binary GCD inverse, P-384 prime |
 | curve384.s | P-384 parameters + test vectors (little-endian) |
-| points384.s | P-384 point double/add/windowed scalar_mul, Jacobian->affine, REU precompute |
+| points384_core.s | P-384 mirror of `points256_core.s` (double/add/add_jj/scalar_mul_var/jacobian_to_affine). |
+| points384_comb.s | P-384 mirror of `points256_comb.s` (`ec_precompute_384` + `ec_scalar_mul_384` + `sm384w_*` helpers). Excluded from `lib-p384-verify`. |
 | ecdsa256.s | P-256 ECDSA verify (`ecdsa_verify_256`) + BE<->LE helper `fp_reverse32`. Non-constant-time (public-input-only) |
-| ecdsa384.s | P-384 ECDSA verify (`ecdsa_verify_384`) + BE<->LE helper `fp_reverse48`. Non-constant-time (public-input-only). Also hosts `ecdsa_verify_with_message_384`, the one-shot SHA-384 + verify wrapper. |
+| ecdsa384.s | P-384 ECDSA verify (`ecdsa_verify_384`) + BE<->LE helper `fp_reverse48`. Non-constant-time (public-input-only). |
+| ecdsa384_msg.s | `ecdsa_verify_with_message_384` — one-shot SHA-384-then-verify wrapper. Factored out of ecdsa384.s so `lib-p384-verify` can exclude SHA; consumers that drive streaming SHA themselves don't need this object. |
 | sha384.s | SHA-384 streaming hash (FIPS 180-4 §6.4) — `sha384_init` / `sha384_update` / `sha384_final` + 48 B BE digest at `sha384_digest`. Self-contained (no REU DMA, no shared field/multiply scratch). Used by `ecdsa_verify_with_message_384`. |
-| data.s | Buffers, point storage, page-aligned DMA targets |
-| c64.cfg | ld65 linker configuration (memory regions, segment placement) |
+| data_shared.s | Cross-curve RW state: `mul_cached_a`, `mul_src2_buf`, page-aligned `mul_dma_lo` / `mul_dma_hi` DMA targets. |
+| data_p256.s | P-256 field / point / ECDSA scratch (fp_*, ec_*, ecdsa_*). |
+| data_p256_limlee.s | P-256 Lim-Lee anchor RAM (`ec_aff2g_256_x/y`, `ec_anchor{1..8}_x/y`, `cm_k`). Excluded from `lib-p256-verify`. |
+| data_p384.s | P-384 field / point / ECDSA scratch (fp384_*, ec384_*, ecdsa384_*). |
+| data_p384_limlee.s | P-384 Lim-Lee anchor RAM. Excluded from `lib-p384-verify`. |
+| data_sha.s | SHA-384 stream state (`sha_state`, `sha_w`, `sha_abcdefgh`, `sha_t`, `sha_scratch`, `sha_block_buf`, `sha_block_len`, `sha_total_len`, `sha384_digest`). |
+| data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`). Linked into the standalone PRG; excluded from every consumer archive. |
+| c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. |
 | exports.inc | Cross-module .import/.export dependency map |
 
 ### Benchmarks
@@ -286,7 +310,7 @@ gets stale otherwise).
 The library provides **two** point-add primitives per curve, with
 different operand contracts and different consumers:
 
-- **`ec_point_add` / `ec_point_add_384`** (src/points256.s, src/points384.s):
+- **`ec_point_add` / `ec_point_add_384`** (src/points256_core.s, src/points384_core.s):
   **mixed Jacobian + affine addition** (7M + 4S). P1 (ec_p1/ec384_p1) is
   read as full Jacobian; P2 (ec_p2/ec384_p2) is treated as affine with Z2
   implicitly 1 — the function body never reads a Z2 byte. The Lim-Lee
@@ -294,7 +318,7 @@ different operand contracts and different consumers:
   in REU bank 2, fetched into P2, and folded via the mixed add without a
   Z=1 fill step. The only place a real Z=1 fill happens is the comb
   *seeding* branch (first non-zero column when the accumulator is still
-  ∞, src/points256.s:1393-1400 and src/points384.s:1318-1325).
+  ∞, in src/points256_comb.s and src/points384_comb.s).
 
 - **`ec_point_add_jj` / `ec_point_add_jj_384`** (Bernstein-Lange
   add-2007-bl, 11M + 5S + ~10 add/sub): **full Jacobian + Jacobian
@@ -302,13 +326,13 @@ different operand contracts and different consumers:
   (including Z). Handles P1∞, P2∞, both∞, same projective point
   (tail-calls `ec_point_double`), and P1=-P2 (zeros ec_p3) natively.
   One added scratch slot per curve (`ec_jj_tmp` 32 B / `ec384_jj_tmp`
-  48 B in src/data.s); the rest of the formula maps onto the existing
-  `ec_t1..t6` slots.
+  48 B in src/data_p256.s / src/data_p384.s); the rest of the formula
+  maps onto the existing `ec_t1..t6` slots.
 
 The ECDSA verify pipeline (`ecdsa_verify_256` / `ecdsa_verify_384`)
 uses `ec_point_add_jj` at the `u1*G + u2*Q` join: u1*G is held in a
 persistent Jacobian buffer (`ecdsa_u1g_jac` 96 B / `ecdsa384_u1g_jac`
-144 B in src/data.s) across the u2*Q scalar_mul, copied into ec_p2
+144 B in src/data_p256.s / src/data_p384.s) across the u2*Q scalar_mul, copied into ec_p2
 just before the J+J call. This eliminates the affine conversion that
 PR #26's cofactor compare landing had left in place (one binary-GCD
 inversion + 3 mod-p multiplies per verify). The `@ev_r_from_u1g`
@@ -347,14 +371,15 @@ consumption by TLS callers (planned `c64-https` integration path).
   for `u1 = h*w`, `u2 = r*w`). All of those remain callable directly for
   consumers who want to drive the LE primitives without the BE wrapper.
 - **Buffers:** ~448 B P-256 scratch (`ecdsa_r/s/h/qx/qy`, `ecdsa_w/u1/u2`,
-  `ecdsa_u1_be/u2_be`, `ecdsa_u1g_jac` 96 B, `fp_rev_buf`) + ~675 B P-384
-  equivalents (includes `ecdsa384_u1g_jac` 144 B, `ecdsa384_msg_struct_ptr`
-  (2 B) and `ecdsa_result_msg_384` (1 B) added by
-  `ecdsa_verify_with_message_384`), all declared in src/data.s. The
-  `_u1g_jac` buffers replace the previous `ecdsa_u1g_x/y` affine pair
-  (eliminated when the join switched from mixed `ec_point_add` to
-  `ec_point_add_jj`; see "Jacobian addition naming" above).
-- **`ecdsa_verify_with_message_384` (src/ecdsa384.s):** one-shot
+  `ecdsa_u1_be/u2_be`, `ecdsa_u1g_jac` 96 B, `fp_rev_buf`) declared in
+  src/data_p256.s, plus ~675 B P-384 equivalents (includes
+  `ecdsa384_u1g_jac` 144 B, `ecdsa384_msg_struct_ptr` 2 B) declared in
+  src/data_p384.s. `ecdsa_result_msg_384` (1 B test harness signal) lives
+  in src/data_test.s. The `_u1g_jac` buffers replace the previous
+  `ecdsa_u1g_x/y` affine pair (eliminated when the join switched from
+  mixed `ec_point_add` to `ec_point_add_jj`; see "Jacobian addition
+  naming" above).
+- **`ecdsa_verify_with_message_384` (src/ecdsa384_msg.s):** one-shot
   hash-then-verify wrapper. Same A/X-pointer ABI and 240 B BE struct
   layout as `ecdsa_verify_384` (the `h` slot is overwritten with the
   computed digest, so callers may leave it zero). Caller pre-sets ZP
@@ -473,7 +498,8 @@ keep all library calls on a single thread of control.
   original `$7800` / `$7A00` on 2026-05-17 because code growth from the
   J+J primitives + SHA-384 LUTs + h=8 Lim-Lee anchors was pushing the
   linker-managed `mul_dma_lo` / `mul_dma_hi` page-aligned TABLES slots
-  (in `src/data.s`) into the same address as `sqtab_lo`, silently
+  (in `src/data.s`, later split to `src/data_shared.s` by PR #47) into
+  the same address as `sqtab_lo`, silently
   clobbering the multiply table at `sqtab_init` time and hanging the
   `$02A7` boot sentinel. Same bug shape as the PR #27 / w-NAF re-land
   hang noted in MEMORY.md. The new address gives ~$0400 of headroom

@@ -11,6 +11,7 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - Packaged ECDSA verify (`ecdsa_verify_256` / `ecdsa_verify_384`) with big-endian wire-format ABI
 - SHA-384 streaming hash (FIPS 180-4 §6.4) and one-shot
   `ecdsa_verify_with_message_384` hash-then-verify wrapper
+- Full [c64-lib-contract](https://github.com/JC-000/c64-lib-contract) SPEC §1–§6 adoption: stable `LIB_NISTCURVES_*` segment names, `.ifndef`-guarded REU bank/ZP equates, four-equate version manifest, and five `make lib-*` minimal-archive targets so consumers fetch exactly the symbols they need (see API.md §8.2–§8.4)
 - RFC 6979 test vector validation
 - Optimizations ported from [c64-x25519](https://github.com/JC-000/c64-x25519):
   REU DMA multiply tables, self-modifying code, loop unrolling, dedicated squaring
