@@ -34,6 +34,9 @@
 ; --- constants imports (for reu_fetch_mul_row) ---
 .import reu_reu_hi, reu_reu_bank, reu_command
 
+; --- REU layout contract (SPEC §3) ---
+.import LIB_NISTCURVES_REU_BANK_MUL
+
 ; Quarter-square table addresses (page-aligned for speed)
 sqtab_lo        = $9c00         ; 512 bytes: low bytes of floor(n^2/4)
 sqtab_hi        = $9e00         ; 512 bytes: high bytes of floor(n^2/4)
@@ -279,8 +282,8 @@ reu_fetch_mul_row:
         lda mul_cached_a
         asl                    ; A = multiplier * 2, carry = bit 7
         sta reu_reu_hi
-        lda #0
-        adc #0                 ; bank = carry from shift
+        lda #<LIB_NISTCURVES_REU_BANK_MUL
+        adc #0                 ; bank = MUL_BASE + carry from shift
         sta reu_reu_bank
         lda #%10110001         ; execute + autoload + FETCH (REU->C64)
         sta reu_command

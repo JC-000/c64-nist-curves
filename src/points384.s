@@ -50,8 +50,9 @@
 .import reu_reu_bank, reu_len_lo, reu_len_hi
 .import reu_addr_ctrl, reu_command
 
-; REU bank holding the precompute table.
-PRECOMP_REU_BANK = 2
+; --- REU layout contract (SPEC §3) ---
+.import LIB_NISTCURVES_REU_BANK_COMB
+.import LIB_NISTCURVES_REU_OFFSET_COMB_P384
 
 ; =============================================================================
 ; ec_point_double_384: ec384_p3 = 2 * ec384_p1 (Jacobian)
@@ -1974,12 +1975,12 @@ sm384w_calc_reu_offset:
         sta reu_reu_lo
         lda reu_reu_hi
         adc zp_tmp2
-        ; + $4000 base
+        ; + P-384 comb-anchor base offset (high byte)
         clc
-        adc #$40
+        adc #>LIB_NISTCURVES_REU_OFFSET_COMB_P384
         sta reu_reu_hi
 
-        lda #PRECOMP_REU_BANK
+        lda #<LIB_NISTCURVES_REU_BANK_COMB
         sta reu_reu_bank
         rts
 
