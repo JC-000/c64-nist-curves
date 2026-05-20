@@ -12,6 +12,47 @@ contract).
 
 ## [Unreleased]
 
+### Library packaging (2026-05-20)
+
+- **Per-curve / per-feature `data.s` split + minimal-archive build
+  targets** — implementing `c64-lib-contract` SPEC §6 (closes #40).
+  The monolithic `src/data.s` is now split into seven self-describing
+  files: `data_shared` (mul scratch + page-aligned DMA pages),
+  `data_p256` / `data_p256_limlee` (P-256 core / Lim-Lee anchors),
+  `data_p384` / `data_p384_limlee` (P-384 mirror),
+  `data_sha` (SHA-384 stream state + digest), and `data_test` (the
+  test-driver staging buffers `ecdsa_inputs_*` / `sha384_msg_buf`).
+  Each file declares its own `LIB_NISTCURVES_*_BSS` segment so a
+  consumer pulling a minimal archive does not link in buffers it
+  cannot reach. `src/c64.cfg` gains the new segments with
+  `optional = yes` so the standalone PRG and full-library archive
+  both link unchanged (PRG remains 37,302 bytes loaded at $0801).
+- **`points256.s` / `points384.s` split into `_core.s` + `_comb.s`.**
+  The core file hosts `ec_point_double`, `ec_point_add` (mixed
+  J+affine), `ec_point_add_jj` (full J+J), `ec_scalar_mul_var`
+  (variable-base for ECDSA verify), and `ec_jacobian_to_affine`.
+  The comb file hosts `ec_precompute_*` and `ec_scalar_mul`
+  (Wave 7a h=8 Lim-Lee fixed-base) plus the `sm256_reu_*` /
+  `sm384w_*` REU-table stash/fetch helpers, which are only called
+  by the comb code. Verify-only consumers exclude the comb file
+  and recover ~10 KB of code + 4-6 KB of Lim-Lee anchors per curve.
+- **`ecdsa_verify_with_message_384` factored into
+  `src/ecdsa384_msg.s`.** The one-shot SHA-384 + verify wrapper
+  pulls in the SHA-384 primitives transitively; consumers driving
+  streaming SHA themselves (TLS-style multi-buffer transcripts) link
+  the bare `ecdsa_verify_384` without dragging in the wrapper.
+- **Five new `make lib*` archive targets** (`lib`, `lib-p256-verify`,
+  `lib-p384-verify`, `lib-p384-sha384`, `lib-p384-curve`) published
+  under `build/lib/nistcurves-*.a`. Each is composed by name from the
+  per-curve / per-feature object sets above; see API.md §8.4 for the
+  inventory and intended use cases. The pre-existing `make` (no args)
+  standalone test PRG target is unaffected and continues to build a
+  byte-identical 37,302-byte PRG. `ar65 t build/lib/nistcurves-*.a`
+  confirms object counts: full archive ships 26 objects;
+  `p256-verify` and `p384-verify` ship 12 each; `p384-curve` ships
+  15; `p384-sha384` is the tightest at 4 (no REU / no multiply
+  tables, since SHA-384 is self-contained).
+
 ### Added (2026-05-19, second wave)
 
 - **Bench coverage for `ec_point_add_jj{,_384}` and `fp_mod_mul_n{,_384}`** —
