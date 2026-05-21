@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-20
+
 ### Shared-primitives shape (2026-05-20)
 
 - **`sqtab` migrated to c64-lib-contract SPEC §8.1 placement contract.**
