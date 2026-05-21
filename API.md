@@ -419,17 +419,17 @@ release tag.
 ```
 git submodule add https://github.com/JC-000/c64-nist-curves \
     lib/c64-nist-curves
-git -C lib/c64-nist-curves checkout v0.2.0
-git commit -m "Import c64-nist-curves v0.2.0 as submodule"
+git -C lib/c64-nist-curves checkout v0.3.0
+git commit -m "Import c64-nist-curves v0.3.0 as submodule"
 ```
 
 Bumping to a later release:
 
 ```
 git -C lib/c64-nist-curves fetch --tags
-git -C lib/c64-nist-curves checkout v0.2.1    # or whichever tag
+git -C lib/c64-nist-curves checkout v0.3.1    # or whichever tag
 git add lib/c64-nist-curves
-git commit -m "Bump c64-nist-curves to v0.2.1"
+git commit -m "Bump c64-nist-curves to v0.3.1"
 ```
 
 Consumers should pin to a specific tag rather than tracking `master`
@@ -590,42 +590,104 @@ the price of losing `ec_scalar_mul` and `ec_scalar_mul_384`.
 
 ### 8.6 Version compatibility checks
 
-The library exports three integer constants for assembly-time version
-checks, defined in `src/lib_version.s`:
+The library exports four integer constants for assembly-time version
+checks, defined in `src/lib_version.s` (the fourth, `LIB_ABI_VERSION`,
+landed in v0.3.0 per c64-lib-contract SPEC §1):
 
 ```asm
 .import LIB_VERSION_MAJOR, LIB_VERSION_MINOR, LIB_VERSION_PATCH
+.import LIB_ABI_VERSION
 
-.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 2
-    .error "c64-nist-curves v0.2.0 or newer is required"
+.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 3
+    .error "c64-nist-curves v0.3.0 or newer is required"
+.endif
+
+.if LIB_ABI_VERSION <> 0
+    .error "c64-nist-curves ABI v0 expected; rebuild consumer"
 .endif
 ```
 
+`LIB_ABI_VERSION` bumps in lockstep with `LIB_VERSION_MAJOR` and is the
+load-bearing gate for consumers pinning to a specific ABI generation —
+it changes only when public exports are removed or renamed.
+
 The library is currently in the v0.x pre-stable series. Version policy:
 
-- **PATCH** bumps (v0.2.0 → v0.2.1) ship bugfixes or performance
-  improvements with no public API changes. Always safe to adopt.
-- **MINOR** bumps (v0.1.x → v0.2.0) may add public symbols (new entry
-  points, new constants) but will not remove or rename existing ones.
-  Additive changes; safe to adopt if your consumer's `.import` list is
-  a subset of what the new version exports.
+- **PATCH** bumps (v0.3.0 → v0.3.1) ship bugfixes or performance
+  improvements with no public API changes. Always safe to adopt;
+  `LIB_ABI_VERSION` unchanged.
+- **MINOR** bumps (v0.2.x → v0.3.0) may add public symbols (new entry
+  points, new constants, new SPEC §3/§5/§8 manifest equates) but will
+  not remove or rename existing ones. Additive changes; safe to adopt
+  if your consumer's `.import` list is a subset of what the new
+  version exports. `LIB_ABI_VERSION` unchanged.
 - **MAJOR** bumps (v0.x → v1.0) are reserved for the first stability
   commitment. After v1.0.0, MAJOR bumps indicate breaking API changes
   and will be documented in CHANGELOG.md with migration notes.
+  `LIB_ABI_VERSION` bumps in lockstep.
 
 Consumers should pin to a specific tag rather than tracking the
 mainline branch. The `src/lib_version.s` constants are the authoritative
 source; the `VERSION` file at the repository root is a convenience
 mirror for non-ca65 tooling (CI scripts, Makefile version variables).
 
+### 8.6.1 SPEC §3 / §5 / §8 manifest equates (v0.3.0+)
+
+c64-lib-contract adoption added a per-section override + introspection
+surface a consumer can use at assemble time to (a) override placement
+decisions and (b) detect cross-library conflicts when linking multiple
+sibling crypto libraries into the same PRG.
+
+**§3 REU placement** (consumer overrides via `ca65 --asm-define`):
+
+```asm
+ca65 --asm-define LIB_NISTCURVES_REU_BANK_MUL=$03 ...        # default $00
+ca65 --asm-define LIB_NISTCURVES_REU_BANK_COMB=$05 ...       # default $02
+ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P256=$0000  # default $0000
+ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
+```
+
+**§5 manifest equates** (consumer imports for cfg-side fit checks):
+
+```asm
+.import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07
+.import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 31
+.import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
+.import LIB_NISTCURVES_COLD_BYTES           ; default 2500
+.import LIB_NISTCURVES_SHARED_PRIMITIVES    ; default $0001 (sqtab; new v0.3.0)
+```
+
+**§8.1 shared `sqtab`** (cross-library shared primitive — consumer
+provides one base address, all sqtab-consuming sibling libs agree):
+
+```asm
+ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<page-aligned-addr>
+```
+
+Default `$9c00`. Page-aligned + `sqtab_hi = sqtab_lo + $0200` are
+enforced by `.assert` in `src/mul_8x8.s`. `LIB_NISTCURVES_SHARED_PRIMITIVES`
+bit `$0001` (= `LIB_SHARED_PRIMITIVES_SQTAB`) signals to consumers that
+this library claims ownership of the §8.1 primitive; consumers `.assert
+(LIB_NISTCURVES_SHARED_PRIMITIVES .and LIB_X_SHARED_PRIMITIVES) = 0` to
+catch double-ownership at link time when also pulling in another
+sqtab-consuming sibling (`c64-x25519`, `c64-ChaCha20-Poly1305`). See
+c64-lib-contract SPEC §8.1 for the full placement contract.
+
 ### 8.7 Reference integrations
 
 The `c64-https` and `c64-wireguard` projects are planned reference
-integrations. As of v0.2.0, both are still on the legacy ACME
-toolchain and pending migration to ca65; once that migration lands
-and they adopt this library, this section will be updated with
-pointers to their integration patches as worked examples of the
-patterns described in §8.1–8.5.
+integrations. As of v0.3.0, both have adopted ca65 sufficient to drive
+the c64-lib-contract SPEC §6 archive-link pattern, and tracking issues
+for the sqtab §8.1 placement contract are open in
+[`c64-ChaCha20-Poly1305`](https://github.com/JC-000/c64-ChaCha20-Poly1305/issues/40)
+(needed for `c64-wireguard` ingestion). `c64-x25519` shipped its §8.1
+side concurrently with this library's v0.3.0 in
+[c64-x25519 PR #56](https://github.com/JC-000/c64-x25519/pull/56);
+once `c64-ChaCha20-Poly1305` lands its side, the
+`c64-wireguard`-driven multi-sibling integration pattern (one consumer
+linking against this library + `c64-x25519` + `c64-ChaCha20-Poly1305`,
+all sharing one `sqtab` via `LIB_SHARED_SQTAB_BASE`) will be the
+canonical worked example for §8.1 + §6 cross-library composition.
 
 ### 8.8 Releases
 
