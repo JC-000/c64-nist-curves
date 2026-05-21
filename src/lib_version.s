@@ -31,7 +31,7 @@
 ; =============================================================================
 
 LIB_VERSION_MAJOR = 0
-LIB_VERSION_MINOR = 2
+LIB_VERSION_MINOR = 3
 LIB_VERSION_PATCH = 0
 LIB_ABI_VERSION   = 0
 
