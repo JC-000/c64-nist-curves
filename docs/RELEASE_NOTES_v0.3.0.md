@@ -154,12 +154,15 @@ Wave 5c / cofactor-compare retrospective entries, etc.).
 `c64-nist-curves-v0.3.0.tar.gz` is produced reproducibly by
 `make dist VERSION=v0.3.0`. Canonical artifact:
 
-- Size:   _TBD (filled in at tag time)_
-- SHA256: _TBD (filled in at tag time)_
+- Size:   131703 bytes
+- SHA256: `4af116343458fce4059b5f1372ac1b49fe9326fdb8c78cef0bddd54a8fa3715e`
 
 Re-running `make dist VERSION=v0.3.0` against this tag must reproduce
-the recorded SHA256 byte-for-byte. The canonical vendoring file list
-lives in `tools/build_release.sh`.
+the recorded SHA256 byte-for-byte (`git archive` is deterministic;
+`gzip -n` drops the gzip timestamp header). The canonical vendoring
+file list lives in `tools/build_release.sh`; if you add a new
+`src/*.s` file, update both the `MODULES` list in `Makefile:19` AND
+the `git archive` invocation in `tools/build_release.sh`.
 
 ## Verification
 
