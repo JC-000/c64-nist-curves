@@ -16,7 +16,8 @@ CFG = $(SRC_DIR)/c64.cfg
 # minimal-archive build targets below can exclude buffers their use case
 # doesn't touch (Lim-Lee anchors, the other curve's state, SHA buffers,
 # test-driver scratch).
-MODULES = main constants zp_config lib_version reu_config lib_manifest mul_8x8 \
+MODULES = main constants zp_config lib_version reu_config lib_manifest \
+          precalc_manifest mul_8x8 \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
@@ -96,6 +97,7 @@ bench-u64: $(PRG)
 # REU bank/offset equates (LIB_NISTCURVES_REU_BANK_*, SPEC §3) live in
 # reu_config.o and are pulled in by LIB_MUL_OBJS below.
 LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/lib_manifest.o \
+                $(BUILD_DIR)/precalc_manifest.o \
                 $(BUILD_DIR)/zp_config.o
 
 # Field / multiply machinery (shared by every curve-using archive).

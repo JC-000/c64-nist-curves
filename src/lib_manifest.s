@@ -154,17 +154,23 @@
 ; -----------------------------------------------------------------------------
 ; Shared-primitives ownership bitmask (SPEC §5 + §8.0)
 ; -----------------------------------------------------------------------------
-; The library currently consumes one §8 primitive: the 8x8 quarter-square
-; multiply table (§8.1, bit $0001). A consumer linking multiple sibling libs
-; against the same PRG `.assert`s on the AND of every adopter's manifest
-; equate being zero to detect duplicate ownership at assemble time. See
-; SPEC §8.0 bit allocation table; bits are append-only.
+; The library currently consumes two §8 primitives:
+;   - §8.1 sqtab     (bit $0001) - 8x8 quarter-square multiply table
+;   - §8.2 reu_mul   (bit $0002) - 128 KB 8x8->16 REU multiplication table
+; A consumer linking multiple sibling libs against the same PRG `.assert`s
+; on the AND of every adopter's manifest equate being zero to detect
+; duplicate ownership at assemble time. See SPEC §8.0 bit allocation
+; table; bits are append-only and never reused (a deprecated primitive
+; keeps its bit reserved so old consumer cfgs continue to parse).
 ; -----------------------------------------------------------------------------
 .ifndef LIB_SHARED_PRIMITIVES_SQTAB
   LIB_SHARED_PRIMITIVES_SQTAB = $0001
 .endif
+.ifndef LIB_SHARED_PRIMITIVES_REU_MUL
+  LIB_SHARED_PRIMITIVES_REU_MUL = $0002
+.endif
 .ifndef LIB_NISTCURVES_SHARED_PRIMITIVES
-  LIB_NISTCURVES_SHARED_PRIMITIVES = LIB_SHARED_PRIMITIVES_SQTAB
+  LIB_NISTCURVES_SHARED_PRIMITIVES = LIB_SHARED_PRIMITIVES_SQTAB | LIB_SHARED_PRIMITIVES_REU_MUL
 .endif
 
 

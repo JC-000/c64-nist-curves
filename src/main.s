@@ -228,8 +228,30 @@ vic_unblank:
 ; Uses mul_dma_lo/mul_dma_hi as staging buffers.
 ; Uses mul_8x8 (requires sqtab to be initialized first).
 ; Clobbers: A, X, Y
+;
+; SPEC §8.2 migration gate: when a consumer defines SHARED_REU_MUL_INIT,
+;   this body is gated out so the consumer's canonical
+;   `reu_mul_tables_init` from a shared-primitives module owns the
+;   128 KB init. "Safe to call twice" per SPEC §8.2 -- a second call
+;   produces the same final REU state, NOT a no-op (the full ~3 s of
+;   work runs again). The body is purely write-only against REU + a
+;   small bounded scratch (reu_init_a/b), and bottoms out in `mul_8x8`
+;   which is itself idempotent on the same (a, b) pair; no side effects
+;   beyond the table bytes.
+;
+;   `reu_mul_tables_init` (below) is the canonical SPEC §8.2 entry
+;   point and aliases this body in the standalone (un-gated) build.
+;   It resolves to whatever owns the init at link time: this body in
+;   standalone, or the consumer's shared-primitives implementation
+;   when SHARED_REU_MUL_INIT is defined.
 ; =============================================================================
+.ifndef SHARED_REU_MUL_INIT
 .export reu_mul_init
+; SPEC §8.2 canonical entry: alias resolves to the library's body in
+; standalone builds. Under the migration switch, the consumer provides
+; the canonical name from its shared-primitives module instead.
+.export reu_mul_tables_init
+reu_mul_tables_init = reu_mul_init
 reu_mul_init:
         lda #0
         sta reu_init_a         ; outer counter (multiplier a)
@@ -319,6 +341,7 @@ reu_mul_init:
 
 reu_init_a:     .byte 0
 reu_init_b:     .byte 0
+.endif  ; .ifndef SHARED_REU_MUL_INIT
 
 ; =============================================================================
 ; ECDSA verify test trampolines
