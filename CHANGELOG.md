@@ -12,6 +12,27 @@ contract).
 
 ## [Unreleased]
 
+### Shared-primitives shape (2026-06-19)
+
+- **`mul_8x8` body migrated to the canonical `ct_mul_8x8` shape
+  (c64-lib-contract issue #14 / §8.3 candidate).** The constant-time
+  quarter-square body in `src/mul_8x8.s` is now byte-identical to
+  c64-ChaCha20-Poly1305's canonical `ct_mul_8x8` (59 B, sum-first,
+  SMC-baked `a` + `b` in Y, `ct_diff_raw`/`ct_sign_mask` scratch),
+  replacing the prior register-entry adaptation (A=a/X=b with a
+  `tay`/`stx mul_b` preamble + Y-shuttle). This satisfies the
+  cross-adopter byte-identity gate `tools/ct_mul_brute_check.py`
+  (`chacha vs nist-curves = YES`). `mul_8x8` is retained as a
+  back-compat alias of `ct_mul_8x8`; the body is gated on
+  `.ifndef SHARED_CT_MUL_8X8` (mirrors §8.1 `SHARED_SQTAB_INIT`).
+- **`reu_mul_init` (src/main.s) rewired** to SMC-bake `a` into
+  `smc_sum_a_imm+1` / `smc_diff_a_imm+1` once per outer-a iteration and
+  pass `b` in Y across the inner loop — chacha's amortized calling
+  convention. Boot-only path; no runtime field/point op calls `mul_8x8`.
+- No functional or size change: PRG stays 37302 B and all P-256/P-384
+  field tests pass. The §8.3 manifest bit (`$0004`) is deferred to a
+  follow-up after the contract clause allocates it.
+
 ## [0.3.0] — 2026-05-20
 
 ### Shared-primitives shape (2026-05-20)

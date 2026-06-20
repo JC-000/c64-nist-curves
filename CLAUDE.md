@@ -546,6 +546,22 @@ keep all library calls on a single thread of control.
   init sentinel pattern as collateral cleanup — both were broken on
   baseline because `main.s` ends in an infinite `jmp main_loop` and
   BASIC never regains control. See CHANGELOG.md "[Unreleased]".
+  **Update (2026-06-19, c64-lib-contract issue #14 / §8.3): the
+  register-entry adaptation above (A=a, X=b with a `tay`/`stx mul_b`
+  preamble + Y-shuttle diff block) was replaced with chacha's canonical
+  `ct_mul_8x8` body adopted VERBATIM, so the cross-adopter byte-identity
+  gate (`c64-lib-contract/tools/ct_mul_brute_check.py`) sees identical
+  opcodes from `mul_8x8:` to `rts` across all three adopters (nist-curves
+  body is now 59 B, hash `3ed9025b…`, matching chacha).** The new entry
+  convention is SMC-baked: `a` is written into `smc_sum_a_imm+1` /
+  `smc_diff_a_imm+1` and `b` passed in Y; `reu_mul_init` (src/main.s)
+  bakes `a` once per outer-a iteration and varies b in Y across the inner
+  loop. `mul_8x8` is kept as a back-compat alias of `ct_mul_8x8`; the body
+  is gated by `.ifndef SHARED_CT_MUL_8X8` (mirrors §8.1 `SHARED_SQTAB_INIT`).
+  Boot-only / zero CT exposure is unchanged; PRG stays 37302 B; all 471
+  P-256 field tests pass. The shape-strict (no carve-out) decision and
+  rationale are in c64-lib-contract issue #14; the manifest §8.3 bit
+  (`$0004`) is a separate follow-up after the contract clause allocates it.
 - The `LDY #143 / BPL` infinity-fill bug family (BPL
   never branches on the first iteration because `$8F` bit 7 is set, so
   only one byte got written) was fixed in Wave 5 across all sites in

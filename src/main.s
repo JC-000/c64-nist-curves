@@ -24,6 +24,7 @@
 
 ; --- mul_8x8 imports ---
 .import sqtab_init, mul_8x8, poly_prod_lo, poly_prod_hi
+.import smc_sum_a_imm, smc_diff_a_imm
 
 ; --- data imports ---
 .import mul_dma_lo, mul_dma_hi, mul_cached_a
@@ -257,13 +258,19 @@ reu_mul_init:
         sta reu_init_a         ; outer counter (multiplier a)
 
 @outer:
+        ; SMC-bake `a` into ct_mul_8x8's two immediate slots once per
+        ; outer-a iteration (the canonical chacha SMC-baked convention,
+        ; §8.3). The inner b-loop then just varies Y = b across 256 calls.
+        lda reu_init_a
+        sta smc_sum_a_imm+1
+        sta smc_diff_a_imm+1
+
         ; For current a, compute a*b for all b=0..255
         lda #0
         sta reu_init_b         ; inner counter (multiplicand b)
 
 @inner:
-        lda reu_init_a
-        ldx reu_init_b
+        ldy reu_init_b         ; Y = b (ct_mul_8x8 operand)
         jsr mul_8x8            ; poly_prod_lo/hi = a * b
 
         ldx reu_init_b

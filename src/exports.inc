@@ -29,7 +29,8 @@
 
 ; -----------------------------------------------------------------------------
 ; mul_8x8.s
-; EXPORTS: sqtab_init, mul_8x8, poly_prod_lo, poly_prod_hi,
+; EXPORTS: sqtab_init, mul_8x8, ct_mul_8x8 (alias), smc_sum_a_imm,
+;          smc_diff_a_imm, poly_prod_lo, poly_prod_hi,
 ;          sqtab_lo, sqtab_hi, reu_fetch_mul_row
 ; IMPORTS:
 ;   ZP: poly_i, poly_j, poly_carry, poly_tmp (from zp_config)
@@ -270,7 +271,8 @@
 ;              reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi,
 ;              reu_reu_bank, reu_len_lo, reu_len_hi,
 ;              reu_addr_ctrl, reu_command
-;   mul_8x8: sqtab_init, mul_8x8, poly_prod_lo, poly_prod_hi
+;   mul_8x8: sqtab_init, mul_8x8, poly_prod_lo, poly_prod_hi,
+;            smc_sum_a_imm, smc_diff_a_imm
 ;   data: mul_dma_lo, mul_dma_hi, mul_cached_a,
 ;         ecdsa_inputs_256, ecdsa_result_256,
 ;         ecdsa_inputs_384, ecdsa_result_384
