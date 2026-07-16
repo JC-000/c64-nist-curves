@@ -12,6 +12,19 @@ contract).
 
 ## [Unreleased]
 
+### Shared-primitives shape (2026-07-15)
+
+- **§8.3 manifest bit landed + §8.0 conditional mask adopted
+  (c64-lib-contract v0.4.0).** `src/lib_manifest.s` now defines
+  `LIB_SHARED_PRIMITIVES_CT_MUL_8X8 = $0004` and builds
+  `LIB_NISTCURVES_SHARED_PRIMITIVES` in the conditional form required by
+  SPEC §8.0 (issue #21): each bit is included iff this build does NOT
+  defer that primitive via its migration switch. Standalone build
+  exports `$0007` (sqtab | reu_mul | ct_mul_8x8); a build with
+  `-D SHARED_CT_MUL_8X8` drops to `$0003`; deferring all three yields
+  `$0000` (verified via `od65 --dump-exports`). PRG byte-identical
+  (37302 B) — equates only, no runtime impact.
+
 ### Shared-primitives shape (2026-06-19)
 
 - **`mul_8x8` body migrated to the canonical `ct_mul_8x8` shape

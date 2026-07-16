@@ -654,7 +654,11 @@ ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 .import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 31
 .import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
 .import LIB_NISTCURVES_COLD_BYTES           ; default 2500
-.import LIB_NISTCURVES_SHARED_PRIMITIVES    ; default $0001 (sqtab; new v0.3.0)
+.import LIB_NISTCURVES_SHARED_PRIMITIVES    ; standalone default $0007
+                                            ; (sqtab | reu_mul | ct_mul_8x8);
+                                            ; conditional per SPEC §8.0 — each
+                                            ; defined SHARED_* deferral switch
+                                            ; drops its bit
 ```
 
 **§8.1 shared `sqtab`** (cross-library shared primitive — consumer
@@ -672,6 +676,14 @@ this library claims ownership of the §8.1 primitive; consumers `.assert
 catch double-ownership at link time when also pulling in another
 sqtab-consuming sibling (`c64-x25519`, `c64-ChaCha20-Poly1305`). See
 c64-lib-contract SPEC §8.1 for the full placement contract.
+
+The mask is **conditional** (SPEC §8.0, v0.4.0): building with a
+primitive's deferral switch defined (`-D SHARED_SQTAB_INIT`,
+`-D SHARED_REU_MUL_INIT`, `-D SHARED_CT_MUL_8X8`) gates out this
+library's copy AND drops the matching bit (`$0001` / `$0002` / `$0004`)
+from `LIB_NISTCURVES_SHARED_PRIMITIVES`, so exactly one co-linked
+sibling owns each shared primitive and the disjointness `.assert`
+holds. Standalone builds (no switches) export `$0007`.
 
 ### 8.7 Reference integrations
 
