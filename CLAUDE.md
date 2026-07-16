@@ -35,7 +35,7 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   source-level stepping / breakpoints / span lookup. `.dbg` is a separate
   artifact; the .prg is byte-identical with or without `-g` (verified by
   sha256 round-trip).
-Current PRG size: ~36.4 KB (37302 bytes), loaded at $0801.
+Current PRG size: ~36.3 KB (37171 bytes), loaded at $0801.
 
 `src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
 ACME build path used in side-by-side diff testing only — do not edit
@@ -164,12 +164,13 @@ archive contract.
 | ecdsa384_msg.s | `ecdsa_verify_with_message_384` — one-shot SHA-384-then-verify wrapper. Factored out of ecdsa384.s so `lib-p384-verify` can exclude SHA; consumers that drive streaming SHA themselves don't need this object. |
 | sha384.s | SHA-384 streaming hash (FIPS 180-4 §6.4) — `sha384_init` / `sha384_update` / `sha384_final` + 48 B BE digest at `sha384_digest`. Self-contained (no REU DMA, no shared field/multiply scratch). Used by `ecdsa_verify_with_message_384`. |
 | data_shared.s | Cross-curve RW state: `mul_cached_a`, `mul_src2_buf`, page-aligned `mul_dma_lo` / `mul_dma_hi` DMA targets. |
-| data_p256.s | P-256 field / point / ECDSA scratch (fp_*, ec_*, ecdsa_*). |
+| data_p256.s | P-256 field / point / ECDSA scratch (fp_*, ec_*, ecdsa_*) actually referenced on the verify path — trimmed to 1312 B by issue #54. |
+| data_p256_invref.s | `fp_tmp1`, the inv256.s (Fermat-reference) scratch. Rides with inv256.o: full archive + standalone PRG only, excluded from `lib-p256-verify`. |
 | data_p256_limlee.s | P-256 Lim-Lee anchor RAM (`ec_aff2g_256_x/y`, `ec_anchor{1..8}_x/y`, `cm_k`). Excluded from `lib-p256-verify`. |
 | data_p384.s | P-384 field / point / ECDSA scratch (fp384_*, ec384_*, ecdsa384_*). |
 | data_p384_limlee.s | P-384 Lim-Lee anchor RAM. Excluded from `lib-p384-verify`. |
 | data_sha.s | SHA-384 stream state (`sha_state`, `sha_w`, `sha_abcdefgh`, `sha_t`, `sha_scratch`, `sha_block_buf`, `sha_block_len`, `sha_total_len`, `sha384_digest`). |
-| data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`). Linked into the standalone PRG; excluded from every consumer archive. |
+| data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`, and the `fp_tmp2..4` harness staging slots — no .s code references those; the Python tools poke operands there). Linked into the standalone PRG; excluded from every consumer archive. |
 | c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. |
 | exports.inc | Cross-module .import/.export dependency map |
 

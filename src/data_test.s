@@ -45,3 +45,17 @@ ecdsa_result_msg_384:   .byte 0
 ;     test driver; not used by sha384.s itself.
 .export sha384_msg_buf
 sha384_msg_buf:   .res 1024, 0
+
+; --- Harness field-element staging slots (moved here from data_p256.s by
+;     issue #54). NO .s code references these: the Python test/bench tools
+;     (test_fp256.py, test_points256.py, bench_p256*.py, diag_*.py, ...)
+;     poke operands into them and aim the fp_src1/fp_src2/fp_dst ZP
+;     pointers at them when driving field ops via jsr(). Production
+;     consumers stage operands in their own RAM, so these ride in the
+;     test-only object with the other harness buffers.
+.export fp_tmp2
+fp_tmp2:        .res 32, 0
+.export fp_tmp3
+fp_tmp3:        .res 32, 0
+.export fp_tmp4
+fp_tmp4:        .res 32, 0

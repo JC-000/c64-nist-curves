@@ -60,3 +60,11 @@ ec_anchor8_y:   .res 32, 0
 ;     each. cm_k[0..3] = K0 (LSBs), cm_k[4..7] = K1, ..., cm_k[28..31] = K7.
 .export cm_k
 cm_k:           .res 32, 0
+
+; --- Comb scalar-walker state (moved here from data_p256.s by issue #54:
+;     only points256_comb.s reads/writes these, and lib-p256-verify —
+;     which excludes the comb — shouldn't pay for them).
+.export ec_sc_byte
+ec_sc_byte:     .byte 0
+.export ec_sc_mask
+ec_sc_mask:     .byte 0

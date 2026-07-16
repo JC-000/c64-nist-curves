@@ -21,7 +21,7 @@ MODULES = main constants zp_config lib_version reu_config lib_manifest \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
-          data_shared data_p256 data_p256_limlee \
+          data_shared data_p256 data_p256_invref data_p256_limlee \
           data_p384 data_p384_limlee data_sha data_test
 
 CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
@@ -72,9 +72,10 @@ bench-u64: $(PRG)
 #   nistcurves-p256-verify.a   -- P-256 ECDSA verify only. Excludes the
 #                                 Lim-Lee fixed-base comb (points256_comb,
 #                                 data_p256_limlee), all P-384, all SHA-384,
-#                                 inv256.o (Fermat-based modular inverse
-#                                 reference -- production uses the binary-GCD
-#                                 path in mod256.o), and the test driver.
+#                                 inv256.o + data_p256_invref.o (Fermat-based
+#                                 modular inverse reference and its scratch --
+#                                 production uses the binary-GCD path in
+#                                 mod256.o), and the test driver.
 #   nistcurves-p384-verify.a   -- P-384 ECDSA verify only. Mirror of p256-
 #                                 verify for the P-384 side. Excludes the
 #                                 hash-then-verify wrapper ecdsa384_msg.o
@@ -130,7 +131,8 @@ LIB_FULL_OBJS = $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) \
                 $(LIB_P256_VERIFY_OBJS) $(LIB_P256_COMB_OBJS) \
                 $(LIB_P384_VERIFY_OBJS) $(LIB_P384_COMB_OBJS) \
                 $(LIB_SHA384_OBJS) \
-                $(BUILD_DIR)/inv256.o $(BUILD_DIR)/ecdsa384_msg.o
+                $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
+                $(BUILD_DIR)/ecdsa384_msg.o
 
 lib:             $(LIB_DIR)/nistcurves.a
 lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a

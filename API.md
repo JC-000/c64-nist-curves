@@ -51,8 +51,8 @@ host-supplied definition wins).
 | Region | Address range | Purpose |
 |---|---|---|
 | PRG code | `$0801`-`$58FF` (approx.) | BASIC stub, boot code, math routines. PRG size varies per build — see `build/labels.txt` for the exact `__CODE_LAST__` symbol address in any given build. |
-| P-256 field buffers | `$4608`-`$49E9` | `fp_wide`, `fp_tmp1..4`, `fp_r0..3`, `fp_inv_*` (see `data.s`). |
-| P-256 point buffers | `$47CA`-`$49E9` | `ec_p1`, `ec_p2`, `ec_p3`, `ec_t1..6`, `ec_affine_x/y`. Overlap in table above reflects contiguous placement in `data.s`. |
+| P-256 field buffers | see `build/labels.txt` | `fp_wide`, `fp_r0`, `fp_inv_*` (`data_p256.s`); `fp_tmp1` rides in `data_p256_invref.s` (Fermat-reference scratch, full archive only). `fp_tmp2..4` are harness-only staging in `data_test.s`; `fp_r1..3` / `fp_inv_iter` / `fp_red_tmp` were deleted (issue #54). |
+| P-256 point buffers | see `build/labels.txt` | `ec_p1`, `ec_p2`, `ec_p3`, `ec_t1..6`, `ec_jj_tmp`, `ec_affine_x/y` (`data_p256.s`). |
 | `mul_cached_a` / `mul_src2_buf` / reduction scratch | `$49EA`-`$4AFF` (approx.) | Shared multiply scratch and Solinas accumulator. |
 | `mul_dma_lo` (page-aligned) | `$4B00`-`$4BFF` | REU DMA target: low bytes of the current multiply row. |
 | `mul_dma_hi` | `$4C00`-`$4CFF` | REU DMA target: high bytes of the current multiply row. |
@@ -158,9 +158,10 @@ Scalars must be zero-padded up to the curve's full field width.
 ### Clobbers
 
 All public routines clobber `A`, `X`, `Y`. They also clobber the shared
-scratch buffers listed in `src/data.s` (`fp_wide`, `fp_tmp1..4`, `fp_r0..3`,
-`fp_inv_*`, `ec_t1..6`, and their `_384` counterparts), plus
-`mul_cached_a` / `mul_src2_buf` / `mul_dma_lo` / `mul_dma_hi` / `fp_red_tmp`.
+scratch buffers listed in `src/data_p256.s` / `src/data_p384.s` (`fp_wide`,
+`fp_r0`, `fp_inv_*`, `ec_t1..6`, `ec_jj_tmp`, and their `_384`
+counterparts), plus `mul_cached_a` / `mul_src2_buf` / `mul_dma_lo` /
+`mul_dma_hi`.
 
 ### Re-entrancy: **NOT re-entrant**
 
@@ -472,6 +473,7 @@ own memory map needs. The segments to define in the consumer's cfg:
 | `LIB_NISTCURVES_TABLES`              | rw   | `align = $100` (`mul_dma_lo/hi`)    |
 | `LIB_NISTCURVES_BSS`                 | rw   | shared mul scratch                  |
 | `LIB_NISTCURVES_P256_BSS`            | rw   | P-256 field/point/ECDSA buffers     |
+| `LIB_NISTCURVES_P256_INVREF_BSS`     | rw   | `fp_tmp1` (Fermat-reference scratch)|
 | `LIB_NISTCURVES_P256_LIMLEE_BSS`     | rw   | P-256 Lim-Lee anchors + working k   |
 | `LIB_NISTCURVES_P384_BSS`            | bss  | `mul_src2_buf_384` (fp384 scratch)  |
 | `LIB_NISTCURVES_P384_DATA_BSS`       | rw   | P-384 field/point/ECDSA buffers     |
@@ -540,11 +542,14 @@ intermediate `.o` shuffling.
 
 Exclusion summary (per minimal archive):
 
-- `lib-p256-verify` excludes: `main`, `inv256` (Fermat-inverse reference;
-  the binary-GCD path in `mod256` is what production uses), `points256_comb`
-  + `data_p256_limlee` (Lim-Lee anchors and `ec_scalar_mul`), all P-384,
+- `lib-p256-verify` excludes: `main`, `inv256` + `data_p256_invref`
+  (Fermat-inverse reference and its `fp_tmp1` scratch; the binary-GCD
+  path in `mod256` is what production uses), `points256_comb`
+  + `data_p256_limlee` (Lim-Lee anchors, `ec_scalar_mul`, and the comb
+  scalar-walker state `ec_sc_byte`/`ec_sc_mask`), all P-384,
   all SHA-384, the test-driver staging buffers (`ecdsa_inputs_*`,
-  `sha384_msg_buf`).
+  `sha384_msg_buf`, `fp_tmp2..4`). Its `LIB_NISTCURVES_P256_BSS`
+  extent is 1312 B as of issue #54 (was 1573 B in v0.3.0).
 - `lib-p384-verify` excludes: `main`, all P-256, `points384_comb` +
   `data_p384_limlee`, `ecdsa384_msg` (one-shot wrapper — consumers
   driving streaming SHA themselves link this in via `lib-p384-curve`
