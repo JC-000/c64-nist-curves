@@ -54,6 +54,7 @@ python3 tools/bench_p384_u64.py      # P-384 on Ultimate 64 Elite (16/48 MHz tur
 python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAVP SigVer)
 python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
 python3 tools/bench_sha384.py        # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
+python3 tools/bench_reu_mult.py      # REU multiply-table cost decomposition (row-fetch DMA vs mul_8x8 vs fp_mul; VICE, ~4 min; not CI-gating)
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
 
@@ -186,14 +187,20 @@ sentinel at $02A8. Full reboot between speed changes (REU DMA state
 gets stale otherwise).
 
 ### Key optimizations
-- REU DMA multiply row caching (128KB lookup in REU)
+- REU DMA multiply row caching (128KB lookup in REU; ~542 cy per row
+  fetch = ~20 cy register setup + ~512 cy DMA cycle-steal stall; DMA is
+  ~23% of fp_mul / ~18% of fp_mul_384 — measured 2026-05-21, see
+  `.research/reu_mult_audit_2026_05_21/report.md`; still a ~2× win vs
+  the no-table alternative)
 - Persistent REU DMA descriptor state: `reu_mul_init` pre-configures the
   C64 base ($DF02/03 = mul_dma_lo), REU offset low ($DF04 = 0),
   length ($DF07/08 = 512), and address-control ($DF0A = 0) ONCE at boot.
   The per-row fetch inside fp_mul / fp_sqr (and the `_384` variants)
   writes only three bytes per row: reu_reu_hi ($DF05), reu_reu_bank
-  ($DF06), reu_command ($DF01) — 20 cycles total per row fetch, which
-  works out to <1% of a full fp_mul. Point-level DMA routines
+  ($DF06), reu_command ($DF01) — 20 cycles of register setup per row
+  fetch. (The full fetch still costs ~542 cy because the 512-byte DMA
+  cycle-steals ~1 cy/byte while the 6510 is halted; only the setup head
+  is compressible.) Point-level DMA routines
   (`.sm_reu_restore` / `.sm384w_restore_reu`) restore this invariant
   state on exit so the mul-fetch path never has to re-initialize it.
   **Caller residue defence**: each public entry point that initiates
@@ -215,9 +222,12 @@ gets stale otherwise).
 ### Negative findings (do not re-attempt without a new angle)
 - **One-level subtractive Karatsuba at N=32** (Wave 4c, reverted). Three N=16
   leaves plus combine cost more than one monolithic N=32 multiply on this
-  codebase. The dominant cost is NOT REU DMA setup — Wave 7b verified that
-  per-row DMA setup is already only 20 cycles per row / <1% of fp_mul, so
-  tripling row-fetches only adds ~2% overhead. The real bottleneck is the
+  codebase. The dominant cost is NOT REU DMA *setup* — Wave 7b verified
+  per-row register setup is only 20 cycles — but note the full row fetch
+  is ~542 cy including the DMA cycle-steal stall (~23% of fp_mul; the
+  2026-05-21 REU audit corrected the earlier "<1%" framing here), so
+  extra row-fetches from sub-multiplies add real DMA cost on top of the
+  combine overhead below. The real bottleneck is the
   4x-unrolled inner-loop accumulator body itself (the `ldy mul_src2_buf,x /
   adc mul_dma_lo,y / adc mul_dma_hi,y / sta` chain per byte). Three N=16
   sub-multiplies do 3*16*16 = 768 byte-muls plus ~N*3 combine adds; one
