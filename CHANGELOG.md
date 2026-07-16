@@ -12,6 +12,33 @@ contract).
 
 ## [Unreleased]
 
+### Archive slimming (2026-07-16)
+
+- **`lib-p256-verify` BSS trimmed to verify-path-only slots (issue #54,
+  −261 B).** `LIB_NISTCURVES_P256_BSS` extent on a consumer link drops
+  1573 B → **1312 B**:
+  - `fp_tmp1` (32 B) → new `src/data_p256_invref.s` (segment
+    `LIB_NISTCURVES_P256_INVREF_BSS`) riding with `inv256.o` — full
+    archive + standalone PRG only;
+  - `ec_sc_byte` / `ec_sc_mask` (2 B) → `src/data_p256_limlee.s`
+    (comb-only scalar-walker state, already excluded from the verify
+    archive);
+  - `fp_tmp2..4` (96 B) → `src/data_test.s`: referenced by NO .s code,
+    but the Python test/bench harness stages field operands there, so
+    they move to the test-only object instead of the outright delete
+    the issue proposed (consumer-side effect identical);
+  - `fp_r1..3`, `fp_inv_iter`, `fp_red_tmp` (131 B) deleted —
+    unreferenced by any .s or tool.
+  Standalone PRG: 37302 B → 37171 B. Verified: full P-256 field
+  (471/471) + point (41/41) + ECDSA-verify suites pass; dummy consumer
+  link against the trimmed archive resolves every import on the
+  variable-base verify path.
+- **Known pre-existing gap (NOT introduced here):** `lib-p256-verify`
+  cannot link the packaged `ecdsa_verify_256` — it `jsr`s the fixed-base
+  comb `ec_scalar_mul` (u1·G step), which `points256_comb.o` provides
+  and the archive excludes by design since #40. Confirmed identical on
+  the pre-trim baseline. Tracked separately.
+
 ### Shared-primitives shape (2026-07-15)
 
 - **§8.3 manifest bit landed + §8.0 conditional mask adopted

@@ -74,7 +74,7 @@ git archive \
   src/points384_core.s src/points384_comb.s \
   src/ecdsa384.s src/ecdsa384_msg.s src/sha384.s \
   src/data_shared.s \
-  src/data_p256.s src/data_p256_limlee.s \
+  src/data_p256.s src/data_p256_invref.s src/data_p256_limlee.s \
   src/data_p384.s src/data_p384_limlee.s \
   src/data_sha.s src/data_test.s \
   Makefile tools/build_release.sh \

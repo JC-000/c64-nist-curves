@@ -39,19 +39,21 @@
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
-; data.s — All mutable data buffers
+; data_*.s — All mutable data buffers (split from monolithic data.s by #40;
+; P-256 side slot-trimmed by #54: fp_tmp1 → data_p256_invref.s, fp_tmp2..4 →
+; data_test.s (harness staging), ec_sc_byte/ec_sc_mask → data_p256_limlee.s,
+; fp_r1..3 / fp_inv_iter / fp_red_tmp deleted as unreferenced)
 ; EXPORTS:
-;   fp_wide, fp_tmp1, fp_tmp2, fp_tmp3, fp_tmp4,
-;   fp_r0, fp_r1, fp_r2, fp_r3,
-;   fp_inv_u, fp_inv_v, fp_inv_x1, fp_inv_x2, fp_inv_iter,
+;   fp_wide, fp_tmp1 (invref), fp_tmp2..fp_tmp4 (test-only),
+;   fp_r0,
+;   fp_inv_u, fp_inv_v, fp_inv_x1, fp_inv_x2,
 ;   ec_p1, ec_p2, ec_p3,
 ;   ec_t1, ec_t2, ec_t3, ec_t4, ec_t5, ec_t6, ec_jj_tmp,
 ;   ec_affine_x, ec_affine_y,
 ;   ec_base_x, ec_base_y,
 ;   ec_base384_x, ec_base384_y,
-;   ec_sc_byte, ec_sc_mask,
+;   ec_sc_byte, ec_sc_mask (limlee),
 ;   mul_cached_a, mul_src2_buf, mul_dma_lo, mul_dma_hi,
-;   fp_red_tmp,
 ;   fp384_wide, fp384_tmp1, fp384_tmp2, fp384_tmp3, fp384_tmp4,
 ;   fp384_r0, fp384_r1, fp384_r2, fp384_r3,
 ;   fp384_inv_u, fp384_inv_v, fp384_inv_x1, fp384_inv_x2,

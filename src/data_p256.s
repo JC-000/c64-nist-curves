@@ -7,9 +7,18 @@
 ; build targets). All field elements stored LITTLE-ENDIAN (byte 0 = LSB)
 ; unless noted; this matches 6502 carry propagation.
 ;
-; EXCLUDES the Lim-Lee fixed-base comb anchors and the comb working scalar
-; (those live in data_p256_limlee.s so the variable-base-verify-only archive
-; lib-p256-verify can drop them).
+; EXCLUDES (issue #40 + #54, SPEC §6 use-case-driven exclusion):
+;   - the Lim-Lee fixed-base comb anchors, working scalar, and comb
+;     scalar-walker state ec_sc_byte/ec_sc_mask (data_p256_limlee.s) so
+;     the variable-base-verify-only archive lib-p256-verify can drop them;
+;   - fp_tmp1, the Fermat-inverse reference scratch (data_p256_invref.s,
+;     linked with inv256.o into the full archive only);
+;   - fp_tmp2..4, referenced by NO .s code but used by the Python test /
+;     bench harness as poke-staging for field operands (data_test.s,
+;     standalone PRG only).
+; Slots referenced by nothing at all (fp_r1..3, fp_inv_iter, fp_red_tmp —
+; stale monolithic-data-era entries) were deleted outright by issue #54
+; (261 B total removed from this segment with the moves above).
 ; =============================================================================
 
 .segment "LIB_NISTCURVES_P256_BSS"
@@ -18,30 +27,12 @@
 .export fp_wide
 fp_wide:
         .res 64, 0            ; 512-bit product from multiply
-.export fp_tmp1
-fp_tmp1:
-        .res 32, 0            ; temporary field element 1
-.export fp_tmp2
-fp_tmp2:
-        .res 32, 0            ; temporary field element 2
-.export fp_tmp3
-fp_tmp3:
-        .res 32, 0            ; temporary field element 3
-.export fp_tmp4
-fp_tmp4:
-        .res 32, 0            ; temporary field element 4
 
-; --- Result registers ---
+; --- Result register ---
 .export fp_r0
 fp_r0:      .res 32, 0        ; primary result register
-.export fp_r1
-fp_r1:      .res 32, 0
-.export fp_r2
-fp_r2:      .res 32, 0
-.export fp_r3
-fp_r3:      .res 32, 0
 
-; --- Modular inverse working space ---
+; --- Modular inverse working space (binary GCD, mod256.s) ---
 .export fp_inv_u
 fp_inv_u:   .res 32, 0
 .export fp_inv_v
@@ -50,8 +41,6 @@ fp_inv_v:   .res 32, 0
 fp_inv_x1:  .res 32, 0
 .export fp_inv_x2
 fp_inv_x2:  .res 32, 0
-.export fp_inv_iter
-fp_inv_iter: .res 2, 0
 
 ; --- Point storage (Jacobian: X,Y,Z each 32 bytes = 96 bytes) ---
 .export ec_p1
@@ -95,18 +84,6 @@ ec_affine_y:    .res 32, 0
 ec_base_x:      .res 32, 0
 .export ec_base_y
 ec_base_y:      .res 32, 0
-
-; --- Scalar multiply state ---
-.export ec_sc_byte
-ec_sc_byte:     .byte 0
-.export ec_sc_mask
-ec_sc_mask:     .byte 0
-
-; --- Solinas reduction scratch (for P-256 fast reduction) ---
-; 33 bytes to hold intermediate sum with carry byte
-.export fp_red_tmp
-fp_red_tmp:
-        .res 33, 0
 
 ; --- ECDSA verify scratch (P-256). All 32-byte little-endian unless noted.
 ;     Consumed only by ecdsa_verify_256 in src/ecdsa256.s.
