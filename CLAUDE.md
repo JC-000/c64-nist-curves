@@ -560,8 +560,15 @@ keep all library calls on a single thread of control.
   is gated by `.ifndef SHARED_CT_MUL_8X8` (mirrors §8.1 `SHARED_SQTAB_INIT`).
   Boot-only / zero CT exposure is unchanged; PRG stays 37302 B; all 471
   P-256 field tests pass. The shape-strict (no carve-out) decision and
-  rationale are in c64-lib-contract issue #14; the manifest §8.3 bit
-  (`$0004`) is a separate follow-up after the contract clause allocates it.
+  rationale are in c64-lib-contract issue #14. **Update (2026-07-15,
+  c64-lib-contract v0.4.0 / SPEC PR #22 merged):** the §8.3 clause
+  allocated bit `$0004` (`LIB_SHARED_PRIMITIVES_CT_MUL_8X8`) and §8.0 now
+  mandates the conditional mask form (issue #21). `src/lib_manifest.s`
+  builds `LIB_NISTCURVES_SHARED_PRIMITIVES` from per-primitive
+  `.ifdef`-gated ownership terms: standalone = `$0007`; each defined
+  deferral switch (`SHARED_SQTAB_INIT` / `SHARED_REU_MUL_INIT` /
+  `SHARED_CT_MUL_8X8`) drops its bit so co-linked adopters' masks stay
+  disjoint for the consumer `.assert`.
 - The `LDY #143 / BPL` infinity-fill bug family (BPL
   never branches on the first iteration because `$8F` bit 7 is set, so
   only one byte got written) was fixed in Wave 5 across all sites in

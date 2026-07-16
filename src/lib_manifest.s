@@ -152,16 +152,28 @@
 
 
 ; -----------------------------------------------------------------------------
-; Shared-primitives ownership bitmask (SPEC §5 + §8.0)
+; Shared-primitives ownership bitmask (SPEC §5 + §8.0, conditional form v0.4.0)
 ; -----------------------------------------------------------------------------
-; The library currently consumes two §8 primitives:
-;   - §8.1 sqtab     (bit $0001) - 8x8 quarter-square multiply table
-;   - §8.2 reu_mul   (bit $0002) - 128 KB 8x8->16 REU multiplication table
+; The library consumes three §8 primitives:
+;   - §8.1 sqtab       (bit $0001) - 8x8 quarter-square multiply table
+;   - §8.2 reu_mul     (bit $0002) - 128 KB 8x8->16 REU multiplication table
+;   - §8.3 ct_mul_8x8  (bit $0004) - constant-time 8x8->16 multiply body
 ; A consumer linking multiple sibling libs against the same PRG `.assert`s
 ; on the AND of every adopter's manifest equate being zero to detect
 ; duplicate ownership at assemble time. See SPEC §8.0 bit allocation
 ; table; bits are append-only and never reused (a deprecated primitive
 ; keeps its bit reserved so old consumer cfgs continue to parse).
+;
+; Per §8.0 (v0.4.0, issue #21) the mask is CONDITIONAL on each primitive's
+; deferral switch: a bit is included iff this build does NOT defer that
+; primitive to a canonical provider. A build with the switch defined drops
+; the bit, so co-linked adopters sharing a primitive end up with disjoint
+; masks and the consumer disjointness `.assert` is satisfiable.
+;
+;   bit    | primitive  | deferral switch
+;   $0001  | sqtab      | SHARED_SQTAB_INIT   (src/mul_8x8.s)
+;   $0002  | reu_mul    | SHARED_REU_MUL_INIT (src/main.s)
+;   $0004  | ct_mul_8x8 | SHARED_CT_MUL_8X8   (src/mul_8x8.s)
 ; -----------------------------------------------------------------------------
 .ifndef LIB_SHARED_PRIMITIVES_SQTAB
   LIB_SHARED_PRIMITIVES_SQTAB = $0001
@@ -169,8 +181,28 @@
 .ifndef LIB_SHARED_PRIMITIVES_REU_MUL
   LIB_SHARED_PRIMITIVES_REU_MUL = $0002
 .endif
+.ifndef LIB_SHARED_PRIMITIVES_CT_MUL_8X8
+  LIB_SHARED_PRIMITIVES_CT_MUL_8X8 = $0004
+.endif
+
+.ifdef SHARED_SQTAB_INIT
+  _OWN_SQTAB      = 0
+.else
+  _OWN_SQTAB      = LIB_SHARED_PRIMITIVES_SQTAB
+.endif
+.ifdef SHARED_REU_MUL_INIT
+  _OWN_REU_MUL    = 0
+.else
+  _OWN_REU_MUL    = LIB_SHARED_PRIMITIVES_REU_MUL
+.endif
+.ifdef SHARED_CT_MUL_8X8
+  _OWN_CT_MUL_8X8 = 0
+.else
+  _OWN_CT_MUL_8X8 = LIB_SHARED_PRIMITIVES_CT_MUL_8X8
+.endif
+
 .ifndef LIB_NISTCURVES_SHARED_PRIMITIVES
-  LIB_NISTCURVES_SHARED_PRIMITIVES = LIB_SHARED_PRIMITIVES_SQTAB | LIB_SHARED_PRIMITIVES_REU_MUL
+  LIB_NISTCURVES_SHARED_PRIMITIVES = _OWN_SQTAB | _OWN_REU_MUL | _OWN_CT_MUL_8X8
 .endif
 
 
