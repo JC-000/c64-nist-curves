@@ -420,17 +420,17 @@ release tag.
 ```
 git submodule add https://github.com/JC-000/c64-nist-curves \
     lib/c64-nist-curves
-git -C lib/c64-nist-curves checkout v0.3.0
-git commit -m "Import c64-nist-curves v0.3.0 as submodule"
+git -C lib/c64-nist-curves checkout v0.4.0
+git commit -m "Import c64-nist-curves v0.4.0 as submodule"
 ```
 
 Bumping to a later release:
 
 ```
 git -C lib/c64-nist-curves fetch --tags
-git -C lib/c64-nist-curves checkout v0.3.1    # or whichever tag
+git -C lib/c64-nist-curves checkout v0.4.1    # or whichever tag
 git add lib/c64-nist-curves
-git commit -m "Bump c64-nist-curves to v0.3.1"
+git commit -m "Bump c64-nist-curves to v0.4.1"
 ```
 
 Consumers should pin to a specific tag rather than tracking `master`
@@ -690,8 +690,8 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
 .import LIB_VERSION_MAJOR, LIB_VERSION_MINOR, LIB_VERSION_PATCH
 .import LIB_ABI_VERSION
 
-.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 3
-    .error "c64-nist-curves v0.3.0 or newer is required"
+.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 4
+    .error "c64-nist-curves v0.4.0 or newer is required"
 .endif
 
 .if LIB_ABI_VERSION <> 0
@@ -705,10 +705,10 @@ it changes only when public exports are removed or renamed.
 
 The library is currently in the v0.x pre-stable series. Version policy:
 
-- **PATCH** bumps (v0.3.0 → v0.3.1) ship bugfixes or performance
+- **PATCH** bumps (v0.4.0 → v0.4.1) ship bugfixes or performance
   improvements with no public API changes. Always safe to adopt;
   `LIB_ABI_VERSION` unchanged.
-- **MINOR** bumps (v0.2.x → v0.3.0) may add public symbols (new entry
+- **MINOR** bumps (v0.3.x → v0.4.0) may add public symbols (new entry
   points, new constants, new SPEC §3/§5/§8 manifest equates) but will
   not remove or rename existing ones. Additive changes; safe to adopt
   if your consumer's `.import` list is a subset of what the new

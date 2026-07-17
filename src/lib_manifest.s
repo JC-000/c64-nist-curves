@@ -26,7 +26,7 @@
 ;
 ; The numbers are approximate -- within ±5% per SPEC §5. Refreshed at each
 ; release that substantively changes one of them. Build size as of this
-; equate refresh: 37302 B PRG (build/nist-curves.prg).
+; equate refresh: 37171 B PRG (build/nist-curves.prg).
 ; =============================================================================
 
 
