@@ -32,7 +32,8 @@ contract).
   `nistcurves.a` — its object `ecdsa384_msg.o` carries a *test-only*
   trampoline referencing the test-driver buffers `ecdsa_inputs_384` /
   `ecdsa_result_msg_384` (excluded from every archive). Documented as a
-  second gap; tracked for a follow-up.
+  second gap; tracked in #63 (relocate the test-only trampoline out of
+  `ecdsa384_msg.o`).
 - **New `tools/check_archives.py` + `make check-archives` target.** A
   contract ratchet: an od65 import/export closure sweep plus `ld65`
   dummy-link smoke tests per archive, checked against a documented

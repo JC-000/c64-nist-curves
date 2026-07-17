@@ -615,8 +615,10 @@ an archive when any of its symbols is referenced, importing
 `ecdsa_verify_with_message_384` drags in that trampoline and leaves
 those two buffers unresolved — so the wrapper is unlinkable even from
 the full `nistcurves.a`. Provide your own definitions, or drive
-`ecdsa_verify_384` with the digest pre-spliced into the struct (see
-§8.4.1 "what the archives DO support").
+`ecdsa_verify_384` with the digest pre-spliced into the struct (path 1
+below). This leak is tracked in issue #63 (relocate the test-only
+trampoline out of `ecdsa384_msg.o` into a test-only object so the
+wrapper object stops importing the test buffers).
 
 **What to do — two supported paths:**
 
@@ -644,8 +646,8 @@ the full `nistcurves.a`. Provide your own definitions, or drive
    `$0000..$3FFF`; P-384 24 KB at `$4000..$9F9F`). Verify-only consumers
    that cannot pay that boot time or REU residency should prefer path 1.
 
-A future enhancement (issue tracking the option-1 fallback from #60)
-would let `ecdsa_verify_256/384` route `u1·G` through `ec_scalar_mul_var`
+A future enhancement (issue #61, the option-1 fallback from #60) would
+let `ecdsa_verify_256/384` route `u1·G` through `ec_scalar_mul_var`
 when the comb is absent, so the verify archives link standalone; until
 that lands, the contract above is the reality.
 
