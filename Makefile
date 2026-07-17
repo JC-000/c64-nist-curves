@@ -31,7 +31,8 @@ ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 LIB_DIR = $(BUILD_DIR)/lib
 
 .PHONY: all clean build-acme bench-u64 dist \
-        lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve
+        lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
+        check-archives
 
 all: $(PRG)
 
@@ -76,10 +77,22 @@ bench-u64: $(PRG)
 #                                 modular inverse reference and its scratch --
 #                                 production uses the binary-GCD path in
 #                                 mod256.o), and the test driver.
+#                                 CAVEAT (issue #60): the packaged verifier
+#                                 ecdsa_verify_256 is NOT linkable from this
+#                                 archive alone -- it calls ec_scalar_mul
+#                                 (the excluded comb). Link the variable-base
+#                                 building blocks (ec_scalar_mul_var + fp_mod_*
+#                                 + ec_jacobian_to_affine) instead, or add the
+#                                 comb objects / use nistcurves.a. See
+#                                 API.md §8.4.1.
 #   nistcurves-p384-verify.a   -- P-384 ECDSA verify only. Mirror of p256-
 #                                 verify for the P-384 side. Excludes the
 #                                 hash-then-verify wrapper ecdsa384_msg.o
 #                                 (consumers drive streaming SHA themselves).
+#                                 CAVEAT (issue #60): ecdsa_verify_384 is NOT
+#                                 linkable from this archive alone (calls the
+#                                 excluded ec_scalar_mul_384 comb). See
+#                                 API.md §8.4.1.
 #   nistcurves-p384-sha384.a   -- SHA-384 streaming hash only. Self-contained
 #                                 (no REU, no multiply tables); minimal
 #                                 dependency set.
@@ -87,9 +100,17 @@ bench-u64: $(PRG)
 #                                 ecdsa_verify_with_message_384 one-shot
 #                                 wrapper. Suitable for the TLS 1.3
 #                                 secp384r1+SHA-384 cipher-suite path.
+#                                 CAVEAT (issue #60): neither ecdsa_verify_384
+#                                 nor ecdsa_verify_with_message_384 is linkable
+#                                 from this archive alone -- both need the
+#                                 excluded ec_scalar_mul_384 comb, and the
+#                                 wrapper object also carries a test-only
+#                                 trampoline referencing test-driver buffers.
+#                                 See API.md §8.4.1.
 #
 # Object-set composition is computed below as Make variables so the inventory
-# stays self-describing.
+# stays self-describing. `make check-archives` ratchets this contract (the
+# documented gaps above must match reality exactly -- tools/check_archives.py).
 
 # Shared objects every archive includes: version + manifest + zp config.
 # Consumers .import LIB_VERSION_* (semver), LIB_NISTCURVES_REU_BANKS_USED /
@@ -166,6 +187,15 @@ $(LIB_DIR)/nistcurves-p384-sha384.a: $(LIB_CORE_OBJS) $(LIB_SHA384_OBJS) | $(LIB
 $(LIB_DIR)/nistcurves-p384-curve.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
 	rm -f $@
 	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
+
+# --- Archive linkability contract ratchet (issue #60) ------------------------
+# Builds all five archives, then runs tools/check_archives.py, which pins the
+# documented per-archive symbol contract (API.md §8.4.1): the trimmed verify
+# archives deliberately exclude the Lim-Lee comb, so the packaged verifiers
+# ecdsa_verify_256 / ecdsa_verify_384 are NOT linkable from those archives
+# alone. The ratchet fails if reality drifts looser OR tighter than the docs.
+check-archives: lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve
+	python3 tools/check_archives.py
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

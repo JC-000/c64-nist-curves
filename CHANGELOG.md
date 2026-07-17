@@ -12,6 +12,38 @@ contract).
 
 ## [Unreleased]
 
+### Archive linkability contract + ratchet (issue #60, 2026-07-16)
+
+- **Documented the packaged-verifier archive contract (API.md §8.4.1).**
+  The trimmed verify archives exclude the Lim-Lee fixed-base comb by
+  design, so the packaged verifiers `ecdsa_verify_256` /
+  `ecdsa_verify_384` — which `jsr` the comb (`ec_scalar_mul` /
+  `ec_scalar_mul_384`) for the `u1·G` step — are **not linkable from
+  those archives alone**. Pre-existing since PR #40; now stated
+  explicitly where consumers look (API.md §8.4.1, the Makefile archive
+  banner, CLAUDE.md Known issues) with the supported variable-base
+  building-block path and the comb add-on link recipe
+  (`points256_comb.o` + `data_p256_limlee.o`, or the full `nistcurves.a`)
+  plus its boot cost (`ec_precompute_*` ~25 s / ~80 s at 1 MHz) and REU
+  bank-2 residency.
+- **Blast-radius finding:** verified the P-384 mirror
+  (`lib-p384-verify` / `lib-p384-curve`) and additionally found that
+  `ecdsa_verify_with_message_384` is unlinkable even from the full
+  `nistcurves.a` — its object `ecdsa384_msg.o` carries a *test-only*
+  trampoline referencing the test-driver buffers `ecdsa_inputs_384` /
+  `ecdsa_result_msg_384` (excluded from every archive). Documented as a
+  second gap; tracked in #63 (relocate the test-only trampoline out of
+  `ecdsa384_msg.o`).
+- **New `tools/check_archives.py` + `make check-archives` target.** A
+  contract ratchet: an od65 import/export closure sweep plus `ld65`
+  dummy-link smoke tests per archive, checked against a documented
+  per-archive allowlist of deliberate gaps. Fails if reality drifts
+  *looser* (a new unresolved symbol — regression) or *tighter* (a
+  documented gap that unexpectedly resolves — stale docs). Object lists
+  are parsed from the Makefile `ar65` recipes (single source of truth),
+  not hardcoded. python3 stdlib only; no VICE. Standalone PRG unchanged
+  (byte-identical); docs + tooling only.
+
 ### Archive slimming (2026-07-16)
 
 - **`lib-p256-verify` BSS trimmed to verify-path-only slots (issue #54,

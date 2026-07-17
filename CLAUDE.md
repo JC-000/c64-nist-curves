@@ -55,6 +55,7 @@ python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAV
 python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
 python3 tools/bench_sha384.py        # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 python3 tools/bench_reu_mult.py      # REU multiply-table cost decomposition (row-fetch DMA vs mul_8x8 vs fp_mul; VICE, ~4 min; not CI-gating)
+make check-archives                  # archive linkability contract ratchet (no VICE; pins API.md §8.4.1)
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
 
@@ -637,3 +638,21 @@ keep all library calls on a single thread of control.
   and misfired as a spurious per-call timeout. Current formula
   `max(180.0, 3 * base_timeout / mhz)` gives 225 s of headroom. Not
   a C64 bug; a bench-tool design rule.
+- **Packaged verifiers are not linkable from the trimmed verify
+  archives (issue #60)**. `ecdsa_verify_256` / `ecdsa_verify_384` call
+  the Lim-Lee comb (`ec_scalar_mul` / `ec_scalar_mul_384`), which
+  `lib-p256-verify` / `lib-p384-verify` / `lib-p384-curve` exclude by
+  design — so importing the packaged verifier from those archives alone
+  gives `Unresolved external 'ec_scalar_mul[_384]'`. Pre-existing since
+  PR #40; the archives ship the verify *building blocks*, and the
+  supported path today is variable-base (`ec_scalar_mul_var` seeded at
+  `G` + `fp_mod_*` + `ec_jacobian_to_affine`, the c64-https pattern).
+  `ecdsa_verify_with_message_384` has an extra gap: its object
+  (`ecdsa384_msg.o`) carries a test-only trampoline referencing
+  test-driver buffers (`ecdsa_inputs_384` / `ecdsa_result_msg_384`), so
+  it is unlinkable even from the full `nistcurves.a`. Full contract +
+  comb add-on recipe: **API.md §8.4.1**. The contract is pinned by
+  `make check-archives` (`tools/check_archives.py`), a ratchet that
+  fails on drift in either direction (a gap that unexpectedly closes, or
+  a new unresolved symbol). Code fix (route `u1·G` through variable-base
+  when the comb is absent) is a tracked follow-up.
