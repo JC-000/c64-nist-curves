@@ -53,12 +53,10 @@ MAKEFILE = REPO / "Makefile"
 # Each entry is a gap stated in API.md §8.4.1 / the Makefile banner. Changing
 # reality without changing this table (and the docs) trips the ratchet.
 KNOWN_EXTERNAL = {
-    "nistcurves.a": {
-        # ecdsa384_msg.o carries a test-only trampoline that references the
-        # test-driver buffers (excluded from every archive). The wrapper
-        # ecdsa_verify_with_message_384 is therefore unlinkable even here.
-        "ecdsa_inputs_384", "ecdsa_result_msg_384",
-    },
+    # Issue #63 fixed the test-trampoline leak: the trampoline moved to
+    # main.s (never archived), so ecdsa384_msg.o no longer imports the
+    # test-driver buffers and the full archive has no gaps.
+    "nistcurves.a": set(),
     "nistcurves-p256-verify.a": {
         "ec_scalar_mul",       # Lim-Lee comb, excluded by design (issue #60).
     },
@@ -68,7 +66,6 @@ KNOWN_EXTERNAL = {
     "nistcurves-p384-sha384.a": set(),  # self-contained, no gaps.
     "nistcurves-p384-curve.a": {
         "ec_scalar_mul_384",   # Lim-Lee comb, excluded by design (issue #60).
-        "ecdsa_inputs_384", "ecdsa_result_msg_384",  # test trampoline leak.
     },
 }
 
@@ -81,8 +78,7 @@ SMOKE = {
         ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
         ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
         ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
-        ("packaged ecdsa_verify_with_message_384 (test-trampoline leak)",
-         ["ecdsa_verify_with_message_384"], False),
+        ("packaged ecdsa_verify_with_message_384", ["ecdsa_verify_with_message_384"], True),
     ],
     "nistcurves-p256-verify.a": [
         ("variable-base building blocks",
@@ -104,7 +100,7 @@ SMOKE = {
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
           "fp_mod_inv_384", "fp_mod_mul_384"], True),
         ("packaged ecdsa_verify_384 (needs comb)", ["ecdsa_verify_384"], False),
-        ("packaged ecdsa_verify_with_message_384 (needs comb + test bufs)",
+        ("packaged ecdsa_verify_with_message_384 (needs comb)",
          ["ecdsa_verify_with_message_384"], False),
     ],
 }

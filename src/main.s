@@ -381,6 +381,22 @@ ecdsa_verify_384_tramp:
         sta ecdsa_result_384
         rts
 
+; ecdsa_verify_with_msg_384_tramp -- moved here from src/ecdsa384_msg.s
+; (issue #63) so the shipping wrapper object stops importing the
+; test-driver buffers and links from consumer archives. The Python driver
+; pre-pokes ecdsa_inputs_384 (240 B BE struct; h slot may be zero -- the
+; wrapper overwrites it), sha384_msg_buf with the message bytes, and ZP
+; sha_src / sha_len; result byte mirrors ecdsa_result_384's encoding.
+.export ecdsa_verify_with_msg_384_tramp
+ecdsa_verify_with_msg_384_tramp:
+        lda #<ecdsa_inputs_384
+        ldx #>ecdsa_inputs_384
+        jsr ecdsa_verify_with_message_384
+        lda #0
+        rol a                     ; shift C into bit 0
+        sta ecdsa_result_msg_384
+        rts
+
 ; =============================================================================
 ; U64E bench-only trampolines
 ;
