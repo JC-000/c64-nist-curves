@@ -160,8 +160,8 @@ per-bullet list.
 `c64-nist-curves-v0.4.0.tar.gz` is produced reproducibly by
 `make dist VERSION=v0.4.0`. Canonical artifact:
 
-- Size:   _TBD (filled in at tag time — see note below)_
-- SHA256: _TBD (filled in at tag time — see note below)_
+- Size:   149599 bytes
+- SHA256: `d5691202b655af148a1909ebda7a1dacfc90f722cfe9577fe656be2d0f998583`
 
 Re-running `make dist VERSION=v0.4.0` against the tag must reproduce the
 recorded SHA256 byte-for-byte (`git archive` is deterministic; `gzip -n`
