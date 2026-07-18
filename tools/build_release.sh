@@ -34,7 +34,13 @@
 # you add a new src/*.s file, add it both to MODULES (Makefile:19)
 # AND to the git-archive call below.
 #
-# Make convenience target: `make dist VERSION=v0.3.0`.
+# v0.4.0 file-list refresh: src/data_p256_invref.s (issue #54 BSS
+# split, PR #59) and the two tools that back Makefile targets shipped
+# in the tarball — tools/check_archives.py (make check-archives, PR #62)
+# and tools/bench_reu_mult.py (PR #58) — are now vendored so an
+# extracted tarball can run those targets without re-fetching the repo.
+#
+# Make convenience target: `make dist VERSION=v0.4.0`.
 
 set -euo pipefail
 
@@ -78,6 +84,7 @@ git archive \
   src/data_p384.s src/data_p384_limlee.s \
   src/data_sha.s src/data_test.s \
   Makefile tools/build_release.sh \
+  tools/check_archives.py tools/bench_reu_mult.py \
   README.md API.md CHANGELOG.md CLAUDE.md VERSION \
   "$NOTES" \
   | gzip -n -9 > "$OUT"

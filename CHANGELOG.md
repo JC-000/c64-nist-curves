@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-17
+
 ### Archive linkability contract + ratchet (issue #60, 2026-07-16)
 
 - **Documented the packaged-verifier archive contract (API.md §8.4.1).**
@@ -71,6 +73,20 @@ contract).
   and the archive excludes by design since #40. Confirmed identical on
   the pre-trim baseline. Tracked separately.
 
+### Tooling / research — REU multiply-table audit (PR #58, 2026-07-16)
+
+- **Committed the REU multiply-table footprint/ROI audit**
+  (`.research/reu_mult_audit_2026_05_21/report.md`) and its measurement
+  tool `tools/bench_reu_mult.py` (added to the Test-section command
+  list). Verdict: keep the 128 KB table (~2× fp_mul speedup vs the
+  no-table alternative; REU banks 0–1 are otherwise idle).
+- **Corrected the CLAUDE.md per-row DMA-cost claims.** The prior "20
+  cycles per row / <1% of fp_mul" figures counted only the register
+  setup head. Measured full row fetch is ~542 cy (20 cy setup + ~512 cy
+  DMA cycle-steal stall); DMA is ~23% of `fp_mul` / ~18% of
+  `fp_mul_384`. The Wave 4c Karatsuba negative-finding passage was
+  reworded to match. Docs/tooling only — standalone PRG byte-identical.
+
 ### Shared-primitives shape (2026-07-15)
 
 - **§8.3 manifest bit landed + §8.0 conditional mask adopted
@@ -104,6 +120,31 @@ contract).
 - No functional or size change: PRG stays 37302 B and all P-256/P-384
   field tests pass. The §8.3 manifest bit (`$0004`) is deferred to a
   follow-up after the contract clause allocates it.
+
+### Shared-primitives shape (c64-lib-contract SPEC v0.3.x, 2026-05-24)
+
+- **§8.2 `reu_mul` promoted to a placement-overridable shared primitive
+  (PR #55).** `src/reu_config.s` adds `.ifndef`-guarded
+  `LIB_SHARED_REU_MUL_BANK` / `_OFFSET` equates (spec `.assert`s:
+  offset `$0000`, bank `< $FE`) plus the derived two-bank mask
+  `LIB_SHARED_REU_MUL_BANKS_USED`. The legacy
+  `LIB_NISTCURVES_REU_BANK_MUL` stays as a back-compat alias.
+  `src/main.s` wraps the `reu_mul_init` body under
+  `.ifndef SHARED_REU_MUL_INIT` and exports the SPEC-canonical alias
+  `reu_mul_tables_init = reu_mul_init` (safe-to-call-twice). The manifest
+  gains `LIB_SHARED_PRIMITIVES_REU_MUL = $0002`, OR-ed into
+  `LIB_NISTCURVES_SHARED_PRIMITIVES` alongside the §8.1 sqtab bit.
+- **§8.0 step-6 catch-loop enumeration (PR #55).** New
+  `src/precalc_table.inc` (copied verbatim from c64-lib-contract so the
+  `LIB_PRECALC_TABLE` macro is byte-identical across adopters) and
+  `src/precalc_manifest.s` enumerate every precalculated table: the two
+  normative shared primitives (sqtab §8.1, reu_mul §8.2) plus three
+  library-private tables, with `lim_lee_comb` split per-curve
+  (`_p256` 16 KB / `_p384` 24 KB) to match the per-curve verify-archive
+  membership. Human-readable rationale in new `docs/precalc-tables.md`
+  (authoritative against the manifest; asymmetry blocks adopter PRs).
+- **No build-output change:** PRG byte-identical at 37302 B (equates +
+  new assemble-only manifest modules; no code growth).
 
 ## [0.3.0] — 2026-05-20
 
