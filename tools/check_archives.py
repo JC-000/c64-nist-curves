@@ -53,20 +53,17 @@ MAKEFILE = REPO / "Makefile"
 # Each entry is a gap stated in API.md §8.4.1 / the Makefile banner. Changing
 # reality without changing this table (and the docs) trips the ratchet.
 KNOWN_EXTERNAL = {
-    # Issue #63 fixed the test-trampoline leak: the trampoline moved to
-    # main.s (never archived), so ecdsa384_msg.o no longer imports the
-    # test-driver buffers and the full archive has no gaps.
+    # No archive has documented gaps anymore. Issue #63 fixed the
+    # test-trampoline leak (trampoline moved to the never-archived main.s);
+    # issue #61 closed the comb gaps: the verify archives ship the
+    # -D ECDSA_NO_COMB ecdsa*_nocomb.o variants whose u1*G routes through
+    # the variable-base ladder seeded at G, so the packaged verifiers link
+    # standalone without points256_comb.o / points384_comb.o.
     "nistcurves.a": set(),
-    "nistcurves-p256-verify.a": {
-        "ec_scalar_mul",       # Lim-Lee comb, excluded by design (issue #60).
-    },
-    "nistcurves-p384-verify.a": {
-        "ec_scalar_mul_384",   # Lim-Lee comb, excluded by design (issue #60).
-    },
-    "nistcurves-p384-sha384.a": set(),  # self-contained, no gaps.
-    "nistcurves-p384-curve.a": {
-        "ec_scalar_mul_384",   # Lim-Lee comb, excluded by design (issue #60).
-    },
+    "nistcurves-p256-verify.a": set(),
+    "nistcurves-p384-verify.a": set(),
+    "nistcurves-p384-sha384.a": set(),
+    "nistcurves-p384-curve.a": set(),
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
@@ -83,13 +80,13 @@ SMOKE = {
     "nistcurves-p256-verify.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
-        ("packaged ecdsa_verify_256 (needs comb)", ["ecdsa_verify_256"], False),
+        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"], True),
     ],
     "nistcurves-p384-verify.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
           "fp_mod_inv_384", "fp_mod_mul_384"], True),
-        ("packaged ecdsa_verify_384 (needs comb)", ["ecdsa_verify_384"], False),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
     ],
     "nistcurves-p384-sha384.a": [
         ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
@@ -99,9 +96,9 @@ SMOKE = {
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
           "fp_mod_inv_384", "fp_mod_mul_384"], True),
-        ("packaged ecdsa_verify_384 (needs comb)", ["ecdsa_verify_384"], False),
-        ("packaged ecdsa_verify_with_message_384 (needs comb)",
-         ["ecdsa_verify_with_message_384"], False),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+        ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
+         ["ecdsa_verify_with_message_384"], True),
     ],
 }
 

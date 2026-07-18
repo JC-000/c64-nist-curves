@@ -40,7 +40,17 @@
 .import ec_set_modp, ec_set_modn
 .import ec_mulp, ec_sqrp
 .import ec_n256, ec_p256
-.import ec_scalar_mul, ec_scalar_mul_var, ec_point_add_jj
+; Issue #61: when assembled with -D ECDSA_NO_COMB (the lib-p256-verify
+; archive variant), u1*G routes through the variable-base ladder seeded
+; at G instead of the Lim-Lee comb, so the object has no link dependency
+; on points256_comb.o. The default (comb) build is byte-identical to the
+; pre-#61 object.
+.ifndef ECDSA_NO_COMB
+.import ec_scalar_mul
+.else
+.import ec_gx256, ec_gy256
+.endif
+.import ec_scalar_mul_var, ec_point_add_jj
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
 .import fp_r0
@@ -249,7 +259,27 @@ ecdsa_verify_256:
         sta ec_scalar_ptr
         lda #>ecdsa_u1_be
         sta ec_scalar_ptr+1
-        jsr ec_scalar_mul       ; ec_p3 = u1 * G (Jacobian)
+.ifndef ECDSA_NO_COMB
+        jsr ec_scalar_mul       ; ec_p3 = u1 * G (Jacobian, fixed-base comb)
+.else
+        ; Issue #61 fallback: no comb linked. Seed the variable-base ladder
+        ; at G (LE affine constants from curve256.o, already in the verify
+        ; archive) and reuse ec_scalar_mul_var. Step 8 overwrites
+        ; ec_base_x/y with Q afterwards, so the seed is not clobbering
+        ; anything live. Slower than the comb (no precomputed anchors) but
+        ; needs no comb objects, no ec_precompute_256 boot pass, and no REU
+        ; bank-2 anchor residency. Zero scalar (h ≡ 0 mod n) yields the
+        ; same all-zero-Jacobian infinity encoding as the comb path.
+        ldy #31
+@u1g_seed_g:
+        lda ec_gx256,y
+        sta ec_base_x,y
+        lda ec_gy256,y
+        sta ec_base_y,y
+        dey
+        bpl @u1g_seed_g
+        jsr ec_scalar_mul_var   ; ec_p3 = u1 * G (Jacobian)
+.endif
 
         ; Stash full 96 B Jacobian u1*G into ecdsa_u1g_jac so it survives
         ; the u2*Q scalar_mul that overwrites ec_p3 below. The Jacobian

@@ -49,6 +49,33 @@ $(PRG): $(OBJECTS) $(CFG) | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -I $(SRC_DIR) -o $@ $<
 
+# No-comb ECDSA verify variants (issue #61): same sources, -D ECDSA_NO_COMB.
+# u1*G routes through ec_scalar_mul_var seeded at G, dropping the link
+# dependency on points256_comb.o / points384_comb.o. Consumed by the verify
+# archives and the nocomb test PRG below; the default build never uses them.
+$(BUILD_DIR)/ecdsa256_nocomb.o: $(SRC_DIR)/ecdsa256.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/ecdsa384_nocomb.o: $(SRC_DIR)/ecdsa384.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) -o $@ $<
+
+# Nocomb test PRG (issue #61): the standalone test PRG with the two nocomb
+# verify objects substituted, so the full oracle test suite can exercise the
+# fallback u1*G path end-to-end:
+#   make nocomb-prg
+#   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
+#     C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py
+# Everything else (boot init, trampolines, comb precompute) is unchanged; the
+# comb tables still populate at boot but the verify routines never call them.
+PRG_NOCOMB = $(BUILD_DIR)/nist-curves-nocomb.prg
+NOCOMB_OBJECTS = $(subst $(BUILD_DIR)/ecdsa256.o,$(BUILD_DIR)/ecdsa256_nocomb.o,$(subst $(BUILD_DIR)/ecdsa384.o,$(BUILD_DIR)/ecdsa384_nocomb.o,$(OBJECTS)))
+
+.PHONY: nocomb-prg
+nocomb-prg: $(PRG_NOCOMB)
+
+$(PRG_NOCOMB): $(NOCOMB_OBJECTS) $(CFG) | $(BUILD_DIR)
+	$(LD65) -o $@ -C $(CFG) -Ln $(BUILD_DIR)/labels_nocomb_raw.txt $(NOCOMB_OBJECTS)
+	sed 's/^al \([0-9a-fA-F]\{2\}\)\([0-9a-fA-F]\{4\}\) /al C:\2 /' $(BUILD_DIR)/labels_nocomb_raw.txt > $(BUILD_DIR)/labels_nocomb.txt
+
 # --- ACME build (legacy, for side-by-side testing) ---
 build-acme: $(ASM_SRCS) | $(BUILD_DIR)
 	cd $(SRC_DIR) && $(ACME) -f cbm -o ../$(PRG) --vicelabels ../$(LABELS) main.asm
@@ -77,22 +104,19 @@ bench-u64: $(PRG)
 #                                 modular inverse reference and its scratch --
 #                                 production uses the binary-GCD path in
 #                                 mod256.o), and the test driver.
-#                                 CAVEAT (issue #60): the packaged verifier
-#                                 ecdsa_verify_256 is NOT linkable from this
-#                                 archive alone -- it calls ec_scalar_mul
-#                                 (the excluded comb). Link the variable-base
-#                                 building blocks (ec_scalar_mul_var + fp_mod_*
-#                                 + ec_jacobian_to_affine) instead, or add the
-#                                 comb objects / use nistcurves.a. See
+#                                 Ships ecdsa256_nocomb.o (issue #61): the
+#                                 packaged ecdsa_verify_256 links standalone,
+#                                 with u1*G via the variable-base ladder
+#                                 seeded at G (slower than the comb; comb-
+#                                 speed verify needs nistcurves.a). See
 #                                 API.md §8.4.1.
 #   nistcurves-p384-verify.a   -- P-384 ECDSA verify only. Mirror of p256-
 #                                 verify for the P-384 side. Excludes the
 #                                 hash-then-verify wrapper ecdsa384_msg.o
 #                                 (consumers drive streaming SHA themselves).
-#                                 CAVEAT (issue #60): ecdsa_verify_384 is NOT
-#                                 linkable from this archive alone (calls the
-#                                 excluded ec_scalar_mul_384 comb). See
-#                                 API.md §8.4.1.
+#                                 Ships ecdsa384_nocomb.o (issue #61):
+#                                 ecdsa_verify_384 links standalone; u1*G via
+#                                 variable-base ladder. See API.md §8.4.1.
 #   nistcurves-p384-sha384.a   -- SHA-384 streaming hash only. Self-contained
 #                                 (no REU, no multiply tables); minimal
 #                                 dependency set.
@@ -100,12 +124,10 @@ bench-u64: $(PRG)
 #                                 ecdsa_verify_with_message_384 one-shot
 #                                 wrapper. Suitable for the TLS 1.3
 #                                 secp384r1+SHA-384 cipher-suite path.
-#                                 CAVEAT (issue #60): neither ecdsa_verify_384
-#                                 nor ecdsa_verify_with_message_384 is linkable
-#                                 from this archive alone -- both need the
-#                                 excluded ec_scalar_mul_384 comb, and the
-#                                 wrapper object also carries a test-only
-#                                 trampoline referencing test-driver buffers.
+#                                 Ships ecdsa384_nocomb.o (issue #61): both
+#                                 ecdsa_verify_384 and the one-shot
+#                                 ecdsa_verify_with_message_384 link
+#                                 standalone; u1*G via variable-base ladder.
 #                                 See API.md §8.4.1.
 #
 # Object-set composition is computed below as Make variables so the inventory
@@ -127,12 +149,18 @@ LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/data_shared.o
 
 # Per-curve verify object sets (core point ops only -- no comb).
-LIB_P256_VERIFY_OBJS = $(BUILD_DIR)/fp256.o $(BUILD_DIR)/mod256.o \
+# The verify ARCHIVES take the ecdsa*_nocomb.o variants (-D ECDSA_NO_COMB,
+# issue #61): u1*G routes through the variable-base ladder seeded at G, so
+# the packaged verifiers link standalone without the comb objects. The full
+# archive and the standalone PRG keep the comb-calling ecdsa*.o variants.
+LIB_P256_VERIFY_BASE_OBJS = $(BUILD_DIR)/fp256.o $(BUILD_DIR)/mod256.o \
                       $(BUILD_DIR)/curve256.o $(BUILD_DIR)/points256_core.o \
-                      $(BUILD_DIR)/ecdsa256.o $(BUILD_DIR)/data_p256.o
-LIB_P384_VERIFY_OBJS = $(BUILD_DIR)/fp384.o $(BUILD_DIR)/mod384.o \
+                      $(BUILD_DIR)/data_p256.o
+LIB_P256_VERIFY_OBJS = $(LIB_P256_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa256_nocomb.o
+LIB_P384_VERIFY_BASE_OBJS = $(BUILD_DIR)/fp384.o $(BUILD_DIR)/mod384.o \
                       $(BUILD_DIR)/curve384.o $(BUILD_DIR)/points384_core.o \
-                      $(BUILD_DIR)/ecdsa384.o $(BUILD_DIR)/data_p384.o
+                      $(BUILD_DIR)/data_p384.o
+LIB_P384_VERIFY_OBJS = $(LIB_P384_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa384_nocomb.o
 
 # SHA-384 object set: self-contained.
 LIB_SHA384_OBJS      = $(BUILD_DIR)/sha384.o $(BUILD_DIR)/data_sha.o
@@ -149,8 +177,10 @@ LIB_P384_COMB_OBJS = $(BUILD_DIR)/points384_comb.o \
 # stays in `lib.a` for whole-library consumers that may want the Fermat
 # inverse reference path; it is excluded from minimal archives.
 LIB_FULL_OBJS = $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) \
-                $(LIB_P256_VERIFY_OBJS) $(LIB_P256_COMB_OBJS) \
-                $(LIB_P384_VERIFY_OBJS) $(LIB_P384_COMB_OBJS) \
+                $(LIB_P256_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa256.o \
+                $(LIB_P256_COMB_OBJS) \
+                $(LIB_P384_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa384.o \
+                $(LIB_P384_COMB_OBJS) \
                 $(LIB_SHA384_OBJS) \
                 $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
                 $(BUILD_DIR)/ecdsa384_msg.o
