@@ -14,14 +14,16 @@
 ;
 ; Calling contract documented inline at ecdsa_verify_with_message_384; the
 ; underlying ecdsa_verify_384 routine and the SHA-384 streaming primitives
-; live in their own translation units. Trampoline is test-only (jsr()
-; helper can't pass register args).
+; live in their own translation units. The test-only trampoline
+; (ecdsa_verify_with_msg_384_tramp) lives in src/main.s with the other
+; test/bench trampolines (issue #63): keeping it here made this object
+; import the test-driver buffers, which are excluded from every consumer
+; archive, so the shipping wrapper was unlinkable from any archive.
 ; ===========================================================================
 
 .segment "LIB_NISTCURVES_P384_CODE"
 
 .export ecdsa_verify_with_message_384
-.export ecdsa_verify_with_msg_384_tramp
 
 .importzp sha_src, sha_len
 .importzp fp_dst
@@ -33,9 +35,8 @@
 .import sha384_init, sha384_update, sha384_final
 .import sha384_digest
 
-; --- ecdsa_verify_with_message_384 scratch + test-trampoline buffers ---
+; --- ecdsa_verify_with_message_384 scratch ---
 .import ecdsa384_msg_struct_ptr
-.import ecdsa_inputs_384, ecdsa_result_msg_384  ; test-trampoline only
 
 ; ===========================================================================
 ; ecdsa_verify_with_message_384 -- one-shot "hash message + verify" wrapper.
@@ -114,27 +115,3 @@ ecdsa_verify_with_message_384:
         lda ecdsa384_msg_struct_ptr+0
         ldx ecdsa384_msg_struct_ptr+1
         jmp ecdsa_verify_384      ; tail-call: C return passes through
-
-; ===========================================================================
-; ecdsa_verify_with_msg_384_tramp -- test-only trampoline.
-;
-; The c64-test-harness jsr() helper cannot pass register arguments, so we
-; fix the struct address at the BSS-resident ecdsa_inputs_384 buffer (already
-; used by the existing ecdsa_verify_384 tests) and the message at
-; sha384_msg_buf. The Python driver pre-pokes:
-;   - ecdsa_inputs_384  : 240 B BE struct (h slot can be left zero -- the
-;                         wrapper overwrites it)
-;   - sha384_msg_buf    : the message bytes
-;   - sha_src           : low/high pointer to sha384_msg_buf
-;   - sha_len           : 16-bit message byte count
-; Then calls this trampoline. Result byte: 0 = valid, 1 = invalid (mirrors
-; ecdsa_result_384's encoding).
-; ===========================================================================
-ecdsa_verify_with_msg_384_tramp:
-        lda #<ecdsa_inputs_384
-        ldx #>ecdsa_inputs_384
-        jsr ecdsa_verify_with_message_384
-        lda #0
-        rol a                     ; shift C into bit 0
-        sta ecdsa_result_msg_384
-        rts

@@ -601,24 +601,15 @@ made explicit here rather than changed. It affects, per archive:
 |---|---|---|
 | `nistcurves-p256-verify.a` | `ecdsa_verify_256` | `ec_scalar_mul` |
 | `nistcurves-p384-verify.a` | `ecdsa_verify_384` | `ec_scalar_mul_384` |
-| `nistcurves-p384-curve.a` | `ecdsa_verify_384`, `ecdsa_verify_with_message_384` | `ec_scalar_mul_384` (+ test-buffer leak below) |
-| `nistcurves.a` (full) | `ecdsa_verify_with_message_384` | `ecdsa_inputs_384`, `ecdsa_result_msg_384` |
+| `nistcurves-p384-curve.a` | `ecdsa_verify_384`, `ecdsa_verify_with_message_384` | `ec_scalar_mul_384` |
 
-`nistcurves-p384-sha384.a` is self-contained and has no such gap.
-
-**Additional gap — `ecdsa_verify_with_message_384`:** the object
-`ecdsa384_msg.o` also carries a *test-only* trampoline
-(`ecdsa_verify_with_msg_384_tramp`) that references the test-driver
-buffers `ecdsa_inputs_384` / `ecdsa_result_msg_384` (in `data_test.o`,
-excluded from every archive). Because `ld65` pulls a whole object from
-an archive when any of its symbols is referenced, importing
-`ecdsa_verify_with_message_384` drags in that trampoline and leaves
-those two buffers unresolved — so the wrapper is unlinkable even from
-the full `nistcurves.a`. Provide your own definitions, or drive
-`ecdsa_verify_384` with the digest pre-spliced into the struct (path 1
-below). This leak is tracked in issue #63 (relocate the test-only
-trampoline out of `ecdsa384_msg.o` into a test-only object so the
-wrapper object stops importing the test buffers).
+`nistcurves-p384-sha384.a` is self-contained and has no such gap, and the
+full `nistcurves.a` has none either: every packaged entry point —
+including `ecdsa_verify_with_message_384` — links clean from it. (An
+earlier test-trampoline leak that made the wrapper unlinkable even from
+the full archive was fixed by issue #63: the trampoline moved to the
+never-archived test driver `main.s`, so `ecdsa384_msg.o` no longer
+imports test-driver buffers.)
 
 **What to do — two supported paths:**
 

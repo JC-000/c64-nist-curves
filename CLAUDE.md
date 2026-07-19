@@ -647,11 +647,11 @@ keep all library calls on a single thread of control.
   PR #40; the archives ship the verify *building blocks*, and the
   supported path today is variable-base (`ec_scalar_mul_var` seeded at
   `G` + `fp_mod_*` + `ec_jacobian_to_affine`, the c64-https pattern).
-  `ecdsa_verify_with_message_384` has an extra gap: its object
-  (`ecdsa384_msg.o`) carries a test-only trampoline referencing
-  test-driver buffers (`ecdsa_inputs_384` / `ecdsa_result_msg_384`), so
-  it is unlinkable even from the full `nistcurves.a`. Full contract +
-  comb add-on recipe: **API.md §8.4.1**. The contract is pinned by
+  (A second gap — `ecdsa384_msg.o` carrying a test-only trampoline that
+  referenced test-driver buffers, making `ecdsa_verify_with_message_384`
+  unlinkable even from the full `nistcurves.a` — was fixed by issue #63:
+  the trampoline lives in `main.s` with the other test/bench trampolines
+  now.) Full contract + comb add-on recipe: **API.md §8.4.1**. The contract is pinned by
   `make check-archives` (`tools/check_archives.py`), a ratchet that
   fails on drift in either direction (a gap that unexpectedly closes, or
   a new unresolved symbol). Code fix (route `u1·G` through variable-base

@@ -12,6 +12,21 @@ contract).
 
 ## [Unreleased]
 
+### Archive linkability (2026-07-18)
+
+- **`ecdsa_verify_with_message_384` now links from consumer archives
+  (issue #63).** The test-only trampoline
+  `ecdsa_verify_with_msg_384_tramp` moved from `src/ecdsa384_msg.s` to
+  `src/main.s` (the test-driver home, never archived), so
+  `ecdsa384_msg.o` no longer imports the test-driver buffers
+  `ecdsa_inputs_384` / `ecdsa_result_msg_384`. The wrapper links clean
+  from the full `nistcurves.a`; from `lib-p384-curve` it now fails only
+  on the comb (`ec_scalar_mul_384`, issue #60/#61 territory), no longer
+  on test buffers. `check_archives.py` expectations flipped accordingly
+  (nistcurves.a: no gaps). Standalone PRG size unchanged (37171 B; code
+  relocated between objects, so addresses shift but the test trampoline
+  keeps its exported name and the Python driver is unaffected).
+
 ## [0.4.0] — 2026-07-17
 
 ### Archive linkability contract + ratchet (issue #60, 2026-07-16)
