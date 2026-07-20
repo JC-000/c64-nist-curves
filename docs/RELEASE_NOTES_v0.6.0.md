@@ -68,8 +68,8 @@ uses the canonical convention (`Y = b`, caller bakes
 | | |
 |---|---|
 | Tarball | `c64-nist-curves-v0.6.0.tar.gz` |
-| Size | `TBD_SIZE` bytes |
-| SHA256 | `TBD_SHA256` |
+| Size | 158250 bytes |
+| SHA256 | `df90e4650bce22248d7749e37ab3f7c12c6ffaefa4be36599a7cd970d86fbc3a` |
 
 Reproducible via `make dist VERSION=v0.6.0` at tag `v0.6.0`
 (byte-identical re-runs verified).
