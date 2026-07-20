@@ -652,17 +652,19 @@ row generation: `gen_mul_row` / `gen_mul_row_384` (entry stubs in
 Inner loops, SMC accumulators, and the sparse zero-byte fast path are
 byte-identical to the default profile.
 
-Measured on C64 Ultimate hardware (oracle-gated, 2026-07-19):
+Measured on C64 Ultimate hardware (oracle-gated; issue #71 inline
+quarter-square row generator, 2026-07-20):
 
 | `ecdsa_verify_256` | 1 MHz (est.) | 16 MHz | 48 MHz | 64 MHz |
 |---|---|---|---|---|
 | default (DMA table) | ~5 min | 37.9 s | 28.2 s | 25.5 s |
-| turbo (on-chip)     | ~16 min | 62.9 s | 21.4 s | **16.0 s** |
+| turbo (on-chip)     | ~12 min | 46.4 s | **15.8 s** | **11.8 s (2.16×)** |
 
-Crossovers: **~30 MHz for P-256, ~55 MHz for P-384**. At stock 1 MHz
-the DMA-table profile is ~3× faster (extrapolated from the measured
+Crossovers: **~22 MHz for P-256, ~33 MHz for P-384**. At stock 1 MHz
+the DMA-table profile is ~2.5× faster (extrapolated from the measured
 CPU-work fits) — the turbo profile is a complement, not a replacement.
-P-384 @64 MHz: 62.0 s → 53.7 s (1.15×).
+P-384 @64 MHz: 62.0 s → 39.1 s (1.59×). Full A/B data:
+`.research/issue71_shape2_2026_07_20/`.
 
 **Contract deltas vs the default profile:**
 

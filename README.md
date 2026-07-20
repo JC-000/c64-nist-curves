@@ -118,10 +118,13 @@ them. Measured, oracle-gated (C64U):
 | `ecdsa_verify_256` wall | 16 MHz | 48 MHz | 64 MHz |
 |---|---|---|---|
 | default (REU DMA table) | 37.9 s | 28.2 s | 25.5 s |
-| turbo (`FP_ONCHIP_MUL`) | 62.9 s | 21.4 s | **16.0 s** |
+| turbo (`FP_ONCHIP_MUL`) | 46.4 s | 15.8 s | **11.8 s (2.16×)** |
 
-Crossover ~30 MHz (P-256) / ~55 MHz (P-384); at stock 1 MHz the default
-profile is ~3× faster. Build via `make lib-onchip` /
+Crossover ~22 MHz (P-256) / ~33 MHz (P-384); at stock 1 MHz the default
+profile is ~2.5× faster. The turbo profile also runs correctly with
+**no REU at all** when combined with the no-comb verifiers
+(35/35 oracle suite in an REU-less VICE; the `*-verify-onchip`
+archives' configuration). Build via `make lib-onchip` /
 `make lib-p256-verify-onchip` / `make lib-p384-verify-onchip` /
 `make lib-p384-curve-onchip`, or `make onchip-prg` for the test PRG.
 See API.md §8.4.2.
