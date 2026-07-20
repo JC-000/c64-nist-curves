@@ -58,8 +58,14 @@ from cryptography.exceptions import InvalidSignature
 
 
 PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-PRG_PATH = os.path.join(PROJECT_ROOT, "build", "nist-curves.prg")
-LABELS_PATH = os.path.join(PROJECT_ROOT, "build", "labels.txt")
+# C64_PRG_NAME / C64_LABELS_NAME select an alternate build under build/ —
+# used by `make nocomb-prg` (issue #61) to run this whole suite against the
+# ECDSA_NO_COMB variant PRG (pair with C64_SKIP_BUILD=1, since the default
+# build step below only produces the standard PRG).
+PRG_PATH = os.path.join(PROJECT_ROOT, "build",
+                        os.environ.get("C64_PRG_NAME", "nist-curves.prg"))
+LABELS_PATH = os.path.join(PROJECT_ROOT, "build",
+                           os.environ.get("C64_LABELS_NAME", "labels.txt"))
 
 sys.path.insert(0, PROJECT_ROOT)
 

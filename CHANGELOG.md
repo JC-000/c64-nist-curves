@@ -12,6 +12,28 @@ contract).
 
 ## [Unreleased]
 
+### Archive linkability — u1·G no-comb fallback (issue #61, 2026-07-18)
+
+- **Every archive is now link-complete.** The verify / curve archives
+  ship `-D ECDSA_NO_COMB` variants of the packaged verifiers
+  (`ecdsa256_nocomb.o` / `ecdsa384_nocomb.o`): `u1·G` routes through
+  `ec_scalar_mul_var[_384]` seeded at G instead of the excluded Lim-Lee
+  comb, so `ecdsa_verify_256` / `ecdsa_verify_384` /
+  `ecdsa_verify_with_message_384` link standalone from
+  `lib-p256-verify` / `lib-p384-verify` / `lib-p384-curve`. Trade-off:
+  no comb boot pass or REU bank-2 residency, but a verify costs roughly
+  two variable-base scalar mults (up to ~2× slower). Full archive +
+  standalone PRG keep the comb-fast variants; **default PRG
+  byte-identical**.
+- New `make nocomb-prg` target builds the standalone test PRG with the
+  nocomb variants substituted; `tools/test_ecdsa_verify.py` grew
+  `C64_PRG_NAME` / `C64_LABELS_NAME` env overrides so the full oracle
+  suite runs against it (35/35 on the fallback path).
+- `check_archives.py` ratchet flipped: all `KNOWN_EXTERNAL` gaps
+  closed, packaged-verifier smokes expect clean links everywhere.
+  API.md §8.4.1 rewritten as a comb/no-comb variant table; Makefile
+  banner caveats replaced.
+
 ### Archive linkability (2026-07-18)
 
 - **`ecdsa_verify_with_message_384` now links from consumer archives

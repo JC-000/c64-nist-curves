@@ -563,11 +563,11 @@ Exclusion summary (per minimal archive):
   cipher-suite use case where the consumer wants a single
   hash-then-verify entry point.
 
-**Important:** excluding the Lim-Lee comb means the *packaged* verifiers
-`ecdsa_verify_256` / `ecdsa_verify_384` (and
-`ecdsa_verify_with_message_384`) are **not** linkable from the verify /
-curve archives on their own. See §8.4.1 for the full contract, the
-supported variable-base building-block path, and the comb add-on recipe.
+**Note:** the verify / curve archives ship the `-D ECDSA_NO_COMB`
+variants of the packaged verifiers (issue #61), so `ecdsa_verify_256` /
+`ecdsa_verify_384` / `ecdsa_verify_with_message_384` all link standalone
+— `u1·G` runs on the variable-base ladder instead of the excluded comb.
+See §8.4.1 for the contract and the performance trade-off.
 
 The standalone test PRG (`make` with no args, default target) continues
 to be byte-identical to the pre-PR-#40 baseline (37302 bytes loaded at
@@ -577,77 +577,58 @@ their own integration scripts against the pre-split layout (e.g.
 collapse those scripts to a `make lib-p256-verify && cp` pattern when
 they next refresh.
 
-### 8.4.1 Packaged verifiers are NOT linkable from the verify archives alone
+### 8.4.1 Packaged verifiers: comb vs no-comb variants
 
-**Contract (issue #60):** the trimmed verify archives ship the ECDSA
-verify *building blocks*, not a link-complete packaged verifier. The
-headline routines `ecdsa_verify_256` (`src/ecdsa256.s`) and
-`ecdsa_verify_384` (`src/ecdsa384.s`) compute `u1·G` by calling the
-h=8 Lim-Lee fixed-base comb (`ec_scalar_mul` / `ec_scalar_mul_384`),
-which lives in `points256_comb.o` / `points384_comb.o` — objects the
-verify archives **exclude by design**. Linking a consumer that imports
-`ecdsa_verify_256` against `nistcurves-p256-verify.a` alone therefore
-fails:
+**Contract (issues #60/#61/#63):** every archive is link-complete —
+each documented entry point links from its archive alone, with no
+external symbol requirements. `make check-archives` pins this.
 
-```
-Unresolved external 'ec_scalar_mul' referenced in:
-  src/ecdsa256.s(252)
-```
+The packaged verifiers come in **two build variants** of the same
+sources (`src/ecdsa256.s` / `src/ecdsa384.s`), differing only in how
+`u1·G` is computed:
 
-This is pre-existing behaviour since PR #40 (the SPEC §6 archive split),
-made explicit here rather than changed. It affects, per archive:
-
-| Archive | Packaged entry point(s) NOT linkable standalone | Missing symbol(s) |
+| Variant | `u1·G` path | Shipped in |
 |---|---|---|
-| `nistcurves-p256-verify.a` | `ecdsa_verify_256` | `ec_scalar_mul` |
-| `nistcurves-p384-verify.a` | `ecdsa_verify_384` | `ec_scalar_mul_384` |
-| `nistcurves-p384-curve.a` | `ecdsa_verify_384`, `ecdsa_verify_with_message_384` | `ec_scalar_mul_384` |
+| comb (default) | h=8 Lim-Lee fixed-base comb (`ec_scalar_mul[_384]`) | `nistcurves.a` (full), standalone PRG |
+| `-D ECDSA_NO_COMB` | variable-base ladder seeded at `G` (`ec_scalar_mul_var[_384]`) | `nistcurves-p256-verify.a`, `nistcurves-p384-verify.a`, `nistcurves-p384-curve.a` |
 
-`nistcurves-p384-sha384.a` is self-contained and has no such gap, and the
-full `nistcurves.a` has none either: every packaged entry point —
-including `ecdsa_verify_with_message_384` — links clean from it. (An
-earlier test-trampoline leak that made the wrapper unlinkable even from
-the full archive was fixed by issue #63: the trampoline moved to the
-never-archived test driver `main.s`, so `ecdsa384_msg.o` no longer
-imports test-driver buffers.)
+The no-comb variant exists so the trimmed verify archives need no
+`points256_comb.o` / `points384_comb.o` (issue #60's gap, closed by
+issue #61). Functional behaviour is identical — the full oracle ECDSA
+suite passes against a no-comb build, including the `u1 ≡ 0 (mod n)`
+infinity edge (both paths return the all-zero Jacobian encoding).
 
-**What to do — two supported paths:**
+**Choosing a variant:**
 
-1. **Variable-base building blocks (recommended today, the current
-   `c64-https` pattern).** The verify archives fully support driving
-   the low-level primitives directly: compute `u1·G` with
-   `ec_scalar_mul_var` seeded at the base point `G`, `u2·Q` with
-   `ec_scalar_mul_var`, join with `ec_point_add` / `ec_point_add_jj`,
-   lift with `ec_jacobian_to_affine`, and reduce with `fp_mod_inv` /
-   `fp_mod_mul` (all exported from the verify archive). This path needs
-   no comb, so it skips the `ec_precompute_256` / `ec_precompute_384`
-   boot pass (~25 s / ~80 s at 1 MHz; see §8.5) and the comb's REU
-   bank-2 residency entirely.
+- **Verify archives (no-comb).** No comb objects, no
+  `ec_precompute_256/384` boot pass (~25 s / ~80 s at 1 MHz, §8.5), no
+  REU bank-2 anchor residency (P-256 16 KB at `$0000..$3FFF`; P-384
+  24 KB at `$4000..$9F9F`). **Trade-off:** `u1·G` runs a full
+  variable-base double-and-add instead of the comb, so a verify costs
+  roughly two variable-base scalar multiplies instead of one-plus-comb
+  — up to ~2× slower per verify. Right choice for RAM/boot-constrained
+  or occasional-verify consumers.
+- **Full archive (comb).** Comb-accelerated `u1·G`; pay the boot pass
+  + REU residency. Right choice for verify-throughput consumers.
+  Note: adding the comb objects to a verify archive's link line does
+  **not** restore comb speed — the archive's `ecdsa*_nocomb.o` has the
+  variable-base path baked in. Comb-speed packaged verify means
+  linking `nistcurves.a` (or composing your own object set from
+  `build/ecdsa256.o` + comb objects).
+- **Either variant, driving primitives directly.** The building blocks
+  (`ec_scalar_mul_var`, `ec_point_add[_jj]`, `ec_jacobian_to_affine`,
+  `fp_mod_inv`, `fp_mod_mul`, …) remain exported from all curve
+  archives — the pre-#61 `c64-https` pattern keeps working unchanged.
 
-2. **Add the comb objects (or link the full archive).** To use the
-   packaged `ecdsa_verify_256` / `ecdsa_verify_384` as-is, add the comb
-   objects to the link line:
-   - P-256: `build/points256_comb.o build/data_p256_limlee.o`
-   - P-384: `build/points384_comb.o build/data_p384_limlee.o`
-
-   or simply link `nistcurves.a`. **Operational cost:** the comb's REU
-   anchor table must be built once at boot by `ec_precompute_256` /
-   `ec_precompute_384` (~25 s / ~80 s at 1 MHz, §8.5), and it occupies
-   REU bank 2 for the program's lifetime (P-256 16 KB at
-   `$0000..$3FFF`; P-384 24 KB at `$4000..$9F9F`). Verify-only consumers
-   that cannot pay that boot time or REU residency should prefer path 1.
-
-A future enhancement (issue #61, the option-1 fallback from #60) would
-let `ecdsa_verify_256/384` route `u1·G` through `ec_scalar_mul_var`
-when the comb is absent, so the verify archives link standalone; until
-that lands, the contract above is the reality.
-
-**Ratchet:** `make check-archives` (`tools/check_archives.py`) pins this
-contract — an od65 import/export closure sweep plus `ld65` dummy-link
-smoke tests per archive. It fails if a packaged verifier ever links
-cleanly from a verify archive (gap closed — shrink the docs) or if a new
-unresolved symbol appears (regression). Run it after any change to the
-archive object sets or the ECDSA call graph.
+**Ratchet:** `make check-archives` (`tools/check_archives.py`) — an
+od65 import/export closure sweep plus `ld65` dummy-link smoke tests per
+archive, checked against the documented expectations. Any drift (a new
+unresolved symbol, or an expectation that flips) exits non-zero. Run it
+after any change to the archive object sets or the ECDSA call graph.
+To exercise the no-comb functional path end-to-end:
+`make nocomb-prg`, then run `tools/test_ecdsa_verify.py` with
+`C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt
+C64_SKIP_BUILD=1`.
 
 ### 8.5 Initialization sequence
 

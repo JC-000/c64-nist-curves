@@ -46,7 +46,15 @@
 .import ec_set_modp_384, ec_set_modn_384
 .import ec_mulp_384, ec_sqrp_384
 .import ec_n384, ec_p384
-.import ec_scalar_mul_384, ec_scalar_mul_var_384
+; Issue #61: -D ECDSA_NO_COMB variant routes u1*G through the
+; variable-base ladder seeded at G (see ecdsa256.s for the rationale);
+; used by the lib-p384-verify / lib-p384-curve archive objects.
+.ifndef ECDSA_NO_COMB
+.import ec_scalar_mul_384
+.else
+.import ec_gx384, ec_gy384
+.endif
+.import ec_scalar_mul_var_384
 .import ec_point_add_jj_384
 .import reu_reu_lo, reu_addr_ctrl     ; issue #33-class defence
 
@@ -256,7 +264,21 @@ ecdsa_verify_384:
         sta ec_scalar_ptr
         lda #>ecdsa384_u1_be
         sta ec_scalar_ptr+1
-        jsr ec_scalar_mul_384   ; ec384_p3 = u1 * G (Jacobian)
+.ifndef ECDSA_NO_COMB
+        jsr ec_scalar_mul_384   ; ec384_p3 = u1 * G (Jacobian, fixed-base comb)
+.else
+        ; Issue #61 fallback: no comb linked — seed the variable-base
+        ; ladder at G. See the ecdsa256.s twin for the full rationale.
+        ldy #47
+@u1g_seed_g:
+        lda ec_gx384,y
+        sta ec_base384_x,y
+        lda ec_gy384,y
+        sta ec_base384_y,y
+        dey
+        bpl @u1g_seed_g
+        jsr ec_scalar_mul_var_384   ; ec384_p3 = u1 * G (Jacobian)
+.endif
 
         ; Stash full 144 B Jacobian u1*G into ecdsa384_u1g_jac so it survives
         ; the u2*Q scalar_mul that overwrites ec384_p3 below. See ecdsa256.s
