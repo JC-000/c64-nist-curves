@@ -12,6 +12,45 @@ contract).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-20
+
+### FP_ONCHIP_MUL turbo profile (issue #69, 2026-07-20)
+
+- **New build profile: on-chip multiply for accelerated hosts.** REU DMA
+  transfers at the ~1 MHz bus rate regardless of CPU turbo, so the
+  per-row multiply-table fetch inside `fp_mul`/`fp_sqr` is a
+  speed-invariant wall-clock floor. Measured on C64 Ultimate fw 1.1.0
+  across a 16/48/64 MHz sweep (`wall = F + C/f` fits, residuals ≤2.6%):
+  `ecdsa_verify_256` floor **22.2 s** (87% of 25.5 s wall @64 MHz),
+  `ecdsa_verify_384` floor 51.7 s. `-D FP_ONCHIP_MUL` replaces all six
+  row-fetch sites with sparse on-chip row generation: per-curve entry
+  stubs `gen_mul_row` (fp256.s) / `gen_mul_row_384` (fp384.s) SMC-patch
+  the shared `og_common` loop (mul_8x8.s), which computes — via the
+  canonical §8.3 `ct_mul_8x8`, body untouched — exactly the
+  `mul_dma_lo/hi` entries the inner loops read (one product per staged
+  src byte + the squaring diagonal). Inner loops, SMC accumulators, and
+  the Wave-8a sparse fast path are byte-identical; **default PRG
+  byte-identical** (sha256-verified).
+- **Measured, oracle-gated (C64U):** verify_256 @64 MHz 25.5 → 16.0 s
+  (**1.60×**), @48 MHz 1.32×; verify_384 @64 MHz 62.0 → 53.7 s (1.15×).
+  Onchip residual floor ≈0.3 s — scales 3.94× for a 4× clock. Crossover
+  ~30 MHz (P-256) / ~55 MHz (P-384); ~3× slower at stock 1 MHz (profile,
+  not replacement). Full oracle ECDSA suite: 35/35 against the onchip
+  PRG, including CAVP SigVer negatives.
+- **Four new archives** (`make lib-onchip`, `lib-p256-verify-onchip`,
+  `lib-p384-verify-onchip`, `lib-p384-curve-onchip`) with profile-aware
+  §5 manifest (`lib_manifest_onchip.o`: REU banks `$04`; resident 28200 /
+  cold 1900 — sqtab + `ct_mul_8x8` become verify-hot). Verify-onchip
+  archives issue **no REU DMA at all**; consumer boot obligation shrinks
+  to `sqtab_init` only (no §8.2 `reu_mul` provider). `check_archives.py`
+  ratchet extended to all nine archives. API.md §8.4.2 documents the
+  profile.
+- **Tooling:** `make onchip-prg` variant test PRG;
+  `tools/test_ecdsa_verify.py` honors `C64_INIT_TIMEOUT` (onchip
+  precompute boots ~3× slower under VICE warp); `bench_u64_common.py`
+  allows **64 MHz** turbo (C64 Ultimate fw 1.1.0+; U64E firmware
+  rejects it at set time).
+
 ### Archive linkability — u1·G no-comb fallback (issue #61, 2026-07-18)
 
 - **Every archive is now link-complete.** The verify / curve archives
@@ -803,5 +842,6 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.5.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.5.0
 [0.2.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.2.0
 [0.1.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.1.0
