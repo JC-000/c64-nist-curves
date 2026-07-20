@@ -58,28 +58,27 @@ RESULTS_HI = 0xC300
 def build_shim(mul_addr: int, prod_lo: int, prod_hi: int) -> bytes:
     """Assemble the 256-``b`` tight loop at ``$C000``.
 
-    Layout (byte offsets from $C000)::
+    Layout (byte offsets from $C000), canonical §8.3 convention::
 
-        00: A9 00          lda #$00       <- a_imm, SMC-patched per outer a
-        02: A2 00          ldx #$00       <- b_val
-        04: 20 lo hi       jsr mul_8x8
-        07: AE 22 C0       ldx b_val
-        0A: AD lo hi       lda poly_prod_lo
-        0D: 9D 00 C2       sta $C200,x
-        10: AD lo hi       lda poly_prod_hi
-        13: 9D 00 C3       sta $C300,x
-        16: EE 22 C0       inc b_val
-        19: AD 22 C0       lda b_val
-        1C: D0 E2          bne -$1E       -> back to $C000 (SMC a_imm preserved)
-        1E: 60             rts
-        1F: 00             padding
-        20: (unused, aligned to 0x22 below)
+        00: AC 22 C0       ldy b_val      <- Y = b (canonical entry)
+        03: 20 lo hi       jsr mul_8x8
+        06: AE 22 C0       ldx b_val      (mul_8x8 clobbers X and Y)
+        09: AD lo hi       lda poly_prod_lo
+        0C: 9D 00 C2       sta $C200,x
+        0F: AD lo hi       lda poly_prod_hi
+        12: 9D 00 C3       sta $C300,x
+        15: EE 22 C0       inc b_val
+        18: AD 22 C0       lda b_val
+        1B: D0 E3          bne -$1D       -> back to $C000
+        1D: 60             rts
+        1E: (padding to 0x22 below)
         22: 00             b_val (data slot)
 
-    The outer Python loop pokes the desired ``a`` into offset 0x01 (the
-    immediate byte of the leading ``lda #$00``) and b_val at 0x22 back
-    to zero before each ``jsr SHIM_ADDR``. The shim exits when b_val
-    wraps back to 0 after 256 iterations.
+    The outer Python loop SMC-bakes the desired ``a`` at the library's
+    canonical caller-contract sites (``smc_sum_a_imm+1`` /
+    ``smc_diff_a_imm+1``, from labels) and resets b_val at 0x22 before
+    each ``jsr SHIM_ADDR``. The shim exits when b_val wraps back to 0
+    after 256 iterations.
     """
     def addr2(a: int) -> bytes:
         return bytes([a & 0xFF, (a >> 8) & 0xFF])
@@ -87,32 +86,36 @@ def build_shim(mul_addr: int, prod_lo: int, prod_hi: int) -> bytes:
     b_val_addr = SHIM_ADDR + 0x22
     code = bytearray(0x23)
 
-    # 00: lda #$00  ; a immediate (SMC-patched)
-    code[0x00:0x02] = b"\xA9\x00"
-    # 02: ldx b_val ; X = current b
-    code[0x02:0x05] = b"\xAE" + addr2(b_val_addr)
-    # 05: jsr mul_8x8
-    code[0x05:0x08] = b"\x20" + addr2(mul_addr)
-    # 08: ldx b_val   (mul_8x8 clobbered X)
-    code[0x08:0x0B] = b"\xAE" + addr2(b_val_addr)
-    # 0B: lda poly_prod_lo
-    code[0x0B:0x0E] = b"\xAD" + addr2(prod_lo)
-    # 0E: sta $C200,x
-    code[0x0E:0x11] = b"\x9D" + addr2(RESULTS_LO)
-    # 11: lda poly_prod_hi
-    code[0x11:0x14] = b"\xAD" + addr2(prod_hi)
-    # 14: sta $C300,x
-    code[0x14:0x17] = b"\x9D" + addr2(RESULTS_HI)
-    # 17: inc b_val
-    code[0x17:0x1A] = b"\xEE" + addr2(b_val_addr)
-    # 1A: lda b_val
-    code[0x1A:0x1D] = b"\xAD" + addr2(b_val_addr)
-    # 1D: bne back
-    #    After the bne (PC = SHIM_ADDR+0x1F), branching to $C000 (SHIM_ADDR+0x00)
-    #    needs offset 0x00 - 0x1F = -0x1F = 0xE1.
-    code[0x1D:0x1F] = b"\xD0\xE1"
-    # 1F: rts
-    code[0x1F:0x20] = b"\x60"
+    # Canonical ct_mul_8x8 convention (§8.3, adopted 2026-06-19): b in Y,
+    # `a` SMC-baked by the CALLER into smc_sum_a_imm+1 / smc_diff_a_imm+1
+    # — the Python outer loop pokes those two library addresses per a.
+    # (The previous shim used the pre-§8.3 register entry A=a / X=b; with
+    # the canonical body that computed stale-bake garbage — issue #71
+    # collateral fix. mul_8x8 itself was correct all along.)
+    # 00: ldy b_val ; Y = current b
+    code[0x00:0x03] = b"\xAC" + addr2(b_val_addr)
+    # 03: jsr mul_8x8
+    code[0x03:0x06] = b"\x20" + addr2(mul_addr)
+    # 06: ldx b_val   (mul_8x8 clobbers X and Y)
+    code[0x06:0x09] = b"\xAE" + addr2(b_val_addr)
+    # 09: lda poly_prod_lo
+    code[0x09:0x0C] = b"\xAD" + addr2(prod_lo)
+    # 0C: sta $C200,x
+    code[0x0C:0x0F] = b"\x9D" + addr2(RESULTS_LO)
+    # 0F: lda poly_prod_hi
+    code[0x0F:0x12] = b"\xAD" + addr2(prod_hi)
+    # 12: sta $C300,x
+    code[0x12:0x15] = b"\x9D" + addr2(RESULTS_HI)
+    # 15: inc b_val
+    code[0x15:0x18] = b"\xEE" + addr2(b_val_addr)
+    # 18: lda b_val
+    code[0x18:0x1B] = b"\xAD" + addr2(b_val_addr)
+    # 1B: bne back
+    #    After the bne (PC = SHIM_ADDR+0x1D), branching to $C000 (SHIM_ADDR+0x00)
+    #    needs offset 0x00 - 0x1D = -0x1D = 0xE3.
+    code[0x1B:0x1D] = b"\xD0\xE3"
+    # 1D: rts
+    code[0x1D:0x1E] = b"\x60"
     # 22: b_val
     code[0x22:0x23] = b"\x00"
     return bytes(code)
@@ -174,9 +177,12 @@ def main() -> int:
         mismatches = 0
         max_report = 8
         total = 0
+        smc_sum = labels["smc_sum_a_imm"]
+        smc_diff = labels["smc_diff_a_imm"]
         for a in range(256):
-            # SMC-bake `a` into the shim's leading lda-immediate (offset 0x01).
-            write_bytes(transport, SHIM_ADDR + 0x01, bytes([a]))
+            # SMC-bake `a` at the canonical library sites (caller contract).
+            write_bytes(transport, smc_sum + 1, bytes([a]))
+            write_bytes(transport, smc_diff + 1, bytes([a]))
             # Reset b_val = 0.
             write_bytes(transport, SHIM_ADDR + 0x22, bytes([0]))
 

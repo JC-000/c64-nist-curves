@@ -99,6 +99,27 @@ ONCHIP_OBJECTS = $(subst $(BUILD_DIR)/lib_manifest.o,$(BUILD_DIR)/lib_manifest_o
 .PHONY: onchip-prg
 onchip-prg: $(PRG_ONCHIP)
 
+# Onchip + no-comb test PRG (issue #71): both -D flags — the zero-REU
+# configuration. fp_mul/fp_sqr compute rows on-chip AND u1*G routes through
+# the variable-base ladder, so the verify path issues no REU DMA at all.
+# Validate on a stock (REU-less) machine with:
+#   make onchip-nocomb-prg
+#   C64_PRG_NAME=nist-curves-onchip-nocomb.prg \
+#   C64_LABELS_NAME=labels_onchip_nocomb.txt \
+#   C64_SKIP_BUILD=1 C64_INIT_TIMEOUT=1800 C64_NO_REU=1 \
+#     python3 tools/test_ecdsa_verify.py
+# Boot still runs reu_mul_init + ec_precompute_* (writes vanish into open
+# bus without an REU; comb tables are never read by the nocomb verifiers).
+PRG_ONCHIP_NOCOMB = $(BUILD_DIR)/nist-curves-onchip-nocomb.prg
+ONCHIP_NOCOMB_OBJECTS = $(subst $(BUILD_DIR)/ecdsa256.o,$(BUILD_DIR)/ecdsa256_nocomb.o,$(subst $(BUILD_DIR)/ecdsa384.o,$(BUILD_DIR)/ecdsa384_nocomb.o,$(ONCHIP_OBJECTS)))
+
+.PHONY: onchip-nocomb-prg
+onchip-nocomb-prg: $(PRG_ONCHIP_NOCOMB)
+
+$(PRG_ONCHIP_NOCOMB): $(ONCHIP_NOCOMB_OBJECTS) $(CFG) | $(BUILD_DIR)
+	$(LD65) -o $@ -C $(CFG) -Ln $(BUILD_DIR)/labels_onchip_nocomb_raw.txt $(ONCHIP_NOCOMB_OBJECTS)
+	sed 's/^al \([0-9a-fA-F]\{2\}\)\([0-9a-fA-F]\{4\}\) /al C:\2 /' $(BUILD_DIR)/labels_onchip_nocomb_raw.txt > $(BUILD_DIR)/labels_onchip_nocomb.txt
+
 $(PRG_ONCHIP): $(ONCHIP_OBJECTS) $(CFG) | $(BUILD_DIR)
 	$(LD65) -o $@ -C $(CFG) -Ln $(BUILD_DIR)/labels_onchip_raw.txt $(ONCHIP_OBJECTS)
 	sed 's/^al \([0-9a-fA-F]\{2\}\)\([0-9a-fA-F]\{4\}\) /al C:\2 /' $(BUILD_DIR)/labels_onchip_raw.txt > $(BUILD_DIR)/labels_onchip.txt

@@ -306,8 +306,10 @@ reu_fetch_mul_row:
 og_common:
         stx og_i
         lda mul_cached_a
-        sta smc_sum_a_imm+1     ; bake a once per row (canonical SMC entry)
-        sta smc_diff_a_imm+1
+        sta smc_sum_a_imm+1     ; bake a once per row (canonical SMC entry,
+        sta smc_diff_a_imm+1    ;   still used for the diagonal product)
+        sta og_sbc_a+1          ; bake a into the inline quarter-square
+        sta og_adc_a+1          ;   (issue #71 shape-2 fast path below)
         tay
         jsr ct_mul_8x8          ; a*a for the fp_sqr diagonal read
         ldy mul_cached_a
@@ -318,15 +320,51 @@ og_common:
 og_loop:
         ldx og_i
 og_src_ld:
-        ldy $FFFF,x             ; operand SMC-patched by the entry stubs
+        lda $FFFF,x             ; operand SMC-patched by the entry stubs
         beq og_skip             ; index 0 never read (inner-loop beq fast-path)
-        sty og_v
-        jsr ct_mul_8x8
-        ldy og_v
-        lda poly_prod_lo
-        sta mul_dma_lo,y
-        lda poly_prod_hi
+
+        ; --- Inline non-CT quarter-square: a*v = q[a+v] - q[|a-v|] -------
+        ; (issue #71 shape 2: ~70 cy/product vs ~134 via jsr ct_mul_8x8.)
+        ; NOT constant-time: |a-v| sign branch + sum-page branch. The row
+        ; generator only ever runs on the verify path, which is documented
+        ; non-CT (public inputs); the canonical CT ct_mul_8x8 body above
+        ; is retained, unmodified, for the diag head and §8.3 identity.
+        ; a is SMC-baked per row; v arrives in A. q tables are exact for
+        ; this identity because (a+v) and (a-v) share parity.
+        sta og_v                ; save v (store index, reloaded below)
+        sec
+og_sbc_a:
+        sbc #$00                ; A = v - a, C=1 iff v >= a (SMC imm = a)
+        bcs og_dpos
+        eor #$FF                ; v < a: negate -> a - v
+        adc #$01                ;   (C=0 here, so +1 completes two's comp)
+og_dpos:
+        tax                     ; X = |a - v|  (diff index, always page 0)
+        lda og_v
+        clc
+og_adc_a:
+        adc #$00                ; A = (a+v) & $FF, C = sum-page bit (SMC = a)
+        tay                     ; Y = sum.lo
+        bcs og_pg1
+        lda sqtab_lo,y          ; sum in q page 0
+        sec
+        sbc sqtab_lo,x
+        sta og_plo
+        lda sqtab_hi,y
+        sbc sqtab_hi,x
+        jmp og_store
+og_pg1:
+        lda sqtab_lo+$100,y     ; sum in q page 1 (256..510)
+        sec
+        sbc sqtab_lo,x
+        sta og_plo
+        lda sqtab_hi+$100,y
+        sbc sqtab_hi,x
+og_store:
+        ldy og_v                ; Y = v: row entries are indexed by value
         sta mul_dma_hi,y
+        lda og_plo
+        sta mul_dma_lo,y
 og_skip:
         dec og_i
         bpl og_loop
@@ -334,4 +372,5 @@ og_skip:
 
 og_i:   .byte 0
 og_v:   .byte 0
+og_plo: .byte 0
 .endif  ; FP_ONCHIP_MUL

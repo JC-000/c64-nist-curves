@@ -232,12 +232,17 @@ gets stale otherwise).
   canonical ct_mul_8x8 — §8.3 body untouched). Rationale: REU DMA is
   wall-clock-anchored, so at turbo it caps scaling — measured on C64U
   fw 1.1.0, verify_256 has a 22.2 s speed-invariant floor (87% of wall
-  @64 MHz). Onchip verify_256 @64 MHz: 25.5→16.0 s (1.60×); crossover
-  ~30 MHz P-256 / ~55 MHz P-384; ~3× SLOWER at stock 1 MHz (profile,
-  not replacement — default PRG byte-identical). Ships as four
-  `make lib-*-onchip` archives with a profile-aware manifest
-  (REU banks $04; verify-onchip archives issue no REU DMA at all and
-  need only sqtab_init at boot). See API.md §8.4.2 and issue #69.
+  @64 MHz). Onchip verify_256 @64 MHz: 25.5→11.8 s (2.16×, issue #71
+  inline quarter-square in og_common — non-CT, ~70 cy/product; the
+  canonical §8.3 ct_mul_8x8 body stays untouched and serves the diag
+  product); crossover ~22 MHz P-256 / ~33 MHz P-384; ~2.5× SLOWER at
+  stock 1 MHz (profile, not replacement — default PRG byte-identical).
+  Ships as four `make lib-*-onchip` archives with a profile-aware
+  manifest (REU banks $04; verify-onchip archives issue no REU DMA at
+  all and need only sqtab_init at boot — runtime-validated 35/35 in an
+  REU-less VICE via `make onchip-nocomb-prg` + `C64_NO_REU=1`). See
+  API.md §8.4.2, issues #69/#71, and
+  `.research/issue71_shape2_2026_07_20/report.md`.
 - Unrolled binary GCD shift loops for modular inversion
 - VIC-II screen blanking (+20-25% CPU)
 

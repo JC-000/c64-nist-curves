@@ -12,6 +12,33 @@ contract).
 
 ## [Unreleased]
 
+### FP_ONCHIP_MUL shape 2 — inline quarter-square row generation (issue #71, 2026-07-20)
+
+- **Turbo profile ~26% faster at every speed.** The per-product
+  `jsr ct_mul_8x8` in `og_common` (~134 cy incl. reloads) is replaced by
+  an inline non-CT quarter-square (~70 cy/product; SMC-baked `a`,
+  X=|a−v| diff index, Y=sum index with sum-page branch). The canonical
+  §8.3 `ct_mul_8x8` body is untouched (still used for the per-row
+  diagonal product); default PRG byte-identical. Measured same-run A/B
+  on C64 Ultimate (16/48/64 MHz, oracle-gated): `ecdsa_verify_256`
+  @64 MHz **25.5 → 11.8 s vs the DMA-table default (2.16×)**, @48 MHz
+  1.78×; `ecdsa_verify_384` @64 MHz 1.59×. Crossovers drop to ~22 MHz
+  (P-256) / ~33 MHz (P-384); the stock-1 MHz penalty shrinks to ~2.5×.
+  Oracle suite 35/35. Data: `.research/issue71_shape2_2026_07_20/`.
+- **Zero-REU operation runtime-validated.** New `make onchip-nocomb-prg`
+  (FP_ONCHIP_MUL + ECDSA_NO_COMB — the `*-verify-onchip` archive
+  configuration) plus `C64_NO_REU=1` in `tools/test_ecdsa_verify.py`
+  (launches VICE with no REU): full oracle suite **35/35 with no REU in
+  the machine**, converting the v0.5.0 link-level zero-REU claim into a
+  runtime-proven one.
+- **Fixed `tools/ct_mul_brute_check.py`** — silently broken since the
+  2026-06-19 §8.3 verbatim adoption: its shim still used the pre-§8.3
+  register calling convention (A=a/X=b), so it reported 65535/65536
+  mismatches against a correct `mul_8x8` (the observed values were the
+  canonical body correctly multiplying stale-baked inputs). Now uses the
+  canonical convention (Y=b, caller bakes `smc_sum_a_imm+1` /
+  `smc_diff_a_imm+1`): PASS 65536/65536.
+
 ## [0.5.0] — 2026-07-20
 
 ### FP_ONCHIP_MUL turbo profile (issue #69, 2026-07-20)

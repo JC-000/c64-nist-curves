@@ -596,8 +596,17 @@ def main():
         sys.exit(2)
     print("  OK: RFC 6979 anchors pinned via cryptography.verify")
 
+    # C64_NO_REU=1 launches VICE with no REU at all (issue #71): validates
+    # that the FP_ONCHIP_MUL + ECDSA_NO_COMB build verifies correctly on a
+    # stock, expansion-less C64. Only meaningful with the onchip-nocomb
+    # variant PRG — the default build's fp_mul reads the REU mul table and
+    # would produce garbage without it.
+    if os.environ.get("C64_NO_REU"):
+        reu_args = ["+reu"]
+    else:
+        reu_args = ["-reu", "-reusize", "512"]
     config = ViceConfig(prg_path=PRG_PATH, warp=True, ntsc=True, sound=False,
-                        extra_args=["-reu", "-reusize", "512"])
+                        extra_args=reu_args)
 
     with ViceInstanceManager(config=config) as mgr:
         inst = mgr.acquire()
