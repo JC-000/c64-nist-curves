@@ -269,3 +269,69 @@ reu_fetch_mul_row:
         lda #%10110001         ; execute + autoload + FETCH (REU->C64)
         sta reu_command
         rts
+
+.ifdef FP_ONCHIP_MUL
+; =============================================================================
+; og_common - FP_ONCHIP_MUL shared row-generation loop (issue #69: REU DMA
+;   stall is wall-clock-anchored and caps turbo scaling)
+;
+; Instead of DMA-fetching the full 512 B a-row, compute on-chip -- via
+; ct_mul_8x8 -- exactly the mul_dma_lo/hi entries the fp_mul / fp_sqr
+; inner loops will read for the current row:
+;   - one product a*v per byte value v in the staged src buffer [0..X]
+;     (zero bytes skipped: the inner loops' beq fast-path never reads
+;     index 0)
+;   - the diagonal entry at index mul_cached_a (a*a; the fp_sqr diagonal
+;     pass reads it, and in fp_sqr mul_cached_a is itself a src byte)
+; Entries at all other indices are left stale from previous rows; the
+; consumers above never read them for the current row.
+;
+; Entry points live with their curve objects so no cross-curve import
+; leaks into this object (archive linkability, SPEC §6 / check-archives):
+; fp256.s `gen_mul_row` and fp384.s `gen_mul_row_384` are 6-instruction
+; stubs that SMC-patch the og_src_ld operand to their own staged-src
+; buffer (mul_src2_buf / mul_src2_buf_384) and jmp og_common. The
+; placeholder operand $FFFF below is ALWAYS overwritten before the loop
+; runs.
+;
+; Input:  X = last source-buffer index (31 for P-256, 47 for P-384)
+;         og_src_ld+1/+2 = staged-src buffer address (patched by stub)
+;         mul_cached_a = row multiplicand a
+; Clobbers: A, X, Y, poly_prod_lo/hi, ct_mul_8x8 scratch + SMC sites.
+;   All six call sites reload X and Y after the (former) fetch block, so
+;   the wider clobber set vs the DMA path (A only) is safe.
+; =============================================================================
+.import mul_dma_lo, mul_dma_hi
+.export og_common, og_src_ld
+og_common:
+        stx og_i
+        lda mul_cached_a
+        sta smc_sum_a_imm+1     ; bake a once per row (canonical SMC entry)
+        sta smc_diff_a_imm+1
+        tay
+        jsr ct_mul_8x8          ; a*a for the fp_sqr diagonal read
+        ldy mul_cached_a
+        lda poly_prod_lo
+        sta mul_dma_lo,y
+        lda poly_prod_hi
+        sta mul_dma_hi,y
+og_loop:
+        ldx og_i
+og_src_ld:
+        ldy $FFFF,x             ; operand SMC-patched by the entry stubs
+        beq og_skip             ; index 0 never read (inner-loop beq fast-path)
+        sty og_v
+        jsr ct_mul_8x8
+        ldy og_v
+        lda poly_prod_lo
+        sta mul_dma_lo,y
+        lda poly_prod_hi
+        sta mul_dma_hi,y
+og_skip:
+        dec og_i
+        bpl og_loop
+        rts
+
+og_i:   .byte 0
+og_v:   .byte 0
+.endif  ; FP_ONCHIP_MUL

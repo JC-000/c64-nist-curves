@@ -34,6 +34,10 @@
 # you add a new src/*.s file, add it both to MODULES (Makefile:19)
 # AND to the git-archive call below.
 #
+# v0.5.0 file-list refresh: src/precalc_manifest.s + src/precalc_table.inc
+# (present in the tree and in Makefile MODULES but missing from this list —
+# caught by the step-0 preflight diff at v0.5.0 release time; without the
+# fix the source tarball would silently exclude them and not build).
 # v0.4.0 file-list refresh: src/data_p256_invref.s (issue #54 BSS
 # split, PR #59) and the two tools that back Makefile targets shipped
 # in the tarball — tools/check_archives.py (make check-archives, PR #62)
@@ -73,6 +77,7 @@ git archive \
   src/c64.cfg src/exports.inc \
   src/constants.s src/zp_config.s \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
+  src/precalc_manifest.s src/precalc_table.inc \
   src/main.s src/mul_8x8.s \
   src/fp256.s src/mod256.s src/curve256.s src/inv256.s \
   src/points256_core.s src/points256_comb.s src/ecdsa256.s \

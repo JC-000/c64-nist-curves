@@ -607,7 +607,11 @@ def main():
         print("Waiting for init sentinel...")
         start = time.time()
         sentinel_ok = False
-        while time.time() - start < 600.0:
+        # C64_INIT_TIMEOUT: the FP_ONCHIP_MUL variant PRG (issue #69) boots
+        # ~3x slower than baseline (precompute field muls run on-chip), so
+        # variant test runs need a wider window than the 600 s default.
+        init_timeout = float(os.environ.get("C64_INIT_TIMEOUT", "600"))
+        while time.time() - start < init_timeout:
             sentinel = read_bytes(transport, 0x02A7, 1)
             if sentinel[0] == 0x42:
                 sentinel_ok = True

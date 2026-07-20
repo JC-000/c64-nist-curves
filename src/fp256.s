@@ -16,6 +16,10 @@
 ; REU layout contract (SPEC §3)
 .import LIB_NISTCURVES_REU_BANK_MUL
 
+.ifdef FP_ONCHIP_MUL
+.import og_common, og_src_ld    ; issue #69 on-chip-mul turbo profile
+.endif
+
 ; Exports
 .export fp_copy, fp_zero, fp_cmp, fp_add, fp_sub
 .export fp_is_zero, fp_rshift1, fp_mul, fp_sqr
@@ -128,6 +132,22 @@ fp_rshift1:
         bne @loop
         rts
 
+.ifdef FP_ONCHIP_MUL
+; =============================================================================
+; gen_mul_row - P-256 entry stub for the shared on-chip row generator
+;   (issue #69). Patches og_src_ld to this curve's staged-src buffer and
+;   tail-jumps og_common (src/mul_8x8.s). Lives here so mul_8x8.o carries
+;   no cross-curve buffer import (archive linkability, SPEC §6).
+; Input: X = 31 (last mul_src2_buf index). Clobbers A, X, Y (see og_common).
+; =============================================================================
+gen_mul_row:
+        lda #<mul_src2_buf
+        sta og_src_ld+1
+        lda #>mul_src2_buf
+        sta og_src_ld+2
+        jmp og_common
+.endif
+
 ; =============================================================================
 ; fp_mul - 256x256 -> 512 bit multiply, little-endian
 ; =============================================================================
@@ -167,6 +187,10 @@ fp_mul:
 @nonzero_i:
         sta mul_cached_a
 
+.ifdef FP_ONCHIP_MUL
+        ldx #31                 ; issue #69: on-chip row gen, no REU DMA
+        jsr gen_mul_row
+.else
         asl
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL
@@ -174,6 +198,7 @@ fp_mul:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+.endif
 
         lda #<fp_wide
         clc
@@ -416,6 +441,10 @@ fp_sqr:
 @sqr_nonzero_i:
         sta mul_cached_a
 
+.ifdef FP_ONCHIP_MUL
+        ldx #31                 ; issue #69: on-chip row gen, no REU DMA
+        jsr gen_mul_row
+.else
         asl
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL
@@ -423,6 +452,7 @@ fp_sqr:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+.endif
 
         lda #<fp_wide
         clc
@@ -653,6 +683,10 @@ fp_sqr:
         beq @diag_skip
 
         sta mul_cached_a
+.ifdef FP_ONCHIP_MUL
+        ldx #31                 ; issue #69: on-chip row gen, no REU DMA
+        jsr gen_mul_row
+.else
         asl
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL
@@ -660,6 +694,7 @@ fp_sqr:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+.endif
 
         ldy mul_cached_a
         lda mul_dma_lo,y
