@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-20
+
 ### FP_ONCHIP_MUL shape 2 — inline quarter-square row generation (issue #71, 2026-07-20)
 
 - **Turbo profile ~26% faster at every speed.** The per-product
@@ -869,6 +871,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.6.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.6.0
 [0.5.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.5.0
 [0.2.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.2.0
 [0.1.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.1.0
