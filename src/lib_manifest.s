@@ -49,8 +49,20 @@
 ; keep the bitmask consistent. The standalone library build uses the default
 ; layout; the override path is exercised by consumer cfgs.
 ; -----------------------------------------------------------------------------
+; FP_ONCHIP_MUL (issue #69 turbo profile): the field layer computes multiply
+; rows on-chip via ct_mul_8x8 and never DMA-fetches from the mul-table
+; banks, so only the Lim-Lee comb bank remains claimed ($04). The verify
+; archives additionally exclude the comb (ECDSA_NO_COMB, issue #61), so an
+; onchip verify archive issues no REU DMA at all -- consumers of those may
+; override the mask to $00. (Defensive issue-#33 REU register writes remain
+; in the entry points; they are writes to expansion I/O space, harmless
+; without an REU, and claim no banks.)
 .ifndef LIB_NISTCURVES_REU_BANKS_USED
-  LIB_NISTCURVES_REU_BANKS_USED = $07
+  .ifdef FP_ONCHIP_MUL
+    LIB_NISTCURVES_REU_BANKS_USED = $04
+  .else
+    LIB_NISTCURVES_REU_BANKS_USED = $07
+  .endif
 .endif
 
 
@@ -111,8 +123,16 @@
 ; state (fp_*, ec_*, ecdsa_*, sha_state, sha_w, ...) since SPEC §5
 ; defines RESIDENT_BYTES as code+rodata.
 ; -----------------------------------------------------------------------------
+; FP_ONCHIP_MUL: ct_mul_8x8 + the og_common row generator + entry stubs
+; (~250 B code) and the 1 KB sqtab_lo/hi quarter-square tables become
+; verify-hot (the row generator runs inside every fp_mul/fp_sqr), moving
+; them from the cold set into the resident set: 27000 + ~1250 -> 28200.
 .ifndef LIB_NISTCURVES_RESIDENT_BYTES
-  LIB_NISTCURVES_RESIDENT_BYTES = 27000
+  .ifdef FP_ONCHIP_MUL
+    LIB_NISTCURVES_RESIDENT_BYTES = 28200
+  .else
+    LIB_NISTCURVES_RESIDENT_BYTES = 27000
+  .endif
 .endif
 
 
@@ -146,8 +166,16 @@
 ;
 ; Rounded to 2500 for the ±5% manifest commitment.
 ; -----------------------------------------------------------------------------
+; FP_ONCHIP_MUL: sqtab tables + the ct_mul_8x8 share of the mul_8x8 boot
+; block leave the cold set (now verify-hot, see RESIDENT above); the
+; reu_mul_init path stays cold (and is unnecessary -- the profile never
+; reads the REU mul table): 2500 - ~600 -> 1900.
 .ifndef LIB_NISTCURVES_COLD_BYTES
-  LIB_NISTCURVES_COLD_BYTES = 2500
+  .ifdef FP_ONCHIP_MUL
+    LIB_NISTCURVES_COLD_BYTES = 1900
+  .else
+    LIB_NISTCURVES_COLD_BYTES = 2500
+  .endif
 .endif
 
 

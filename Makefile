@@ -76,6 +76,33 @@ $(PRG_NOCOMB): $(NOCOMB_OBJECTS) $(CFG) | $(BUILD_DIR)
 	$(LD65) -o $@ -C $(CFG) -Ln $(BUILD_DIR)/labels_nocomb_raw.txt $(NOCOMB_OBJECTS)
 	sed 's/^al \([0-9a-fA-F]\{2\}\)\([0-9a-fA-F]\{4\}\) /al C:\2 /' $(BUILD_DIR)/labels_nocomb_raw.txt > $(BUILD_DIR)/labels_nocomb.txt
 
+# On-chip-mul turbo-profile variant (issue #69): -D FP_ONCHIP_MUL replaces
+# the REU DMA row fetch in fp_mul/fp_sqr (both curves) with sparse on-chip
+# row generation via ct_mul_8x8 (gen_mul_row / gen_mul_row_384 in mul_8x8.s).
+# Trades CPU cycles (which scale with turbo clock) for zero wall-clock-
+# anchored DMA stall. Test with:
+#   make onchip-prg
+#   C64_PRG_NAME=nist-curves-onchip.prg C64_LABELS_NAME=labels_onchip.txt \
+#     C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py
+# Boot init (REU mul-table population, comb precompute) is unchanged; the
+# mul table still populates at boot but fp_mul/fp_sqr never DMA from it.
+$(BUILD_DIR)/fp256_onchip.o: $(SRC_DIR)/fp256.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/fp384_onchip.o: $(SRC_DIR)/fp384.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/mul_8x8_onchip.o: $(SRC_DIR)/mul_8x8.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+
+PRG_ONCHIP = $(BUILD_DIR)/nist-curves-onchip.prg
+ONCHIP_OBJECTS = $(subst $(BUILD_DIR)/lib_manifest.o,$(BUILD_DIR)/lib_manifest_onchip.o,$(subst $(BUILD_DIR)/fp256.o,$(BUILD_DIR)/fp256_onchip.o,$(subst $(BUILD_DIR)/fp384.o,$(BUILD_DIR)/fp384_onchip.o,$(subst $(BUILD_DIR)/mul_8x8.o,$(BUILD_DIR)/mul_8x8_onchip.o,$(OBJECTS)))))
+
+.PHONY: onchip-prg
+onchip-prg: $(PRG_ONCHIP)
+
+$(PRG_ONCHIP): $(ONCHIP_OBJECTS) $(CFG) | $(BUILD_DIR)
+	$(LD65) -o $@ -C $(CFG) -Ln $(BUILD_DIR)/labels_onchip_raw.txt $(ONCHIP_OBJECTS)
+	sed 's/^al \([0-9a-fA-F]\{2\}\)\([0-9a-fA-F]\{4\}\) /al C:\2 /' $(BUILD_DIR)/labels_onchip_raw.txt > $(BUILD_DIR)/labels_onchip.txt
+
 # --- ACME build (legacy, for side-by-side testing) ---
 build-acme: $(ASM_SRCS) | $(BUILD_DIR)
 	cd $(SRC_DIR) && $(ACME) -f cbm -o ../$(PRG) --vicelabels ../$(LABELS) main.asm
@@ -185,11 +212,52 @@ LIB_FULL_OBJS = $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) \
                 $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
                 $(BUILD_DIR)/ecdsa384_msg.o
 
+# --- FP_ONCHIP_MUL turbo-profile archives (issue #69) ------------------------
+# Same archives with the on-chip-multiply field layer substituted: fp_mul /
+# fp_sqr (both curves) compute rows via ct_mul_8x8 instead of REU DMA row
+# fetches. Above ~30 MHz (P-256) / ~55 MHz (P-384) this is faster (the DMA
+# stall is wall-clock-anchored); at stock 1 MHz the DMA-table profile wins
+# ~2x. Verify-onchip archives issue no REU DMA at all (comb also excluded);
+# consumer boot obligation shrinks to sqtab_init only (no SPEC §8.2 reu_mul
+# provider needed). Manifest equates are profile-aware via
+# lib_manifest_onchip.o (REU banks $04, resident/cold shift).
+$(BUILD_DIR)/lib_manifest_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+
+LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_onchip.o \
+                $(BUILD_DIR)/precalc_manifest.o \
+                $(BUILD_DIR)/zp_config.o
+LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
+                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o
+LIB_P256_VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/fp256_onchip.o $(BUILD_DIR)/mod256.o \
+                $(BUILD_DIR)/curve256.o $(BUILD_DIR)/points256_core.o \
+                $(BUILD_DIR)/data_p256.o $(BUILD_DIR)/ecdsa256_nocomb.o
+LIB_P384_VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/fp384_onchip.o $(BUILD_DIR)/mod384.o \
+                $(BUILD_DIR)/curve384.o $(BUILD_DIR)/points384_core.o \
+                $(BUILD_DIR)/data_p384.o $(BUILD_DIR)/ecdsa384_nocomb.o
+LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
+                $(BUILD_DIR)/fp256_onchip.o $(BUILD_DIR)/mod256.o \
+                $(BUILD_DIR)/curve256.o $(BUILD_DIR)/points256_core.o \
+                $(BUILD_DIR)/data_p256.o $(BUILD_DIR)/ecdsa256.o \
+                $(LIB_P256_COMB_OBJS) \
+                $(BUILD_DIR)/fp384_onchip.o $(BUILD_DIR)/mod384.o \
+                $(BUILD_DIR)/curve384.o $(BUILD_DIR)/points384_core.o \
+                $(BUILD_DIR)/data_p384.o $(BUILD_DIR)/ecdsa384.o \
+                $(LIB_P384_COMB_OBJS) \
+                $(LIB_SHA384_OBJS) \
+                $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
+                $(BUILD_DIR)/ecdsa384_msg.o
+
 lib:             $(LIB_DIR)/nistcurves.a
 lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a
 lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a
 lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a
 lib-p384-curve:  $(LIB_DIR)/nistcurves-p384-curve.a
+lib-onchip:              $(LIB_DIR)/nistcurves-onchip.a
+lib-p256-verify-onchip:  $(LIB_DIR)/nistcurves-p256-verify-onchip.a
+lib-p384-verify-onchip:  $(LIB_DIR)/nistcurves-p384-verify-onchip.a
+lib-p384-curve-onchip:   $(LIB_DIR)/nistcurves-p384-curve-onchip.a
 
 $(LIB_DIR):
 	mkdir -p $(LIB_DIR)
@@ -218,13 +286,29 @@ $(LIB_DIR)/nistcurves-p384-curve.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_
 	rm -f $@
 	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
 
+$(LIB_DIR)/nistcurves-onchip.a: $(LIB_FULL_ONCHIP_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_FULL_ONCHIP_OBJS)
+
+$(LIB_DIR)/nistcurves-p256-verify-onchip.a: $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_VERIFY_ONCHIP_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_VERIFY_ONCHIP_OBJS)
+
+$(LIB_DIR)/nistcurves-p384-verify-onchip.a: $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS)
+
+$(LIB_DIR)/nistcurves-p384-curve-onchip.a: $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
+
 # --- Archive linkability contract ratchet (issue #60) ------------------------
 # Builds all five archives, then runs tools/check_archives.py, which pins the
 # documented per-archive symbol contract (API.md §8.4.1): the trimmed verify
 # archives deliberately exclude the Lim-Lee comb, so the packaged verifiers
 # ecdsa_verify_256 / ecdsa_verify_384 are NOT linkable from those archives
 # alone. The ratchet fails if reality drifts looser OR tighter than the docs.
-check-archives: lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve
+check-archives: lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip lib-p384-curve-onchip
 	python3 tools/check_archives.py
 
 $(BUILD_DIR):

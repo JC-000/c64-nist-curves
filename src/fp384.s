@@ -28,6 +28,10 @@
 ; --- REU layout contract (SPEC §3) ---
 .import LIB_NISTCURVES_REU_BANK_MUL
 
+.ifdef FP_ONCHIP_MUL
+.import og_common, og_src_ld    ; issue #69 on-chip-mul turbo profile
+.endif
+
 ; --- Exports ---
 .export fp_copy_384, fp_zero_384, fp_cmp_384, fp_add_384, fp_sub_384
 .export fp_is_zero_384, fp_rshift1_384, fp_mul_384, fp_sqr_384
@@ -161,6 +165,22 @@ fp_rshift1_384:
         rts
 
 ; =============================================================================
+; gen_mul_row_384 - P-384 entry stub for the shared on-chip row generator
+;   (issue #69). Patches og_src_ld to this curve's staged-src buffer and
+;   tail-jumps og_common (src/mul_8x8.s). Lives here so mul_8x8.o carries
+;   no cross-curve buffer import (archive linkability, SPEC §6).
+; Input: X = 47 (last mul_src2_buf_384 index). Clobbers A, X, Y.
+; =============================================================================
+.ifdef FP_ONCHIP_MUL
+gen_mul_row_384:
+        lda #<mul_src2_buf_384
+        sta og_src_ld+1
+        lda #>mul_src2_buf_384
+        sta og_src_ld+2
+        jmp og_common
+.endif
+
+; =============================================================================
 ; fp_mul_384 - 384x384 -> 768 bit multiply, little-endian
 ;
 ; (fp_src1) * (fp_src2) -> fp384_wide (96 bytes, little-endian)
@@ -203,6 +223,10 @@ fp_mul_384:
 @nonzero_i:
         sta mul_cached_a
 
+.ifdef FP_ONCHIP_MUL
+        ldx #47                 ; issue #69: on-chip row gen, no REU DMA
+        jsr gen_mul_row_384
+.else
         ; DMA the multiplication row for src1[i] from REU (inlined)
         ; A already contains mul_cached_a
         asl                    ; A = multiplier * 2, carry = bit 7
@@ -212,6 +236,7 @@ fp_mul_384:
         sta reu_reu_bank
         lda #%10110001         ; execute + autoload + FETCH (REU->C64)
         sta reu_command
+.endif
 
         ; Self-mod: patch accumulation addresses to base = fp384_wide + i
         ; fp384_wide is in absolute memory (crosses pages), so patch both bytes.
@@ -476,6 +501,10 @@ fp_sqr_384:
 @sqr_nonzero_i:
         sta mul_cached_a
 
+.ifdef FP_ONCHIP_MUL
+        ldx #47                 ; issue #69: on-chip row gen, no REU DMA
+        jsr gen_mul_row_384
+.else
         ; DMA mul row for a[i] (inlined)
         asl
         sta reu_reu_hi
@@ -484,6 +513,7 @@ fp_sqr_384:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+.endif
 
         ; Self-mod: patch accumulation addresses to base = fp384_wide + i
         lda #<fp384_wide
@@ -726,6 +756,10 @@ fp_sqr_384:
         beq @diag_skip
 
         sta mul_cached_a
+.ifdef FP_ONCHIP_MUL
+        ldx #47                 ; issue #69: on-chip row gen, no REU DMA
+        jsr gen_mul_row_384
+.else
         ; Inlined REU row fetch (mirrors fp_sqr in fp256.s; saves the
         ; ~12-cy jsr/rts round trip × 48 diag iterations per call).
         asl
@@ -735,6 +769,7 @@ fp_sqr_384:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+.endif
 
         ldy mul_cached_a
         lda mul_dma_lo,y

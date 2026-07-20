@@ -64,6 +64,15 @@ KNOWN_EXTERNAL = {
     "nistcurves-p384-verify.a": set(),
     "nistcurves-p384-sha384.a": set(),
     "nistcurves-p384-curve.a": set(),
+    # FP_ONCHIP_MUL turbo-profile archives (issue #69): same contract as
+    # their DMA-table counterparts -- link-complete, no documented gaps.
+    # The onchip mul_8x8 object exports the shared og_common row generator;
+    # each curve object carries its own entry stub, so no cross-curve
+    # buffer import exists to allowlist.
+    "nistcurves-onchip.a": set(),
+    "nistcurves-p256-verify-onchip.a": set(),
+    "nistcurves-p384-verify-onchip.a": set(),
+    "nistcurves-p384-curve-onchip.a": set(),
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
@@ -92,6 +101,33 @@ SMOKE = {
         ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
     ],
     "nistcurves-p384-curve.a": [
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("variable-base building blocks",
+         ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
+          "fp_mod_inv_384", "fp_mod_mul_384"], True),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+        ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
+         ["ecdsa_verify_with_message_384"], True),
+    ],
+    "nistcurves-onchip.a": [
+        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
+        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("packaged ecdsa_verify_with_message_384",
+         ["ecdsa_verify_with_message_384"], True),
+    ],
+    "nistcurves-p256-verify-onchip.a": [
+        ("variable-base building blocks",
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
+        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"], True),
+    ],
+    "nistcurves-p384-verify-onchip.a": [
+        ("variable-base building blocks",
+         ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
+          "fp_mod_inv_384", "fp_mod_mul_384"], True),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+    ],
+    "nistcurves-p384-curve-onchip.a": [
         ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",

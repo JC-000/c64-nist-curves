@@ -539,6 +539,10 @@ intermediate `.o` shuffling.
 | `make lib-p384-verify`       | `nistcurves-p384-verify.a`           | P-384 ECDSA verify only. Excludes Lim-Lee comb and the SHA-driving wrapper.              |
 | `make lib-p384-sha384`       | `nistcurves-p384-sha384.a`           | SHA-384 streaming hash only. Self-contained: no REU, no multiply tables.                 |
 | `make lib-p384-curve`        | `nistcurves-p384-curve.a`            | P-384 ECDSA verify + SHA-384 + `ecdsa_verify_with_message_384` one-shot wrapper.         |
+| `make lib-onchip`            | `nistcurves-onchip.a`                | Full library, **turbo profile** (§8.4.2): on-chip multiply, no REU mul-table DMA.        |
+| `make lib-p256-verify-onchip`| `nistcurves-p256-verify-onchip.a`    | P-256 verify, turbo profile. No REU DMA at all (no mul table, no comb).                  |
+| `make lib-p384-verify-onchip`| `nistcurves-p384-verify-onchip.a`    | P-384 verify, turbo profile. No REU DMA at all.                                          |
+| `make lib-p384-curve-onchip` | `nistcurves-p384-curve-onchip.a`     | P-384 verify + SHA-384 + one-shot wrapper, turbo profile.                                |
 
 Exclusion summary (per minimal archive):
 
@@ -629,6 +633,58 @@ To exercise the no-comb functional path end-to-end:
 `make nocomb-prg`, then run `tools/test_ecdsa_verify.py` with
 `C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt
 C64_SKIP_BUILD=1`.
+
+### 8.4.2 FP_ONCHIP_MUL turbo profile (issue #69)
+
+The REU's DMA transfer rate is anchored to the ~1 MHz C64 bus clock, so
+on accelerated hosts (Ultimate 64 / C64 Ultimate turbo, SuperCPU-class)
+the per-row multiply-table fetch inside `fp_mul` / `fp_sqr` becomes a
+speed-invariant wall-clock floor: measured on a C64 Ultimate (fw 1.1.0),
+`ecdsa_verify_256` carries a **22.2 s floor (87% of total wall at
+64 MHz)** and `ecdsa_verify_384` a 51.7 s floor.
+
+The **turbo profile** (`-D FP_ONCHIP_MUL`, shipped pre-built as the
+`*-onchip.a` archives) replaces every REU row fetch with sparse on-chip
+row generation: `gen_mul_row` / `gen_mul_row_384` (entry stubs in
+`fp256.s` / `fp384.s`, shared loop `og_common` in `mul_8x8.s`) compute
+— via the canonical §8.3 `ct_mul_8x8`, body unmodified — exactly the
+`mul_dma_lo/hi` entries the inner loops will read for the current row.
+Inner loops, SMC accumulators, and the sparse zero-byte fast path are
+byte-identical to the default profile.
+
+Measured on C64 Ultimate hardware (oracle-gated, 2026-07-19):
+
+| `ecdsa_verify_256` | 1 MHz (est.) | 16 MHz | 48 MHz | 64 MHz |
+|---|---|---|---|---|
+| default (DMA table) | ~5 min | 37.9 s | 28.2 s | 25.5 s |
+| turbo (on-chip)     | ~16 min | 62.9 s | 21.4 s | **16.0 s** |
+
+Crossovers: **~30 MHz for P-256, ~55 MHz for P-384**. At stock 1 MHz
+the DMA-table profile is ~3× faster (extrapolated from the measured
+CPU-work fits) — the turbo profile is a complement, not a replacement.
+P-384 @64 MHz: 62.0 s → 53.7 s (1.15×).
+
+**Contract deltas vs the default profile:**
+
+- **REU banks (§5):** `LIB_NISTCURVES_REU_BANKS_USED = $04` (comb bank
+  only) in the onchip manifest. The verify-onchip archives additionally
+  exclude the comb, so they issue **no REU DMA at all** — consumers may
+  override the mask to `$00`. (Issue-#33 defensive REU register writes
+  remain at entry points; they are harmless expansion-I/O writes and
+  claim no banks.)
+- **Boot obligation:** onchip consumers need only `sqtab_init` — no
+  §8.2 `reu_mul` provider, and (verify archives) no `ec_precompute_*`.
+- **Resident/cold (§5):** `ct_mul_8x8` + the row generator + the 1 KB
+  `sqtab` become verify-hot: `RESIDENT_BYTES = 28200`,
+  `COLD_BYTES = 1900` in the onchip manifest.
+- **Not constant-time:** unchanged from the default verify path (public
+  inputs only; do not repurpose for signing).
+
+To exercise the profile end-to-end: `make onchip-prg`, then
+`tools/test_ecdsa_verify.py` with `C64_PRG_NAME=nist-curves-onchip.prg
+C64_LABELS_NAME=labels_onchip.txt C64_SKIP_BUILD=1` (add
+`C64_INIT_TIMEOUT=1800` — the on-chip precompute boots ~3× slower under
+VICE warp).
 
 ### 8.5 Initialization sequence
 

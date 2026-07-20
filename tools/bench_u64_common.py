@@ -48,7 +48,10 @@ from c64_test_harness.backends.ultimate64_probe import (  # noqa: E402
 from c64_test_harness.labels import Labels  # noqa: E402
 
 
-ALL_SPEEDS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32, 40, 48]
+ALL_SPEEDS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32, 40, 48, 64]
+# 64 MHz is C64 Ultimate only (fw 1.1.0+); U64E firmware rejects it at set
+# time. The harness schema (CPU_SPEED_VALUES) is a superset across device
+# generations, so validation here mirrors that superset.
 
 NTSC_CYCLES_PER_JIFFY = 17045
 NTSC_CPU_HZ = NTSC_CYCLES_PER_JIFFY * 60

@@ -101,6 +101,31 @@ so DMA-heavy routines scale sub-linearly.
 At 48 MHz, P-256 `ec_scalar_mul` completes in ~4.5 s wall-clock (vs ~47 s
 at stock 1 MHz). P-384 `ec_scalar_mul_384` completes in ~10.9 s (vs ~131 s).
 
+### Turbo scaling and the FP_ONCHIP_MUL profile (issue #69)
+
+REU DMA transfers at the ~1 MHz bus rate regardless of CPU turbo, so the
+multiply-table row fetches inside `fp_mul`/`fp_sqr` become a
+speed-invariant wall-clock floor on accelerated hosts. Measured on a
+C64 Ultimate (fw 1.1.0) across 16/48/64 MHz: `ecdsa_verify_256` carries
+a **22.2 s floor (87% of its 25.5 s wall at 64 MHz)**; `ecdsa_verify_384`
+a 51.7 s floor. Quadrupling the clock 16→64 MHz improves verify wall by
+only ~1.5×.
+
+The **`FP_ONCHIP_MUL` turbo profile** (v0.5.0) computes multiply rows
+on-chip via the quarter-square `ct_mul_8x8` instead of DMA-fetching
+them. Measured, oracle-gated (C64U):
+
+| `ecdsa_verify_256` wall | 16 MHz | 48 MHz | 64 MHz |
+|---|---|---|---|
+| default (REU DMA table) | 37.9 s | 28.2 s | 25.5 s |
+| turbo (`FP_ONCHIP_MUL`) | 62.9 s | 21.4 s | **16.0 s** |
+
+Crossover ~30 MHz (P-256) / ~55 MHz (P-384); at stock 1 MHz the default
+profile is ~3× faster. Build via `make lib-onchip` /
+`make lib-p256-verify-onchip` / `make lib-p384-verify-onchip` /
+`make lib-p384-curve-onchip`, or `make onchip-prg` for the test PRG.
+See API.md §8.4.2.
+
 Wave 7a doubled the Lim-Lee comb from h=4 to h=8 (256-entry table) on both
 curves: P-256 `ec_scalar_mul` drops from 91.9M cycles (89.87 s) to 47.8M
 cycles (46.73 s), a further **-48.0%** on top of Wave 5. P-384
@@ -285,6 +310,9 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 
 ## Releases
 
+- **v0.5.0** (2026-07-20) — **FP_ONCHIP_MUL turbo profile** (issue #69): on accelerated hosts the REU row-fetch DMA is a wall-clock floor (22.2 s per P-256 verify measured on C64 Ultimate — 87% of total at 64 MHz); the new `-D FP_ONCHIP_MUL` profile computes multiply rows on-chip and cuts 64 MHz verify from 25.5 s to 16.0 s (1.60×). Ships as four `make lib-*-onchip` archives with profile-aware §5 manifest; verify-onchip archives issue no REU DMA and need only `sqtab_init` at boot. Crossover ~30 MHz (P-256) / ~55 MHz (P-384); default DMA-table profile remains ~3× faster at stock 1 MHz and stays the default (PRG byte-identical). Also bundles the issue #61/#63 archive-linkability closure (`ECDSA_NO_COMB` verify variants; every archive link-complete). See [`docs/RELEASE_NOTES_v0.5.0.md`](docs/RELEASE_NOTES_v0.5.0.md).
+- **v0.4.0** (2026-07-17) — Completes c64-lib-contract SPEC v0.4.0 §8 adoption (byte-identical `ct_mul_8x8` across adopters, §8.2 `reu_mul` shared primitive, conditional §8.0 shared-primitives mask), trims `lib-p256-verify` BSS to the verify path (issue #54), makes the packaged-verifier archive contract explicit with the `make check-archives` ratchet, commits the REU multiply-table ROI audit. See [`docs/RELEASE_NOTES_v0.4.0.md`](docs/RELEASE_NOTES_v0.4.0.md).
+- **v0.3.0** (2026-05-20) — c64-lib-contract SPEC §1–§6 adoption: `LIB_NISTCURVES_*` segments, consumer-overridable REU/ZP equates, version + manifest equates, five `make lib-*` minimal archives, §8.1 sqtab placement contract. See [`docs/RELEASE_NOTES_v0.3.0.md`](docs/RELEASE_NOTES_v0.3.0.md).
 - **v0.2.0** (2026-05-12) — Adds variable-base scalar multiplication (`ec_scalar_mul_var[_384]`) and packaged ECDSA verify (`ecdsa_verify_256/384`) with BE wire-format ABI for TLS-style callers. Lands the issue #33-class REU register-residue defence ported from c64-x25519 (10 entry points, ~80 bytes / 6 cy per call, transparent). 1038 oracle-gated tests across five suites. Reproducible release tarball via `make dist VERSION=v0.2.0`. See [`docs/RELEASE_NOTES_v0.2.0.md`](docs/RELEASE_NOTES_v0.2.0.md) for the full v0.2.0 summary; [`CHANGELOG.md`](CHANGELOG.md) for the per-bullet log.
 - **v0.1.0** (2026-04-13) — First audited, tagged release. 1074 oracle-verified test vectors across P-256 and P-384 field / point / scalar-mul.
 

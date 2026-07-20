@@ -59,6 +59,10 @@ make check-archives                  # archive linkability contract ratchet (no 
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
                                      #   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
                                      #   C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py
+make onchip-prg                      # FP_ONCHIP_MUL turbo-profile test PRG (issue #69); test with:
+                                     #   C64_PRG_NAME=nist-curves-onchip.prg C64_LABELS_NAME=labels_onchip.txt \
+                                     #   C64_SKIP_BUILD=1 C64_INIT_TIMEOUT=1800 python3 tools/test_ecdsa_verify.py
+                                     # (onchip precompute boots ~3x slower under VICE warp; 1800 s window)
 ```
 Tests use the c64-test-harness package (ViceInstanceManager). VICE must NOT be launched directly.
 
@@ -221,6 +225,19 @@ gets stale otherwise).
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill (Wave 4b)
 - Solinas fast reduction with self-modifying dispatch and register-resident accumulator
 - h=8 Lim-Lee fixed-base comb for P-256 and P-384 scalar_mul with 256-entry REU-resident anchor table (Wave 7a; h=4 landed in Wave 5a/5b)
+- **FP_ONCHIP_MUL turbo profile** (issue #69, v0.5.0): `-D FP_ONCHIP_MUL`
+  swaps the six REU row-fetch sites in fp_mul/fp_sqr (both curves) for
+  sparse on-chip row generation (`gen_mul_row[_384]` stubs in
+  fp256/fp384.s + shared `og_common` loop in mul_8x8.s, products via the
+  canonical ct_mul_8x8 — §8.3 body untouched). Rationale: REU DMA is
+  wall-clock-anchored, so at turbo it caps scaling — measured on C64U
+  fw 1.1.0, verify_256 has a 22.2 s speed-invariant floor (87% of wall
+  @64 MHz). Onchip verify_256 @64 MHz: 25.5→16.0 s (1.60×); crossover
+  ~30 MHz P-256 / ~55 MHz P-384; ~3× SLOWER at stock 1 MHz (profile,
+  not replacement — default PRG byte-identical). Ships as four
+  `make lib-*-onchip` archives with a profile-aware manifest
+  (REU banks $04; verify-onchip archives issue no REU DMA at all and
+  need only sqtab_init at boot). See API.md §8.4.2 and issue #69.
 - Unrolled binary GCD shift loops for modular inversion
 - VIC-II screen blanking (+20-25% CPU)
 

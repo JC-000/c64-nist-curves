@@ -1,0 +1,79 @@
+Loading PRG: build/nist-curves-onchip.prg
+  37171 bytes
+Loading labels: build/labels_onchip.txt
+Probing U64 at 10.53.21.158 ...
+  reachable (GET-only; writemem health probed post-acquire)
+  [lock] cleanup_stale removed 1 stale lockfile(s)
+  [lock] no current holder; acquiring (timeout=600s)
+  [lock] acquired; metadata=pid=66831, started_at=1784516720 (0s ago), device_host='10.53.21.158'
+  [liveness] U64 at 10.53.21.158:80 healthy fw 1.1.0
+  Connected: C64 Ultimate fw=1.1.0
+
+========================================================================
+  ECDSA sweep @ 16 MHz
+========================================================================
+    [reboot] ok
+    [init turbo 48 MHz] ok
+    [run_prg 37171B] sent
+    [init sentinel] up to 1200s...
+    [init sentinel] ok after 200.8s
+    [target turbo 16 MHz] ok
+  ec_scalar_mul_var        loops=1   timeout= 675.0s ...   3221j      54901945cy   3431.37ms  [wall 54.0s]
+  ec_scalar_mul_var_384    loops=1   timeout= 675.0s ...  10691j     182228095cy  11389.26ms  [wall 178.4s]
+  ecdsa_verify_256         loops=1   timeout= 675.0s ...   3690j      62896050cy   3931.00ms  [wall 61.6s]
+  ecdsa_verify_384         loops=1   timeout= 675.0s ...  12408j     211494360cy  13218.40ms  [wall 207.1s]
+  ecdsa_verify_with_msg_384 loops=1   timeout= 675.0s ...  12410j     211528450cy  13220.53ms  [wall 207.2s]
+
+========================================================================
+  ECDSA sweep @ 48 MHz
+========================================================================
+    [reboot] ok
+    [init turbo 48 MHz] ok
+    [run_prg 37171B] sent
+    [init sentinel] up to 1200s...
+    [init sentinel] ok after 200.7s
+  ec_scalar_mul_var        loops=1   timeout= 225.0s ...   1096j      18681320cy    389.19ms  [wall 18.8s]
+  ec_scalar_mul_var_384    loops=1   timeout= 225.0s ...   3638j      62009710cy   1291.87ms  [wall 60.7s]
+  ecdsa_verify_256         loops=1   timeout= 225.0s ...   1256j      21408520cy    446.01ms  [wall 21.1s]
+  ecdsa_verify_384         loops=1   timeout= 225.0s ...   4222j      71963990cy   1499.25ms  [wall 70.7s]
+  ecdsa_verify_with_msg_384 loops=1   timeout= 225.0s ...   4223j      71981035cy   1499.60ms  [wall 70.6s]
+
+========================================================================
+  ECDSA sweep @ 64 MHz
+========================================================================
+    [reboot] ok
+    [init turbo 48 MHz] ok
+    [run_prg 37171B] sent
+    [init sentinel] up to 1200s...
+    [init sentinel] ok after 202.3s
+    [target turbo 64 MHz] ok
+  ec_scalar_mul_var        loops=1   timeout= 180.0s ...    817j      13925765cy    217.59ms  [wall 14.1s]
+  ec_scalar_mul_var_384    loops=1   timeout= 180.0s ...   2714j      46260130cy    722.81ms  [wall 45.6s]
+  ecdsa_verify_256         loops=1   timeout= 180.0s ...    937j      15971165cy    249.55ms  [wall 15.7s]
+  ecdsa_verify_384         loops=1   timeout= 180.0s ...   3150j      53691750cy    838.93ms  [wall 52.9s]
+  ecdsa_verify_with_msg_384 loops=1   timeout= 180.0s ...   3150j      53691750cy    838.93ms  [wall 52.6s]
+
+Total sweep wall time: 30.0 min
+
+================================================================================================
+  ECDSA / scalar_mul_var U64E bench -- cycles/call (NTSC 1 jiffy = 17045 cy)
+================================================================================================
+  Primitive                          16 MHz           48 MHz           64 MHz
+  ---------------------------------------------------------------------------
+  ec_scalar_mul_var              54,901,945       18,681,320       13,925,765
+  ec_scalar_mul_var_384         182,228,095       62,009,710       46,260,130
+  ecdsa_verify_256               62,896,050       21,408,520       15,971,165
+  ecdsa_verify_384              211,494,360       71,963,990       53,691,750
+  ecdsa_verify_with_msg_384      211,528,450       71,981,035       53,691,750
+
+================================================================================================
+  Wall-clock per call (seconds)
+================================================================================================
+  Primitive                          16 MHz           48 MHz           64 MHz
+  ---------------------------------------------------------------------------
+  ec_scalar_mul_var                3.431 s         0.389 s         0.218 s
+  ec_scalar_mul_var_384           11.389 s         1.292 s         0.723 s
+  ecdsa_verify_256                 3.931 s         0.446 s         0.250 s
+  ecdsa_verify_384                13.218 s         1.499 s         0.839 s
+  ecdsa_verify_with_msg_384        13.221 s         1.500 s         0.839 s
+================================================================================================
