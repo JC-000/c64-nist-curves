@@ -90,8 +90,8 @@ SPEC §5 equates: `LIB_NISTCURVES_REU_BANKS_USED = $04`,
 | | |
 |---|---|
 | Tarball | `c64-nist-curves-v0.5.0.tar.gz` |
-| Size | `TBD_SIZE` bytes |
-| SHA256 | `TBD_SHA256` |
+| Size | 156655 bytes |
+| SHA256 | `a0f7f05a30afc7c204b1fad433478583849d2673f9a0d795b729ef415a50a03e` |
 
 Reproducible via `make dist VERSION=v0.5.0` at tag `v0.5.0` (byte-identical
 re-runs verified).
