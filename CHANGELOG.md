@@ -12,6 +12,23 @@ contract).
 
 ## [Unreleased]
 
+### ECDSA verify public-key validation (issue #66)
+
+- **`ecdsa_verify_256` / `ecdsa_verify_384` now validate the public key
+  Q at entry** (FIPS 186-5 §3.3): range check `Qx, Qy ∈ [0, p-1]` plus
+  on-curve check `Qy² ≡ Qx³ − 3·Qx + b (mod p)`, sequenced as step 3b
+  before the mod-n switch. Non-canonical encodings (`Qx ≥ p` or
+  `Qy ≥ p`) and off-curve points return C=1 before any scalar
+  multiplication — the ABI's "C=1 on malformed inputs" promise now
+  holds for the Q fields, not just r/s. Cost: 2 `fp_cmp` + 3 mod-p
+  muls + 4 mod-p add/subs per verify (noise vs the multi-second scalar
+  mul phase); no new RAM (reuses the dead `ecdsa_w`/`ecdsa_u1`
+  scratch); +512 B PRG (37171 → 37683 B). Both the comb-fast and
+  `-D ECDSA_NO_COMB` variants carry the gate (common code before the
+  step-7 `.ifdef`). New negative-Q cases (non-canonical x+p encoding,
+  off-curve bit-flip, random `Qx ≥ p` / `Qy ≥ p`) added to
+  `tools/test_ecdsa_verify.py` for both curves.
+
 ## [0.6.0] — 2026-07-20
 
 ### FP_ONCHIP_MUL shape 2 — inline quarter-square row generation (issue #71, 2026-07-20)

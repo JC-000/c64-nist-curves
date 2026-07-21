@@ -268,8 +268,8 @@ interleaved with itself or with other library calls.
 
 | Name | Source | Inputs | Output | Notes |
 |---|---|---|---|---|
-| `ecdsa_verify_256` | ecdsa256 | A (lo) / X (hi) = pointer to 160 B BE struct `r(32) | s(32) | h(32) | Qx(32) | Qy(32)` | C=0 valid, C=1 invalid/malformed | Non-constant-time (public inputs). Internally byte-reverses to LE via `fp_reverse32`, then composes `ec_scalar_mul`, `ec_scalar_mul_var`, `ec_point_add`, `fp_mod_inv`, `fp_mod_mul_n`. |
-| `ecdsa_verify_384` | ecdsa384 | A (lo) / X (hi) = pointer to 240 B BE struct `r(48) | s(48) | h(48) | Qx(48) | Qy(48)` | C=0 valid, C=1 invalid/malformed | P-384 analogue using `fp_reverse48`. Same non-constant-time caveat. |
+| `ecdsa_verify_256` | ecdsa256 | A (lo) / X (hi) = pointer to 160 B BE struct `r(32) | s(32) | h(32) | Qx(32) | Qy(32)` | C=0 valid, C=1 invalid/malformed | Non-constant-time (public inputs). Validates r, s ∈ [1, n-1] AND the public key Q (issue #66): range check Qx, Qy ∈ [0, p-1] plus on-curve check Qy² ≡ Qx³ − 3·Qx + b (mod p); non-canonical (Qx or Qy ≥ p) or off-curve Q returns C=1 before any scalar mul. Internally byte-reverses to LE via `fp_reverse32`, then composes `ec_scalar_mul`, `ec_scalar_mul_var`, `ec_point_add`, `fp_mod_inv`, `fp_mod_mul_n`. |
+| `ecdsa_verify_384` | ecdsa384 | A (lo) / X (hi) = pointer to 240 B BE struct `r(48) | s(48) | h(48) | Qx(48) | Qy(48)` | C=0 valid, C=1 invalid/malformed | P-384 analogue using `fp_reverse48`. Same non-constant-time caveat; same full input validation incl. the Q range + on-curve gate (issue #66). |
 | `ecdsa_verify_with_message_384` | ecdsa384 | A (lo) / X (hi) = pointer to same 240 B BE struct (h slot is overwritten); `sha_src` / `sha_len` (ZP) point at the message | C=0 valid, C=1 invalid/malformed | One-shot wrapper: runs `sha384_init / sha384_update / sha384_final`, splices `sha384_digest` into struct[96..143], then tail-calls `ecdsa_verify_384`. |
 
 The verify ABI is big-endian throughout because that is the wire
