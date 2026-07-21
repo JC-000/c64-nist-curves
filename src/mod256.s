@@ -606,12 +606,26 @@ fp_mod_mul:
 ; fp_mod_mul_n - (fp_dst) = ((fp_src1) * (fp_src2)) mod ec_n256
 ;
 ; Hardcoded to the P-256 group order n. Does NOT use fp_misc.
-; Assumes inputs a, b in [0, n-1] so that (a*b) < n * 2^256 and thus the
-; top half of the 512-bit product is strictly < n before the reduction
-; loop begins. Uses bit-serial top-down reduction (256 iterations).
+; Precondition: AT LEAST ONE operand in [0, n-1]; the other may be any
+; full-width 256-bit value. Why that suffices: if either factor is < n
+; then a*b < 2^256 * n, so the top half of the 512-bit product is
+; strictly < n — exactly the initial-remainder invariant the bit-serial
+; reduction loop below requires. The loop (256 iterations, top-down)
+; then computes the true mod of the full product, so an unreduced
+; operand still yields (a mod n)*(b mod n) mod n.
+;
+; RELYING CALLER: the ECDSA verify u1 = h*w step (ecdsa_verify_256,
+; step 5) passes the UNREDUCED digest h — which can be >= n, and that
+; region is adversarially reachable with ~2^32 hash grinding since
+; n256's top 32 bits are all-1s — with w = s^-1 mod n, which is
+; always < n. Do NOT "optimize" this routine on the assumption that
+; BOTH operands are < n (e.g. by skipping early compare/subtract
+; rounds); that would silently break the legitimate h >= n case.
+; See issue #65.
 ;
 ; Contract:
-;   input:  fp_src1, fp_src2, fp_dst set by caller; a,b in [0,n-1].
+;   input:  fp_src1, fp_src2, fp_dst set by caller; at least one of
+;           a,b in [0,n-1] (the other may be any 256-bit value).
 ;   output: result at (fp_dst), 32 bytes LE.
 ;   clobbers: fp_wide (as scratch), A, X, Y.
 ; =============================================================================
