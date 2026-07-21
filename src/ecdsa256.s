@@ -17,6 +17,14 @@
 ;             +96  pub_x   32 B big-endian affine X of public key
 ;             +128 pub_y   32 B big-endian affine Y of public key
 ;   Output: C=0 on VALID signature, C=1 on INVALID or malformed inputs.
+;           "Malformed" covers the full input surface (issue #66):
+;             r, s outside [1, n-1]                       -> C=1
+;             Qx or Qy >= p (non-canonical encoding)      -> C=1
+;             (Qx, Qy) not on the P-256 curve
+;               (Qy^2 != Qx^3 - 3*Qx + b mod p)           -> C=1
+;           The Q checks run as an entry gate (step 3b) before any
+;           scalar multiplication, per FIPS 186-5 s3.3 public-key
+;           validation.
 ;   Clobbers: everything -- uses full field/point scratch like any top-level op.
 ;
 ; fp_reverse32 contract:
@@ -37,6 +45,8 @@
 
 .import fp_copy, fp_zero, fp_cmp, fp_add, fp_sub, fp_is_zero
 .import fp_mod_mul_n, fp_mod_inv
+.import fp_mod_add, fp_mod_sub          ; issue #66 on-curve gate
+.import ec_b256                          ; issue #66 on-curve gate
 .import ec_set_modp, ec_set_modn
 .import ec_mulp, ec_sqrp
 .import ec_n256, ec_p256
@@ -187,6 +197,141 @@ ecdsa_verify_256:
         bcc @ev_slt             ; s < n -> ok
         jmp @ev_fail
 @ev_slt:
+
+        ; --- Step 3b (issue #66): validate public key Q ---
+        ; FIPS 186-5 s3.3 public-key validation, run BEFORE the mod-n
+        ; switch in step 4 (everything here is mod p). Rejects:
+        ;   (1) non-canonical encodings: Qx >= p or Qy >= p,
+        ;   (2) off-curve points: Qy^2 != Qx^3 - 3*Qx + b (mod p).
+        ; Scratch: ecdsa_w and ecdsa_u1 are dead here (steps 4-5
+        ; overwrite them); no new buffers needed.
+
+        ; Qx >= p256?  (fp_cmp: C=1 if src1>=src2)
+        lda #<ecdsa_qx
+        sta fp_src1
+        lda #>ecdsa_qx
+        sta fp_src1+1
+        lda #<ec_p256
+        sta fp_src2
+        lda #>ec_p256
+        sta fp_src2+1
+        jsr fp_cmp
+        bcc @ev_qxlt            ; Qx < p -> ok
+        jmp @ev_fail
+@ev_qxlt:
+
+        ; Qy >= p256?
+        lda #<ecdsa_qy
+        sta fp_src1
+        lda #>ecdsa_qy
+        sta fp_src1+1
+        lda #<ec_p256
+        sta fp_src2
+        lda #>ec_p256
+        sta fp_src2+1
+        jsr fp_cmp
+        bcc @ev_qylt            ; Qy < p -> ok
+        jmp @ev_fail
+@ev_qylt:
+
+        ; On-curve: Qy^2 == Qx^3 - 3*Qx + b (mod p)?
+        ; Both operands are canonical (< p) after the range gate above,
+        ; and every mod-p primitive returns canonical results, so the
+        ; final LHS/RHS byte-compare is exact.
+        jsr ec_set_modp         ; fp_mod_add/sub reduce mod (fp_misc)
+
+        ; ecdsa_w = Qx^2 mod p
+        lda #<ecdsa_qx
+        sta fp_src1
+        lda #>ecdsa_qx
+        sta fp_src1+1
+        lda #<ecdsa_w
+        sta fp_dst
+        lda #>ecdsa_w
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; ecdsa_w = Qx^2 * Qx = Qx^3 mod p
+        lda #<ecdsa_w
+        sta fp_src1
+        lda #>ecdsa_w
+        sta fp_src1+1
+        lda #<ecdsa_qx
+        sta fp_src2
+        lda #>ecdsa_qx
+        sta fp_src2+1
+        lda #<ecdsa_w
+        sta fp_dst
+        lda #>ecdsa_w
+        sta fp_dst+1
+        jsr ec_mulp
+
+        ; ecdsa_u1 = Qx + Qx mod p
+        lda #<ecdsa_qx
+        sta fp_src1
+        lda #>ecdsa_qx
+        sta fp_src1+1
+        lda #<ecdsa_qx
+        sta fp_src2
+        lda #>ecdsa_qx
+        sta fp_src2+1
+        lda #<ecdsa_u1
+        sta fp_dst
+        lda #>ecdsa_u1
+        sta fp_dst+1
+        jsr fp_mod_add
+
+        ; ecdsa_u1 = 2*Qx + Qx = 3*Qx mod p
+        lda #<ecdsa_u1
+        sta fp_src1
+        lda #>ecdsa_u1
+        sta fp_src1+1
+        jsr fp_mod_add          ; src2 (Qx) / dst (u1) still set
+
+        ; ecdsa_w = Qx^3 - 3*Qx mod p
+        lda #<ecdsa_w
+        sta fp_src1
+        lda #>ecdsa_w
+        sta fp_src1+1
+        lda #<ecdsa_u1
+        sta fp_src2
+        lda #>ecdsa_u1
+        sta fp_src2+1
+        lda #<ecdsa_w
+        sta fp_dst
+        lda #>ecdsa_w
+        sta fp_dst+1
+        jsr fp_mod_sub
+
+        ; ecdsa_w = Qx^3 - 3*Qx + b mod p  (RHS of the curve equation)
+        lda #<ec_b256
+        sta fp_src2
+        lda #>ec_b256
+        sta fp_src2+1
+        jsr fp_mod_add          ; src1 / dst (ecdsa_w) still set
+
+        ; ecdsa_u1 = Qy^2 mod p  (LHS of the curve equation)
+        lda #<ecdsa_qy
+        sta fp_src1
+        lda #>ecdsa_qy
+        sta fp_src1+1
+        lda #<ecdsa_u1
+        sta fp_dst
+        lda #>ecdsa_u1
+        sta fp_dst+1
+        jsr ec_sqrp
+
+        ; Byte-compare LHS vs RHS (both canonical, 32 B LE).
+        ldy #31
+@ev_oncurve_cmp:
+        lda ecdsa_w,y
+        cmp ecdsa_u1,y
+        beq @ev_oncurve_next
+        jmp @ev_fail            ; mismatch -> Q not on curve
+@ev_oncurve_next:
+        dey
+        bpl @ev_oncurve_cmp
+        ; Q is canonical and on-curve; proceed to the mod-n phase.
 
         ; --- Step 4: w = s^-1 mod n. Result lands in fp_r0. ---
         jsr ec_set_modn

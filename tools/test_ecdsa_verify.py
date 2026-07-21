@@ -71,6 +71,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from tools.vectors import (  # noqa: E402
     P256_N, P384_N,
+    P256_P, P256_B, P384_P, P384_B,
 )
 
 
@@ -343,6 +344,79 @@ def run_rfc6979_tests(transport, labels, curve, vec, byte_len, hash_name):
     return passed, failed
 
 
+def find_small_x_point(p, b):
+    """Find an on-curve point (x, y) with tiny x, deterministically.
+
+    Walks x = 1, 2, ... and returns the first x whose RHS
+    x^3 - 3x + b (mod p) is a quadratic residue. Both P-256 and P-384
+    have p % 4 == 3, so the sqrt is a single pow((p+1)//4). Used by the
+    issue #66 non-canonical-encoding case: a real keypair essentially
+    never has Qx < 2^bits - p (~2^-32 / ~2^-256 per keygen), so the
+    only way to build an on-curve point whose x + p still fits the
+    field byte width is to search small x directly.
+    """
+    assert p % 4 == 3
+    x = 1
+    while True:
+        rhs = (pow(x, 3, p) - 3 * x + b) % p
+        y = pow(rhs, (p + 1) // 4, p)
+        if y * y % p == rhs:
+            return x, y
+        x += 1
+
+
+def run_q_validation_tests(transport, labels, curve, vec, byte_len, hash_name):
+    """Issue #66: negative public-key cases (range + on-curve entry gate).
+
+    All four cases are structural rejects -- the C64 gate must return
+    C=1 without any oracle value being needed -- but each still routes
+    through run_case so the `cryptography` oracle stays authoritative
+    (it refuses out-of-range / off-curve public numbers with ValueError,
+    i.e. expected INVALID).
+    """
+    passed = failed = 0
+    if hash_name == "sha256":
+        h = hashlib.sha256(vec["msg"]).digest()
+    else:
+        h = hashlib.sha384(vec["msg"]).digest()
+    r, s, Ux, Uy = vec["r"], vec["s"], vec["Ux"], vec["Uy"]
+    p, b = {"p256": (P256_P, P256_B), "p384": (P384_P, P384_B)}[curve]
+    nbits = byte_len * 8
+
+    # (a) Non-canonical encoding of an on-curve point: x' = x + p with
+    # x' still < 2^bits. A verifier lacking the range gate would reduce
+    # x' back to x and treat the encoding as a legitimate point; the
+    # gate must reject the encoding itself.
+    x_small, y_small = find_small_x_point(p, b)
+    assert x_small + p < (1 << nbits), "x + p must fit the field width"
+    assert (y_small * y_small - (pow(x_small, 3, p) - 3 * x_small + b)) % p == 0, \
+        "searched point must be on-curve"
+
+    # (b) Off-curve Qy: flip a low bit of the RFC vector's Uy. Verify
+    # structurally that the result is canonical (so the reject exercises
+    # the on-curve check, not the range check) and off-curve.
+    qy_off = Uy ^ 2
+    assert qy_off < p, "corrupted Qy must stay canonical"
+    assert (qy_off * qy_off - (pow(Ux, 3, p) - 3 * Ux + b)) % p != 0, \
+        "corrupted Qy must be off-curve"
+
+    # (c)/(d) Random out-of-range coordinates in [p, 2^bits).
+    qx_big = p + secrets.randbelow((1 << nbits) - p)
+    qy_big = p + secrets.randbelow((1 << nbits) - p)
+
+    cases = [
+        (r, s, h, x_small + p, y_small, "non-canonical Qx (= x + p, on-curve x)"),
+        (r, s, h, Ux,          qy_off,  "off-curve Qy (bit flip)"),
+        (r, s, h, qx_big,      Uy,      "Qx >= p (random)"),
+        (r, s, h, Ux,          qy_big,  "Qy >= p (random)"),
+    ]
+    for r2, s2, h2, qx2, qy2, tag in cases:
+        pp, ff = run_case(transport, labels, curve, r2, s2, h2, qx2, qy2,
+                          f"issue66 {curve} Q-gate: {tag}")
+        passed += pp; failed += ff
+    return passed, failed
+
+
 def run_cavp_tests(transport, labels, curve, hash_alg, path, section, n_max):
     """NIST CAVP SigVer vectors for one curve/hash pair."""
     passed = failed = 0
@@ -520,6 +594,12 @@ def run_tests(transport, labels, run_full):
         ("P-384 RFC 6979 A.3.1 + 8 negatives",
          lambda: run_rfc6979_tests(transport, labels, "p384",
                                    RFC6979_P384, 48, "sha384")),
+        ("P-256 issue #66 Q validation (4 negatives)",
+         lambda: run_q_validation_tests(transport, labels, "p256",
+                                        RFC6979_P256, 32, "sha256")),
+        ("P-384 issue #66 Q validation (4 negatives)",
+         lambda: run_q_validation_tests(transport, labels, "p384",
+                                        RFC6979_P384, 48, "sha384")),
         (f"P-256 NIST CAVP SigVer ({n_cavp} vectors)",
          lambda: run_cavp_tests(
              transport, labels, "p256", hashlib.sha256,

@@ -335,6 +335,12 @@ does not provide a constant-time verify because it is unnecessary for TLS.
   flat big-endian struct of the layout below.
 - Return value is the carry flag: `C=0` VALID, `C=1` INVALID or malformed.
   No register-returned status byte; callers branch on `bcc` / `bcs`.
+- "Malformed" is enforced on the full input surface (issue #66): `r` and
+  `s` are checked against `[1, n-1]`, and the public key `Q` is validated
+  per FIPS 186-5 §3.3 — range check `Qx, Qy ∈ [0, p-1]` plus an on-curve
+  check `Qy² ≡ Qx³ − 3·Qx + b (mod p)`. A non-canonical encoding
+  (`Qx ≥ p` or `Qy ≥ p`) or an off-curve point returns `C=1` before any
+  scalar multiplication runs. Callers do NOT need to pre-validate `Q`.
 - Full clobber: all field/point scratch is trampled as on any top-level op.
   Serialize against other library calls per the re-entrancy contract
   (API.md §4).

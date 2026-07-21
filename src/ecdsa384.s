@@ -15,6 +15,14 @@
 ;             +144  pub_x   48 B big-endian affine X of public key
 ;             +192  pub_y   48 B big-endian affine Y of public key
 ;   Output: C=0 on VALID signature, C=1 on INVALID or malformed inputs.
+;           "Malformed" covers the full input surface (issue #66):
+;             r, s outside [1, n-1]                       -> C=1
+;             Qx or Qy >= p (non-canonical encoding)      -> C=1
+;             (Qx, Qy) not on the P-384 curve
+;               (Qy^2 != Qx^3 - 3*Qx + b mod p)           -> C=1
+;           The Q checks run as an entry gate (step 3b) before any
+;           scalar multiplication, per FIPS 186-5 s3.3 public-key
+;           validation.
 ;   Clobbers: everything -- uses full field/point scratch like any top-level op.
 ;
 ; fp_reverse48 contract:
@@ -43,6 +51,8 @@
 
 .import fp_copy_384, fp_zero_384, fp_cmp_384, fp_add_384, fp_sub_384, fp_is_zero_384
 .import fp_mod_mul_n_384, fp_mod_inv_384
+.import fp_mod_add_384, fp_mod_sub_384  ; issue #66 on-curve gate
+.import ec_b384                          ; issue #66 on-curve gate
 .import ec_set_modp_384, ec_set_modn_384
 .import ec_mulp_384, ec_sqrp_384
 .import ec_n384, ec_p384
@@ -192,6 +202,145 @@ ecdsa_verify_384:
         bcc @ev_slt             ; s < n -> ok
         jmp @ev_fail
 @ev_slt:
+
+        ; --- Step 3b (issue #66): validate public key Q ---
+        ; FIPS 186-5 s3.3 public-key validation, run BEFORE the mod-n
+        ; switch in step 4 (everything here is mod p). Rejects:
+        ;   (1) non-canonical encodings: Qx >= p or Qy >= p,
+        ;   (2) off-curve points: Qy^2 != Qx^3 - 3*Qx + b (mod p).
+        ; Scratch: ecdsa384_w and ecdsa384_u1 are dead here (steps 4-5
+        ; overwrite them); no new buffers needed. Mirrors the P-256
+        ; gate in ecdsa256.s.
+
+        ; Qx >= p384?  (fp_cmp_384: C=1 if src1>=src2)
+        lda #<ecdsa384_qx
+        sta fp_src1
+        lda #>ecdsa384_qx
+        sta fp_src1+1
+        lda #<ec_p384
+        sta fp_src2
+        lda #>ec_p384
+        sta fp_src2+1
+        jsr fp_cmp_384
+        bcc @ev_qxlt            ; Qx < p -> ok
+        jmp @ev_fail
+@ev_qxlt:
+
+        ; Qy >= p384?
+        lda #<ecdsa384_qy
+        sta fp_src1
+        lda #>ecdsa384_qy
+        sta fp_src1+1
+        lda #<ec_p384
+        sta fp_src2
+        lda #>ec_p384
+        sta fp_src2+1
+        jsr fp_cmp_384
+        bcc @ev_qylt            ; Qy < p -> ok
+        jmp @ev_fail
+@ev_qylt:
+
+        ; On-curve: Qy^2 == Qx^3 - 3*Qx + b (mod p)?
+        ; Both operands are canonical (< p) after the range gate above,
+        ; and every mod-p primitive returns canonical results, so the
+        ; final LHS/RHS byte-compare is exact.
+        jsr ec_set_modp_384     ; fp_mod_add/sub_384 reduce mod (fp_misc)
+
+        ; ecdsa384_w = Qx^2 mod p
+        lda #<ecdsa384_qx
+        sta fp_src1
+        lda #>ecdsa384_qx
+        sta fp_src1+1
+        lda #<ecdsa384_w
+        sta fp_dst
+        lda #>ecdsa384_w
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; ecdsa384_w = Qx^2 * Qx = Qx^3 mod p
+        lda #<ecdsa384_w
+        sta fp_src1
+        lda #>ecdsa384_w
+        sta fp_src1+1
+        lda #<ecdsa384_qx
+        sta fp_src2
+        lda #>ecdsa384_qx
+        sta fp_src2+1
+        lda #<ecdsa384_w
+        sta fp_dst
+        lda #>ecdsa384_w
+        sta fp_dst+1
+        jsr ec_mulp_384
+
+        ; ecdsa384_u1 = Qx + Qx mod p
+        lda #<ecdsa384_qx
+        sta fp_src1
+        lda #>ecdsa384_qx
+        sta fp_src1+1
+        lda #<ecdsa384_qx
+        sta fp_src2
+        lda #>ecdsa384_qx
+        sta fp_src2+1
+        lda #<ecdsa384_u1
+        sta fp_dst
+        lda #>ecdsa384_u1
+        sta fp_dst+1
+        jsr fp_mod_add_384
+
+        ; ecdsa384_u1 = 2*Qx + Qx = 3*Qx mod p
+        lda #<ecdsa384_u1
+        sta fp_src1
+        lda #>ecdsa384_u1
+        sta fp_src1+1
+        jsr fp_mod_add_384      ; src2 (Qx) / dst (u1) still set
+
+        ; ecdsa384_w = Qx^3 - 3*Qx mod p
+        lda #<ecdsa384_w
+        sta fp_src1
+        lda #>ecdsa384_w
+        sta fp_src1+1
+        lda #<ecdsa384_u1
+        sta fp_src2
+        lda #>ecdsa384_u1
+        sta fp_src2+1
+        lda #<ecdsa384_w
+        sta fp_dst
+        lda #>ecdsa384_w
+        sta fp_dst+1
+        jsr fp_mod_sub_384
+
+        ; ecdsa384_w = Qx^3 - 3*Qx + b mod p  (RHS of the curve equation)
+        lda #<ec_b384
+        sta fp_src2
+        lda #>ec_b384
+        sta fp_src2+1
+        jsr fp_mod_add_384      ; src1 / dst (ecdsa384_w) still set
+
+        ; ecdsa384_u1 = Qy^2 mod p  (LHS of the curve equation)
+        lda #<ecdsa384_qy
+        sta fp_src1
+        lda #>ecdsa384_qy
+        sta fp_src1+1
+        lda #<ecdsa384_u1
+        sta fp_dst
+        lda #>ecdsa384_u1
+        sta fp_dst+1
+        jsr ec_sqrp_384
+
+        ; Byte-compare LHS vs RHS (both canonical, 48 B LE).
+        ; ldy #47 / dey / bpl idiom is safe for 48 B (bit 7 of 47 clear);
+        ; CMP here is fine -- no ADC carry chain in flight (CLAUDE.md
+        ; CPY-clobbers-C hazard applies to arithmetic loops only).
+        ldy #47
+@ev_oncurve_cmp:
+        lda ecdsa384_w,y
+        cmp ecdsa384_u1,y
+        beq @ev_oncurve_next
+        jmp @ev_fail            ; mismatch -> Q not on curve
+@ev_oncurve_next:
+        dey
+        bpl @ev_oncurve_cmp
+        ; Q is canonical and on-curve; proceed to the mod-n phase.
 
         ; --- Step 4: w = s^-1 mod n. Result lands in fp384_r0. ---
         jsr ec_set_modn_384
