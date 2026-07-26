@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-25
+
 ### ECDSA verify public-key validation (issue #66)
 
 - **`ecdsa_verify_256` / `ecdsa_verify_384` now validate the public key
@@ -28,6 +30,17 @@ contract).
   step-7 `.ifdef`). New negative-Q cases (non-canonical x+p encoding,
   off-curve bit-flip, random `Qx ≥ p` / `Qy ≥ p`) added to
   `tools/test_ecdsa_verify.py` for both curves.
+
+### Documentation (issue #65)
+
+- **`fp_mod_mul_n` / `fp_mod_mul_n_384` precondition widened** in the
+  routine headers (src/mod256.s, src/mod384.s) from "both operands in
+  [0, n−1]" to "at least one operand in [0, n−1]" — the invariant the
+  bit-serial reduction actually needs, and the one the ECDSA verify
+  `u1 = h·w` step relies on when it passes the unreduced digest `h`
+  (adversarially reachable ≥ n for P-256 via ~2³² grinding). Names the
+  relying caller and warns future editors not to optimize on a
+  both-reduced assumption. Comment-only; PRG byte-identical.
 
 ## [0.6.0] — 2026-07-20
 
@@ -888,6 +901,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.7.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.7.0
 [0.6.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.6.0
 [0.5.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.5.0
 [0.2.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.2.0
