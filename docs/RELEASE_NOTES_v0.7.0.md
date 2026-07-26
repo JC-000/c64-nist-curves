@@ -58,8 +58,8 @@ editors not to optimize on a both-reduced assumption. Comment-only.
 | | |
 |---|---|
 | Tarball | `c64-nist-curves-v0.7.0.tar.gz` |
-| Size | TBD bytes |
-| SHA256 | `TBD` |
+| Size | 161192 bytes |
+| SHA256 | `68e8de9eb0ede766fad7d11efb9239ae45582f26cac1de62c6e544ba3bd17785` |
 
 Reproducible via `make dist VERSION=v0.7.0` at tag `v0.7.0`
 (byte-identical re-runs verified).
