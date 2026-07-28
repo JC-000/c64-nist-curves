@@ -205,7 +205,10 @@ gets stale otherwise).
   fetch = ~20 cy register setup + ~512 cy DMA cycle-steal stall; DMA is
   ~23% of fp_mul / ~18% of fp_mul_384 — measured 2026-05-21, see
   `.research/reu_mult_audit_2026_05_21/report.md`; still a ~2× win vs
-  the no-table alternative)
+  the no-table alternative. The ~542 cy figure is the VICE / real-1750
+  model; on Ultimate hardware the per-row stall is a wall-clock-anchored
+  firmware/generation-dependent constant — ~160 wall-ticks C64U fw 1.1.0
+  vs ~189 U64E fw 3.14 per 512 B row — see issue #83)
 - Persistent REU DMA descriptor state: `reu_mul_init` pre-configures the
   C64 base ($DF02/03 = mul_dma_lo), REU offset low ($DF04 = 0),
   length ($DF07/08 = 512), and address-control ($DF0A = 0) ONCE at boot.
@@ -242,6 +245,9 @@ gets stale otherwise).
   canonical §8.3 ct_mul_8x8 body stays untouched and serves the diag
   product); crossover ~22 MHz P-256 / ~33 MHz P-384; ~2.5× SLOWER at
   stock 1 MHz (profile, not replacement — default PRG byte-identical).
+  Floor/crossover figures are C64U fw 1.1.0-specific: the per-row stall
+  is firmware-generation-dependent, so they shift per device; see
+  issue #83.
   Ships as four `make lib-*-onchip` archives with a profile-aware
   manifest (REU banks $04; verify-onchip archives issue no REU DMA at
   all and need only sqtab_init at boot — runtime-validated 35/35 in an

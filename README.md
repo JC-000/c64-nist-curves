@@ -39,7 +39,10 @@ four `FP_ONCHIP_MUL` turbo-profile archives (`make lib-onchip` /
 `*-verify-onchip` archives issue **zero REU traffic** and need only
 `sqtab_init` at boot, so they run on an REU-less C64. Trade-off: ~2.5×
 slower than the default profile at stock 1 MHz, but faster above the
-~22 MHz (P-256) / ~33 MHz (P-384) crossovers on accelerated hosts. See
+~22 MHz (P-256) / ~33 MHz (P-384) crossovers on accelerated hosts
+(measured on C64 Ultimate fw 1.1.0; crossovers shift per
+device/firmware generation — see the measurement-scope note in the
+turbo section below). See
 the "Turbo scaling and the FP_ONCHIP_MUL profile" section below and
 API.md §8.4.2.
 
@@ -150,7 +153,20 @@ them. Measured, oracle-gated (C64U):
 | turbo (`FP_ONCHIP_MUL`) | 46.4 s | 15.8 s | **11.8 s (2.16×)** |
 
 Crossover ~22 MHz (P-256) / ~33 MHz (P-384); at stock 1 MHz the default
-profile is ~2.5× faster. The turbo profile also runs correctly with
+profile is ~2.5× faster.
+
+**Measurement scope:** all floor and crossover figures in this section
+were measured on a C64 Ultimate fw 1.1.0. Cross-device data from the
+c64-x25519 onchip hardware gate shows the per-row DMA stall is
+firmware/generation-dependent — ~160 wall-clock ticks per 512 B row
+fetch on C64U fw 1.1.0 vs ~189 on U64E fw 3.14 (532 cy on a real 1750
+and under VICE) — and neither Ultimate generation reproduces real-1750
+1 cy/byte DMA under turbo. Floor and crossover points therefore shift
+per device: a U64E baseline measures a larger floor and a lower
+crossover. See issue #83 and c64-x25519
+`docs/design/issue_72_onchip_mul.md`.
+
+The turbo profile also runs correctly with
 **no REU at all** when combined with the no-comb verifiers
 (35/35 oracle suite in an REU-less VICE; the `*-verify-onchip`
 archives' configuration). Build via `make lib-onchip` /
