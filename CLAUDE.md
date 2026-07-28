@@ -9,7 +9,9 @@ P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 C
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
 SPEC §1–§6 (version equates, `.exportzp` ZP, REU symbol contract, segment
-naming, manifest equates, minimal-archive build targets). Consumer
+naming, manifest equates, minimal-archive build targets) and §8.0–§8.3
+(shared-primitives ownership mask, precalc-table manifest, shared sqtab /
+reu_mul / ct_mul_8x8). Consumer
 integration is a single `make lib-<variant>` + link; no source patching.
 See `API.md` §8.2–§8.4 for the archive contract.
 
@@ -35,7 +37,7 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   source-level stepping / breakpoints / span lookup. `.dbg` is a separate
   artifact; the .prg is byte-identical with or without `-g` (verified by
   sha256 round-trip).
-Current PRG size: ~36.3 KB (37171 bytes), loaded at $0801.
+Current PRG size: ~36.8 KB (37683 bytes as of v0.7.0's issue #66 verify gate), loaded at $0801.
 
 `src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
 ACME build path used in side-by-side diff testing only — do not edit
@@ -155,6 +157,8 @@ archive contract.
 | reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`), consumer-overridable via `ca65 --asm-define` |
 | lib_version.s | Semver + ABI version equates per SPEC §1 (`LIB_VERSION_MAJOR` / `_MINOR` / `_PATCH` / `LIB_ABI_VERSION`) |
 | lib_manifest.s | Aggregate manifest equates per SPEC §5 (`LIB_NISTCURVES_REU_BANKS_USED` / `_ZP_USAGE_BYTES` / `_RESIDENT_BYTES` / `_COLD_BYTES`) |
+| precalc_manifest.s | Precalc-table enumeration per SPEC §8.0: one `LIB_PRECALC_TABLE` invocation per qualifying table (sqtab, reu_mul, lim_lee_comb_p256/p384, sha384_k), exporting `LIB_PRECALC_<name>_{SIZE,REGION,SHARED}`. Doc twin (with rationale + Profiles column): `docs/precalc-tables.md` — the two must stay in lock-step. Linked into every archive; onchip archives take `precalc_manifest_onchip.o`, which gates out the `reu_mul` row (issue #78). |
+| precalc_table.inc | Canonical `LIB_PRECALC_TABLE` macro + region/shared constants, copied byte-for-byte from c64-lib-contract SPEC §8.0. Do not edit locally; updates land via coordinated cross-repo PR. |
 | mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, the REU DMA row-fetch helper used by `fp_sqr_384` (moved here from main.s by issue #18 fix so standalone-link consumers resolve it). |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
@@ -487,7 +491,8 @@ compression with the SHA-384 IV; on-chip output is `H[0..5]` truncated to
 
 ### Calling contract / re-entrancy
 Library routines are NOT re-entrant. The multiply DMA buffers
-(`mul_dma_lo`/`mul_dma_hi` at $4b00/$4c00), the `mul_cached_a`/
+(`mul_dma_lo`/`mul_dma_hi` at $7b00/$7c00 in the current build; see
+`build/labels.txt`), the `mul_cached_a`/
 `mul_src2_buf` scratch, and the `fp_src1`/`fp_src2`/`fp_dst`/`fp_misc`
 zero-page slots are all clobbered by every field operation and are
 shared between the P-256 and P-384 code paths. Sequential cross-curve
