@@ -26,6 +26,33 @@ contract).
   old figure was outside the ±5% band), onchip resident/cold
   28200/1900 → shared 27000/2000. Makefile `.PHONY` gains the four
   onchip lib targets. Default PRG byte-identical.
+- **SPEC §8.2 provider now ships in the default-profile archives
+  (issue #81):** `reu_mul_init` / `reu_mul_tables_init` moved from the
+  never-archived `main.s` into the new `src/reu_mul_init.s`
+  (`LIB_NISTCURVES_MUL_CODE`, body still gated on
+  `.ifndef SHARED_REU_MUL_INIT`), added to `LIB_MUL_OBJS` so
+  `nistcurves.a` and the p256-verify / p384-verify / p384-curve
+  archives contain the provider. Before this, API.md §3 made
+  `jsr reu_mul_init` mandatory yet **no archive contained the symbol**
+  (unresolved external for every archive consumer's boot), and the §8.0
+  ownership bit `$0002` claimed by `lib_manifest.o` was untruthful in
+  every archive — a sibling library genuinely shipping its §8.2
+  provider would trip a consumer's disjointness `.assert` spuriously.
+  The FP_ONCHIP_MUL archives and `lib-p384-sha384` deliberately do NOT
+  gain the object (the onchip profile never builds or reads the REU
+  multiply table; verify-onchip stays zero-REU-DMA). `check_archives.py`
+  now ratchets both directions (provider exported + boot-sequence smoke
+  link in the four default REU archives; provider absent from the
+  sha384 + onchip archives). Standalone PRG: same 37683 B, but not
+  byte-identical — the boot window `$081E`–`$0B20` is reordered (test
+  trampolines now precede `sqtab_init`; `reu_mul_init` sits between
+  `reu_fetch_mul_row` and `fp_copy`) and 8 operand bytes track
+  `poly_prod_lo/hi` moving `$0ACE/$0ACF` → `$0A14/$0A15`; everything
+  from `fp_copy $0B21` up is address-identical. §5 accounting:
+  `COLD_BYTES` 2000 → 1800 — the pre-#81 cold sweep's
+  "`$08AE` → `reu_fetch_mul_row`" block silently included ~198 B of
+  main.s test trampolines; the new layout moves them out of the swept
+  window (recomputed 1812, margin ~0.7%).
 
 ### Documentation
 

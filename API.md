@@ -86,8 +86,11 @@ drift slightly as code size changes; the symbol names are stable.
 ## 3. Initialization sequence (required)
 
 The host program must perform the following calls, in order, before any field
-or point routine is used. All of them are defined in `main.s` /
-`points256_comb.s` / `points384_comb.s` and are public labels.
+or point routine is used. All of them are defined in `mul_8x8.s` /
+`reu_mul_init.s` / `points256_comb.s` / `points384_comb.s` and are public
+labels. (`reu_mul_init` moved from the never-archived `main.s` into its own
+object by issue #81, so every default-profile archive now ships it —
+archive consumers link this whole sequence with no extra objects.)
 
 1. **Bank out BASIC ROM** (optional but recommended) so `$A000`-`$BFFF` is RAM:
 
@@ -604,6 +607,17 @@ variants of the packaged verifiers (issue #61), so `ecdsa_verify_256` /
 — `u1·G` runs on the variable-base ladder instead of the excluded comb.
 See §8.4.1 for the contract and the performance trade-off.
 
+**Note (issue #81):** every default-profile REU-consuming archive
+(`nistcurves.a`, the two verify archives, `lib-p384-curve`) ships the
+SPEC §8.2 provider object `reu_mul_init.o` (`reu_mul_init` /
+`reu_mul_tables_init`, moved out of the never-archived `main.s`), so
+the mandatory §3 boot call `jsr reu_mul_init` links from the archive
+alone and the §8.0 ownership bit `$0002` the manifest claims is backed
+by a shipped provider. `lib-p384-sha384` (no REU at all) and the
+`*-onchip` archives (§8.4.2 — the profile never builds or reads the
+REU multiply table) deliberately do not contain it. `make
+check-archives` pins both directions.
+
 The PR-#40 source-file split itself changed no bytes; the standalone
 test PRG (`make` with no args, default target) has since moved with
 normal code evolution — 37302 B at the split, 37171 B after the
@@ -708,10 +722,14 @@ P-384 @64 MHz: 62.0 s → 39.1 s (1.59×). Full A/B data:
   claim no banks.)
 - **Boot obligation:** onchip consumers need only `sqtab_init` — no
   §8.2 `reu_mul` provider, and (verify archives) no `ec_precompute_*`.
+  Accordingly the onchip archives do not ship `reu_mul_init.o` (the
+  §8.2 provider object every default-profile archive carries,
+  issue #81) — `reu_mul_init` is deliberately unlinkable from them.
 - **Resident/cold (§5):** the row generator (~250 B) becomes verify-hot
   and the REU row-fetch path drops out — a net delta inside the §5
   rounding, so both profiles share `RESIDENT_BYTES = 27000` /
-  `COLD_BYTES = 2000` (issue #78 accounting refresh). Note the
+  `COLD_BYTES = 1800` (issue #78 accounting refresh; #81 trimmed the
+  cold sweep of main.s trampoline bytes). Note the
   runtime-generated 1 KB `sqtab` RAM table is verify-hot under this
   profile but excluded from the equates (generated RW state, not
   code+rodata) — budget it separately at `LIB_SHARED_SQTAB_BASE`.
@@ -821,7 +839,7 @@ ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 .import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07
 .import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 31
 .import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
-.import LIB_NISTCURVES_COLD_BYTES           ; default 2000
+.import LIB_NISTCURVES_COLD_BYTES           ; default 1800
 .import LIB_NISTCURVES_SHARED_PRIMITIVES    ; standalone default $0007
                                             ; (sqtab | reu_mul | ct_mul_8x8);
                                             ; conditional per SPEC §8.0 — each

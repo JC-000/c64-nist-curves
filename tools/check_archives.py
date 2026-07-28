@@ -75,6 +75,38 @@ KNOWN_EXTERNAL = {
     "nistcurves-p384-curve-onchip.a": set(),
 }
 
+# --- SPEC §8.2 provider pins (issue #81) -------------------------------------
+# The reu_mul provider (reu_mul_init / reu_mul_tables_init, src/reu_mul_init.s)
+# must be PRESENT in every default-profile REU-consuming archive (API.md §3
+# makes the boot call mandatory, and lib_manifest.o's §8.0 ownership claim
+# $0002 must be backed by a shipped body) and ABSENT from the sha384 archive
+# (no REU at all) and the FP_ONCHIP_MUL archives (the profile never builds or
+# reads the REU multiply table; verify-onchip archives are advertised as
+# containing zero REU DMA code, API.md §8.4.2). Both directions ratchet.
+REU_MUL_PROVIDER_SYMS = {"reu_mul_init", "reu_mul_tables_init"}
+MUST_EXPORT = {
+    "nistcurves.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p256-verify.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p384-verify.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p384-curve.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p384-sha384.a": set(),
+    "nistcurves-onchip.a": set(),
+    "nistcurves-p256-verify-onchip.a": set(),
+    "nistcurves-p384-verify-onchip.a": set(),
+    "nistcurves-p384-curve-onchip.a": set(),
+}
+MUST_NOT_EXPORT = {
+    "nistcurves.a": set(),
+    "nistcurves-p256-verify.a": set(),
+    "nistcurves-p384-verify.a": set(),
+    "nistcurves-p384-curve.a": set(),
+    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p256-verify-onchip.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p384-verify-onchip.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p384-curve-onchip.a": REU_MUL_PROVIDER_SYMS,
+}
+
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
 # expect_link True  -> documented as linkable, must link clean.
 # expect_link False -> documented as broken, must fail with unresolved symbols
@@ -85,17 +117,23 @@ SMOKE = {
         ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
         ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
         ("packaged ecdsa_verify_with_message_384", ["ecdsa_verify_with_message_384"], True),
+        ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-p256-verify.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
         ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"], True),
+        ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-p384-verify.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
           "fp_mod_inv_384", "fp_mod_mul_384"], True),
         ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+        ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-p384-sha384.a": [
         ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
@@ -108,6 +146,8 @@ SMOKE = {
         ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
         ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
          ["ecdsa_verify_with_message_384"], True),
+        ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-onchip.a": [
         ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
@@ -278,6 +318,18 @@ def main():
         if not unexpected and not stale:
             gap = sorted(allow) if allow else "(none)"
             print(f"  closure OK: documented gaps = {gap}")
+
+        # (a2) SPEC §8.2 provider presence/absence pins (issue #81).
+        missing = sorted(MUST_EXPORT.get(name, set()) - exports)
+        leaked = sorted(MUST_NOT_EXPORT.get(name, set()) & exports)
+        if missing:
+            failures.append(f"{name}: required exports missing {missing}")
+            print(f"  EXPORT FAIL: required symbols not exported: {missing}")
+        if leaked:
+            failures.append(f"{name}: forbidden exports present {leaked}")
+            print(f"  EXPORT FAIL: symbols must not ship in this archive: {leaked}")
+        if not missing and not leaked:
+            print("  provider pins OK (reu_mul_init presence/absence matches contract)")
 
         # (b) dummy-link smoke tests.
         for label, imps, expect_link in SMOKE.get(name, []):

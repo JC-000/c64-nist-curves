@@ -39,6 +39,21 @@
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
+; reu_mul_init.s — SPEC §8.2 reu_mul provider (moved out of main.s, issue #81;
+; shipped in the default-profile archives via LIB_MUL_OBJS, excluded from the
+; FP_ONCHIP_MUL archives; body gated on .ifndef SHARED_REU_MUL_INIT)
+; EXPORTS: reu_mul_init, reu_mul_tables_init (alias)
+; IMPORTS:
+;   constants: reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi,
+;              reu_reu_bank, reu_len_lo, reu_len_hi,
+;              reu_addr_ctrl, reu_command
+;   reu_config: LIB_NISTCURVES_REU_BANK_MUL
+;   mul_8x8: mul_8x8, poly_prod_lo, poly_prod_hi,
+;            smc_sum_a_imm, smc_diff_a_imm
+;   data: mul_dma_lo, mul_dma_hi
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
 ; data_*.s — All mutable data buffers (split from monolithic data.s by #40;
 ; P-256 side slot-trimmed by #54: fp_tmp1 → data_p256_invref.s, fp_tmp2..4 →
 ; data_test.s (harness staging), ec_sc_byte/ec_sc_mask → data_p256_limlee.s,
@@ -262,21 +277,17 @@
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
-; main.s — Entry point, init, REU DMA routines, strings
-; EXPORTS: reu_mul_init, bench_start, bench_stop,
+; main.s — Entry point, init, strings (test/bench driver; never archived)
+; EXPORTS: bench_start, bench_stop,
 ;          bench_ticks, vic_blank, vic_unblank,
 ;          clrscr, print_string, print_hex_byte,
 ;          ecdsa_verify_256_tramp, ecdsa_verify_384_tramp
 ; IMPORTS:
 ;   ZP: proc_port, zp_ptr1, fp_misc
-;   constants: chrout, screen_ram, jiffy_clock, vic_ctrl1,
-;              reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi,
-;              reu_reu_bank, reu_len_lo, reu_len_hi,
-;              reu_addr_ctrl, reu_command
-;   mul_8x8: sqtab_init, mul_8x8, poly_prod_lo, poly_prod_hi,
-;            smc_sum_a_imm, smc_diff_a_imm
-;   data: mul_dma_lo, mul_dma_hi, mul_cached_a,
-;         ecdsa_inputs_256, ecdsa_result_256,
+;   constants: chrout, screen_ram, jiffy_clock, vic_ctrl1
+;   mul_8x8: sqtab_init
+;   reu_mul_init: reu_mul_init
+;   data: ecdsa_inputs_256, ecdsa_result_256,
 ;         ecdsa_inputs_384, ecdsa_result_384
 ;   points256: ec_precompute_256
 ;   points384: ec_precompute_384

@@ -26,7 +26,9 @@
 ;
 ; The numbers are approximate -- within ±5% per SPEC §5. Refreshed at each
 ; release that substantively changes one of them. Build size as of this
-; equate refresh: 37683 B PRG (build/nist-curves.prg, v0.7.0 / issue #66).
+; equate refresh: 37683 B PRG (build/nist-curves.prg, v0.7.0 / issue #66;
+; unchanged by the issue #81 reu_mul_init move -- code reordered, no net
+; growth).
 ; =============================================================================
 
 
@@ -101,9 +103,11 @@
 ; `ecdsa_verify_256` / `ecdsa_verify_384` call. Summed from build/labels.txt
 ; address ranges (v0.7.0, 37683 B PRG):
 ;
-;   reu_fetch_mul_row + fp256/mod256/curve256/points256_core
+;   reu_fetch_mul_row ($0A53 -> reu_mul_init $0A67; the boot-only
+;     reu_mul_init body sits between it and fp256 since issue #81)    20
+;   fp256/mod256/curve256/points256_core
 ;     + sm256_reu_* comb runtime helpers
-;     (reu_fetch_mul_row $0B0D -> ec_precompute_256 $2914)        7687
+;     (fp_copy $0B21 -> ec_precompute_256 $2914)                    7667
 ;   ec_scalar_mul comb evaluate body
 ;     ($2B7C -> fp_mod_inv_fast $2CC9)                             333
 ;   fp_reverse32 + ecdsa_verify_256 + fp384/mod384/curve384
@@ -150,8 +154,10 @@
 ; from REU, kernal-banked RAM, or external storage) without breaking a
 ; verify call (v0.7.0 labels.txt):
 ;
-;   reu_mul_init + sqtab_init + mul_8x8 body (boot-only path)
-;     ($08AE -> reu_fetch_mul_row $0B0D)                           607
+;   sqtab_init + mul_8x8 body (boot-only path)
+;     ($0974 -> reu_fetch_mul_row $0A53)                           223
+;   reu_mul_init (src/reu_mul_init.s since issue #81; boot-only
+;     §8.2 provider) ($0A67 -> fp_copy $0B21)                      186
 ;   ec_precompute_256 (boot-only; populates REU bank $02 P-256 half)
 ;     ($2914 -> ec_scalar_mul $2B7C)                               616
 ;   ec_precompute_384 (boot-only; populates REU bank $02 P-384 half)
@@ -162,7 +168,14 @@
 ;   fp_inv_exp_p2 (addition-chain step table for fp_mod_inv_fast)
 ;     ($6A84 -> ec_a384 $6AA4)                                      32
 ;                                                              -------
-;                                                                 2010
+;                                                                 1812
+;
+; (The pre-#81 derivation's first block, "$08AE -> reu_fetch_mul_row
+; $0B0D = 607", was an address-range sweep that silently included the
+; ~198 B of main.s test trampolines then sitting between reu_mul_init
+; and sqtab_init -- never-archived driver code, not library cold code.
+; The #81 layout moves the trampolines out of the swept window, so the
+; total drops 2010 -> 1812 with no library code removed.)
 ;
 ; The sqtab_lo/hi quarter-square table (1024 B at LIB_SHARED_SQTAB_BASE)
 ; is deliberately NOT counted: it is runtime-GENERATED RAM state, not
@@ -177,15 +190,17 @@
 ; variable-base scalar mul. That isn't code+rodata though, so it stays
 ; out of this number per SPEC §5 wording.
 ;
-; Rounded to 2000 for the ±5% manifest commitment (margin ~0.5%).
+; Rounded to 1800 for the ±5% manifest commitment (margin ~0.7%).
 ; -----------------------------------------------------------------------------
 ; FP_ONCHIP_MUL: the cold set is materially the same blocks -- the
-; reu_mul_init path stays cold (and is unnecessary: the profile never
-; reads an REU mul table), sqtab_init remains the one mandatory boot
-; step, ct_mul_8x8 remains boot/diag-only (the issue #71 row generator
-; inlines its own quarter-square). Both profiles share the 2000 figure.
+; reu_mul_init provider stays cold in the standalone onchip PRG (and is
+; unnecessary: the profile never reads an REU mul table; the onchip
+; ARCHIVES do not ship reu_mul_init.o at all, issue #81), sqtab_init
+; remains the one mandatory boot step, ct_mul_8x8 remains boot/diag-only
+; (the issue #71 row generator inlines its own quarter-square). Both
+; profiles share the 1800 figure.
 .ifndef LIB_NISTCURVES_COLD_BYTES
-  LIB_NISTCURVES_COLD_BYTES = 2000
+  LIB_NISTCURVES_COLD_BYTES = 1800
 .endif
 
 
@@ -210,8 +225,15 @@
 ;
 ;   bit    | primitive  | deferral switch
 ;   $0001  | sqtab      | SHARED_SQTAB_INIT   (src/mul_8x8.s)
-;   $0002  | reu_mul    | SHARED_REU_MUL_INIT (src/main.s)
+;   $0002  | reu_mul    | SHARED_REU_MUL_INIT (src/reu_mul_init.s)
 ;   $0004  | ct_mul_8x8 | SHARED_CT_MUL_8X8   (src/mul_8x8.s)
+;
+; The §8.2 provider body lives in src/reu_mul_init.s (moved out of the
+; never-archived main.s by issue #81) and ships in every default-profile
+; REU-consuming archive via the Makefile's LIB_MUL_OBJS, so the $0002
+; claim below is backed by an actual provider in each archive that
+; carries this manifest. (Before #81 the claim was untruthful for all
+; archives: main.o held the only body.)
 ; -----------------------------------------------------------------------------
 .ifndef LIB_SHARED_PRIMITIVES_SQTAB
   LIB_SHARED_PRIMITIVES_SQTAB = $0001
