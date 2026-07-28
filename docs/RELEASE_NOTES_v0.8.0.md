@@ -80,8 +80,8 @@ projections. No numeric claim changed.
 | | |
 |---|---|
 | Tarball | `c64-nist-curves-v0.8.0.tar.gz` |
-| Size | SIZE_PLACEHOLDER bytes |
-| SHA256 | `SHA256_PLACEHOLDER` |
+| Size | 171068 bytes |
+| SHA256 | `afad80342f8c747793f0502939cdbb439adf107e79d0fedd8269bcfc08c77145` |
 
 Reproducible via `make dist VERSION=v0.8.0` at tag `v0.8.0`
 (byte-identical re-runs verified).
