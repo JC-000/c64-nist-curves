@@ -29,7 +29,9 @@ Target platform: 6502 @ 1 MHz with a 1764 / 1750 / compatible REU.
 Exception: the `FP_ONCHIP_MUL` turbo-profile archives (§8.4.2) compute
 multiply rows on-chip — the `*-verify-onchip` archives issue no REU DMA
 at all and run on REU-less machines (and accelerated hosts above the
-~22 MHz / ~33 MHz crossovers, where they are the faster choice).
+~22 MHz / ~33 MHz crossovers, where they are the faster choice;
+crossovers measured on C64 Ultimate fw 1.1.0 and shift per
+device/firmware generation — see §8.4.2).
 Source is ca65/ld65 assembly for the cc65 toolchain; build via `make clean && make`. See README.md for toolchain install notes.
 
 Byte-order conventions:
@@ -687,7 +689,12 @@ on accelerated hosts (Ultimate 64 / C64 Ultimate turbo, SuperCPU-class)
 the per-row multiply-table fetch inside `fp_mul` / `fp_sqr` becomes a
 speed-invariant wall-clock floor: measured on a C64 Ultimate (fw 1.1.0),
 `ecdsa_verify_256` carries a **22.2 s floor (87% of total wall at
-64 MHz)** and `ecdsa_verify_384` a 51.7 s floor.
+64 MHz)** and `ecdsa_verify_384` a 51.7 s floor. These floor figures
+are specific to that device and firmware: the per-row stall is a
+firmware/generation-dependent wall-clock constant (~160 wall-ticks per
+512 B row on C64U fw 1.1.0 vs ~189 on U64E fw 3.14; 532 cy on a real
+1750 and under VICE — see issue #83 and c64-x25519
+`docs/design/issue_72_onchip_mul.md`).
 
 The **turbo profile** (`-D FP_ONCHIP_MUL`, shipped pre-built as the
 `*-onchip.a` archives) replaces every REU row fetch with sparse on-chip
@@ -711,6 +718,18 @@ the DMA-table profile is ~2.5× faster (extrapolated from the measured
 CPU-work fits) — the turbo profile is a complement, not a replacement.
 P-384 @64 MHz: 62.0 s → 39.1 s (1.59×). Full A/B data:
 `.research/issue71_shape2_2026_07_20/`.
+
+**Measurement scope:** the A/B table, floors, and crossovers above
+were measured on a C64 Ultimate fw 1.1.0 only; the "1 MHz (est.)"
+column is a projection from the CPU-work fits, not a measurement.
+Because the per-row DMA stall is a firmware/generation-dependent
+wall-clock constant (~160 wall-ticks C64U fw 1.1.0 vs ~189 U64E
+fw 3.14 per 512 B row; 532 cy on a real 1750 and under VICE), the
+crossover points do not transfer across devices — a U64E baseline
+measures a larger floor and a lower crossover — and neither Ultimate
+generation reproduces real-1750 1 cy/byte DMA under turbo, so any
+"real 1750 + accelerator" figure is likewise a projection. See
+issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
 
 **Contract deltas vs the default profile:**
 

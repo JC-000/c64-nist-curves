@@ -76,6 +76,20 @@ contract).
   benchmark tables carry measurement provenance; the integration
   section now shows the archive-fetch pattern. CLAUDE.md re-entrancy
   addresses and PRG-size line corrected.
+- **Turbo/onchip claim scoping (issue #83 part 2; docs-only, PRG
+  untouched):** the FP_ONCHIP_MUL floor and crossover figures (22.2 s /
+  87% of wall @64 MHz, crossovers ~22 MHz P-256 / ~33 MHz P-384) in
+  README, API.md §8.4.2, and CLAUDE.md are now explicitly scoped to
+  their C64 Ultimate fw 1.1.0 measurement. Cross-device data from the
+  c64-x25519 onchip hardware gate (c64-x25519
+  `docs/design/issue_72_onchip_mul.md`) shows the per-row REU DMA stall
+  is a firmware/generation-dependent wall-clock constant (~160
+  wall-ticks C64U fw 1.1.0 vs ~189 U64E fw 3.14 per 512 B row; 532 cy
+  on real-1750/VICE) and that neither Ultimate generation reproduces
+  real-1750 1 cy/byte DMA under turbo — so floors and crossovers do
+  not transfer across devices or workloads, and "real 1750 +
+  accelerator" figures are labeled projections. No numeric claim
+  changed.
 
 ## [0.7.0] — 2026-07-25
 
