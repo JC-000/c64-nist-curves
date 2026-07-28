@@ -12,6 +12,14 @@ contract).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-28
+
+> Net §5 manifest movement in this release: `LIB_NISTCURVES_COLD_BYTES`
+> goes **2500 → 1800** (the two Fixed entries below each re-baselined it
+> in sequence — 2500 → 2000 in issue #78, then 2000 → 1800 in issue #81;
+> the values quoted per-entry are the intermediate steps, not
+> alternatives).
+
 ### Fixed
 
 - **FP_ONCHIP_MUL manifest alignment (issue #78):** onchip builds no
@@ -980,6 +988,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.8.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.8.0
 [0.7.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.7.0
 [0.6.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.6.0
 [0.5.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.5.0
