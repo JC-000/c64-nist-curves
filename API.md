@@ -676,9 +676,18 @@ P-384 @64 MHz: 62.0 s → 39.1 s (1.59×). Full A/B data:
   claim no banks.)
 - **Boot obligation:** onchip consumers need only `sqtab_init` — no
   §8.2 `reu_mul` provider, and (verify archives) no `ec_precompute_*`.
-- **Resident/cold (§5):** `ct_mul_8x8` + the row generator + the 1 KB
-  `sqtab` become verify-hot: `RESIDENT_BYTES = 28200`,
-  `COLD_BYTES = 1900` in the onchip manifest.
+- **Resident/cold (§5):** the row generator (~250 B) becomes verify-hot
+  and the REU row-fetch path drops out — a net delta inside the §5
+  rounding, so both profiles share `RESIDENT_BYTES = 27000` /
+  `COLD_BYTES = 2000` (issue #78 accounting refresh). Note the
+  runtime-generated 1 KB `sqtab` RAM table is verify-hot under this
+  profile but excluded from the equates (generated RW state, not
+  code+rodata) — budget it separately at `LIB_SHARED_SQTAB_BASE`.
+- **§8.0 mask / §8.0 precalc enumeration:** the onchip manifest omits
+  the §8.2 `reu_mul` ownership bit (standalone onchip mask `$0005`) and
+  the onchip archives do not enumerate the `reu_mul` precalc table —
+  the profile has no REU multiply table to own (issue #78, matching
+  c64-x25519 PR #73).
 - **Not constant-time:** unchanged from the default verify path (public
   inputs only; do not repurpose for signing).
 
@@ -775,7 +784,7 @@ ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 .import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07
 .import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 31
 .import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
-.import LIB_NISTCURVES_COLD_BYTES           ; default 2500
+.import LIB_NISTCURVES_COLD_BYTES           ; default 2000
 .import LIB_NISTCURVES_SHARED_PRIMITIVES    ; standalone default $0007
                                             ; (sqtab | reu_mul | ct_mul_8x8);
                                             ; conditional per SPEC §8.0 — each
@@ -805,7 +814,11 @@ primitive's deferral switch defined (`-D SHARED_SQTAB_INIT`,
 library's copy AND drops the matching bit (`$0001` / `$0002` / `$0004`)
 from `LIB_NISTCURVES_SHARED_PRIMITIVES`, so exactly one co-linked
 sibling owns each shared primitive and the disjointness `.assert`
-holds. Standalone builds (no switches) export `$0007`.
+holds. Standalone default-profile builds (no switches) export `$0007`;
+`FP_ONCHIP_MUL` builds additionally omit the §8.2 bit and export
+`$0005` — the profile has no reu_mul table to own, which is a
+deliberate omission rather than a `SHARED_REU_MUL_INIT` deferral
+(§8.4.2, issue #78).
 
 ### 8.7 Reference integrations
 

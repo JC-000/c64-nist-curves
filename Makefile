@@ -32,6 +32,8 @@ LIB_DIR = $(BUILD_DIR)/lib
 
 .PHONY: all clean build-acme bench-u64 dist \
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
+        lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
+        lib-p384-curve-onchip \
         check-archives
 
 all: $(PRG)
@@ -94,7 +96,7 @@ $(BUILD_DIR)/mul_8x8_onchip.o: $(SRC_DIR)/mul_8x8.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
 
 PRG_ONCHIP = $(BUILD_DIR)/nist-curves-onchip.prg
-ONCHIP_OBJECTS = $(subst $(BUILD_DIR)/lib_manifest.o,$(BUILD_DIR)/lib_manifest_onchip.o,$(subst $(BUILD_DIR)/fp256.o,$(BUILD_DIR)/fp256_onchip.o,$(subst $(BUILD_DIR)/fp384.o,$(BUILD_DIR)/fp384_onchip.o,$(subst $(BUILD_DIR)/mul_8x8.o,$(BUILD_DIR)/mul_8x8_onchip.o,$(OBJECTS)))))
+ONCHIP_OBJECTS = $(subst $(BUILD_DIR)/precalc_manifest.o,$(BUILD_DIR)/precalc_manifest_onchip.o,$(subst $(BUILD_DIR)/lib_manifest.o,$(BUILD_DIR)/lib_manifest_onchip.o,$(subst $(BUILD_DIR)/fp256.o,$(BUILD_DIR)/fp256_onchip.o,$(subst $(BUILD_DIR)/fp384.o,$(BUILD_DIR)/fp384_onchip.o,$(subst $(BUILD_DIR)/mul_8x8.o,$(BUILD_DIR)/mul_8x8_onchip.o,$(OBJECTS))))))
 
 .PHONY: onchip-prg
 onchip-prg: $(PRG_ONCHIP)
@@ -241,13 +243,18 @@ LIB_FULL_OBJS = $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) \
 # ~2x. Verify-onchip archives issue no REU DMA at all (comb also excluded);
 # consumer boot obligation shrinks to sqtab_init only (no SPEC §8.2 reu_mul
 # provider needed). Manifest equates are profile-aware via
-# lib_manifest_onchip.o (REU banks $04, resident/cold shift).
+# lib_manifest_onchip.o (REU banks $04, §8.0 mask $0005 -- no §8.2 reu_mul
+# ownership bit, issue #78) and precalc_manifest_onchip.o (no reu_mul
+# precalc row; the lim_lee_comb_* rows stay -- onchip full/curve archives
+# still use REU bank $02).
 $(BUILD_DIR)/lib_manifest_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
 
 LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_onchip.o \
-                $(BUILD_DIR)/precalc_manifest.o \
+                $(BUILD_DIR)/precalc_manifest_onchip.o \
                 $(BUILD_DIR)/zp_config.o
 LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o
