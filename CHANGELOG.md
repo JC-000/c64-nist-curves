@@ -27,6 +27,29 @@ contract).
   28200/1900 → shared 27000/2000. Makefile `.PHONY` gains the four
   onchip lib targets. Default PRG byte-identical.
 
+### Documentation
+
+- **Post-v0.7.0 docs currency sweep** (issue #77; docs-only, PRG
+  byte-identical). API.md §2 memory map regenerated from
+  `build/labels.txt` at `f29f66c` — the previous table was ~$3000 stale
+  (`mul_dma_lo/hi` are at `$7B00`/`$7C00`, not `$4B00`/`$4C00`); the
+  map and the §8.3 consumer restrictions are now symbol-anchored with
+  `build/labels.txt` named as authoritative. "Running without an REU"
+  made discoverable (README Requirements subsection; API.md §1 target
+  platform carve-out; §3/§8.3/§8.5 init + REU-bank obligations now
+  profile-conditional per §8.4.2). Stale references fixed: `src/data.s`
+  → the split `data_*.s` modules, `points256/384.s` → `_core`/`_comb`,
+  ZP footprint aligned to 31 bytes everywhere, version-pin examples
+  refreshed to the v0.7.x era, §8.4 PRG byte-identity claim re-scoped
+  (37683 B current), §8.4.1 "Shipped in" column extended to the
+  `*-onchip` archives, CHANGELOG `[0.4.0]`/`[0.3.0]` link definitions
+  added. SPEC §8.0 precalc manifest (`src/precalc_manifest.s`,
+  `src/precalc_table.inc`, `docs/precalc-tables.md`) now referenced
+  from API.md §8.6.1 and the CLAUDE.md source-file table. README
+  benchmark tables carry measurement provenance; the integration
+  section now shows the archive-fetch pattern. CLAUDE.md re-entrancy
+  addresses and PRG-size line corrected.
+
 ## [0.7.0] — 2026-07-25
 
 ### ECDSA verify public-key validation (issue #66)
@@ -919,5 +942,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 [0.7.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.7.0
 [0.6.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.6.0
 [0.5.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.5.0
+[0.4.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.4.0
+[0.3.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.3.0
 [0.2.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.2.0
 [0.1.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.1.0

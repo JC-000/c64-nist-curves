@@ -26,6 +26,10 @@ Commodore 64 plus a RAM Expansion Unit (REU):
   `ecdsa_verify_with_message_384` hash-then-verify wrapper
 
 Target platform: 6502 @ 1 MHz with a 1764 / 1750 / compatible REU.
+Exception: the `FP_ONCHIP_MUL` turbo-profile archives (§8.4.2) compute
+multiply rows on-chip — the `*-verify-onchip` archives issue no REU DMA
+at all and run on REU-less machines (and accelerated hosts above the
+~22 MHz / ~33 MHz crossovers, where they are the faster choice).
 Source is ca65/ld65 assembly for the cc65 toolchain; build via `make clean && make`. See README.md for toolchain install notes.
 
 Byte-order conventions:
@@ -42,39 +46,48 @@ counterpart with the same contract except the operand width.
 ## 2. Memory footprint
 
 The library currently assumes the fixed load layout below. Relocating the data
-buffers requires editing the labels in `src/data.s`; relocating the zero-page
+buffers requires re-placing the `LIB_NISTCURVES_*` data segments (declared
+across `src/data_shared.s`, `src/data_p256.s`, `src/data_p256_invref.s`,
+`src/data_p256_limlee.s`, `src/data_p384.s`, `src/data_p384_limlee.s`,
+`src/data_sha.s`) in the consumer's ld65 config; relocating the zero-page
 slots can be done either by editing `src/zp_config.s` or, without modifying
 the library source, by pre-defining the ZP symbol in the consumer's build
 (every equate in `zp_config.s` is wrapped in `.ifndef NAME ... .endif`, so a
 host-supplied definition wins).
 
-| Region | Address range | Purpose |
+The table below is **anchored to symbols**; the addresses shown are from the
+current `master` build (v0.7.0, PRG 37683 B) and drift as code size changes.
+`build/labels.txt` is the authoritative address source for any given build —
+regenerate it with `make` and plan your memory map from the symbols there.
+
+| Region | Address range (current build) | Purpose |
 |---|---|---|
-| PRG code | `$0801`-`$58FF` (approx.) | BASIC stub, boot code, math routines. PRG size varies per build — see `build/labels.txt` for the exact `__CODE_LAST__` symbol address in any given build. |
-| P-256 field buffers | see `build/labels.txt` | `fp_wide`, `fp_r0`, `fp_inv_*` (`data_p256.s`); `fp_tmp1` rides in `data_p256_invref.s` (Fermat-reference scratch, full archive only). `fp_tmp2..4` are harness-only staging in `data_test.s`; `fp_r1..3` / `fp_inv_iter` / `fp_red_tmp` were deleted (issue #54). |
-| P-256 point buffers | see `build/labels.txt` | `ec_p1`, `ec_p2`, `ec_p3`, `ec_t1..6`, `ec_jj_tmp`, `ec_affine_x/y` (`data_p256.s`). |
-| `mul_cached_a` / `mul_src2_buf` / reduction scratch | `$49EA`-`$4AFF` (approx.) | Shared multiply scratch and Solinas accumulator. |
-| `mul_dma_lo` (page-aligned) | `$4B00`-`$4BFF` | REU DMA target: low bytes of the current multiply row. |
-| `mul_dma_hi` | `$4C00`-`$4CFF` | REU DMA target: high bytes of the current multiply row. |
-| P-384 field + point buffers | `$4D21`-`$5365` | `fp384_wide`, `fp384_tmp1..4`, `fp384_r0..3`, `fp384_inv_*`, `ec384_p1/p2/p3`, `ec384_t1..6`, `ec384_affine_x/y`. |
-| Lim-Lee anchors + working scalar (P-256) | approx. `$5367`-`$5586` | `ec_anchor1..8_x/y` (8 * 64 bytes), `cm_k` (32). Wave 7a h=8 doubled the anchor storage. |
-| Lim-Lee anchors + working scalar (P-384) | approx. `$5587`-`$58F6` | `ec_anchor1..8_384_x/y` (8 * 96 bytes), `cm_k_384` (48). |
-| Quarter-square multiply tables | `$9C00`-`$9FFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. Moved from `$7800` on 2026-05-17 to clear the linker-managed `mul_dma_*` page-aligned slots as code grew (see CLAUDE.md "Known issues"). |
-| SHA-384 streaming state + buffers | varies (DATA segment) | `sha_state` (64) + `sha_w` (640) + `sha_abcdefgh` (64) + `sha_t` (16) + `sha_scratch` (64) + `sha_block_buf` (128) + `sha_block_len` (1) + `sha_total_len` (16) + `sha384_digest` (48) + `sha384_msg_buf` (1024 test scratch) ≈ 2065 B total. K[80] round constants (640 B) live in RODATA inside `src/sha384.s`. |
-| Zero-page | ~20 bytes, see `zp_config.s` | `$02`-`$03`, `$04`-`$0B` (SHA), `$1A`-`$1D`, `$22`-`$2D`, `$3B`, `$FB`-`$FE` by default. |
+| PRG code + RODATA | `$0801`-`$7AFF` (approx.) | BASIC stub, boot code, math routines, curve constants; ends with the RODATA reduction helper tables (`lo_7_tbl` `$7900`, `hi_7_tbl` `$7A00`). |
+| `mul_dma_lo` (page-aligned) | `$7B00`-`$7BFF` | REU DMA target: low bytes of the current multiply row. |
+| `mul_dma_hi` (page-aligned) | `$7C00`-`$7CFF` | REU DMA target: high bytes of the current multiply row. |
+| Shared multiply scratch | `$7D00`-`$7D23` | `mul_cached_a`, `mul_src2_buf` (`data_shared.s`). |
+| P-256 field / point / ECDSA buffers | `$7D24`-`$8243` | `fp_wide` (`$7D24`), `fp_r0`, `fp_inv_*`, `ec_p1/p2/p3` (`ec_p1` `$7E04`), `ec_t1..6`, `ec_jj_tmp`, `ec_affine_x/y`, `ecdsa_*`, `fp_rev_buf` (`data_p256.s`). `fp_tmp2..4` are harness-only staging in `data_test.s`; `fp_r1..3` / `fp_inv_iter` / `fp_red_tmp` were deleted (issue #54). |
+| Fermat-reference scratch | `$8244`-`$8263` | `fp_tmp1` (`data_p256_invref.s`); rides with `inv256.o` — full archive + standalone PRG only. |
+| Lim-Lee anchors + working scalar (P-256) | `$8264`-`$84C5` | `ec_aff2g_256_x/y`, `ec_anchor1..8_x/y` (8 * 64 bytes, `ec_anchor1_x` `$82A4`), `cm_k` (32, `$84A4`), comb walker state (`data_p256_limlee.s`). |
+| P-384 field / point / ECDSA buffers | `$84C7`-`$8E32` | `mul_src2_buf_384`, `fp384_wide` (`$84FB`), `fp384_tmp1..4`, `fp384_r0`, `fp384_inv_*`, `ec384_p1/p2/p3`, `ec384_t1..6`, `ec384_jj_tmp`, `ec384_affine_x/y` (`ec384_affine_y` `$8ACB`), `ecdsa384_*`, `fp_rev_buf_384` (`data_p384.s`). |
+| Lim-Lee anchors + working scalar (P-384) | `$8E33`-`$9162` | `ec_anchor1..8_384_x/y` (8 * 96 bytes, `ec_anchor1_384_x` `$8E33`), `cm_k_384` (48, ends `$9162`) (`data_p384_limlee.s`). |
+| SHA-384 streaming state + buffers | `$9163`-`$9573` | `sha_state` (64, `$9163`) + `sha_w` (640) + `sha_abcdefgh` (64) + `sha_t` (16) + `sha_scratch` (64) + `sha_block_buf` (128) + `sha_block_len` (1) + `sha_total_len` (16) + `sha384_digest` (48) ≈ 1041 B (`data_sha.s`). K[80] round constants (640 B) live in RODATA inside `src/sha384.s`. |
+| Test-harness staging buffers | `$9574`-`$9B66` | `ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf` (1024), `fp_tmp2..4` (`data_test.s`). Standalone PRG only — excluded from every consumer archive. |
+| Quarter-square multiply tables | `$9C00`-`$9FFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. Moved from `$7800` on 2026-05-17 to clear the linker-managed `mul_dma_*` page-aligned slots as code grew (see CLAUDE.md "Known issues"); base overridable via `LIB_SHARED_SQTAB_BASE` (§8.6.1). |
+| Zero-page | 31 bytes, see `zp_config.s` | `LIB_NISTCURVES_ZP_USAGE_BYTES = 31`; every slot is `.ifndef`-guarded so a consumer pre-definition wins. |
 | REU bank 0-1 | `$00_0000`-`$01_FFFF` | 128 KB full 8x8 -> 16 multiply table, built once by `reu_mul_init`. |
 | REU bank 2, offset `$0000`-`$3FFF` | 16 KB | P-256 Lim-Lee comb precompute (256 entries x 64 bytes, X + Y only). Wave 7a h=8. |
 | REU bank 2, offset `$4000`-`$9F9F` | 24 KB | P-384 Lim-Lee comb precompute (256 entries x 96 bytes). Wave 7a h=8. |
 
 Run `build/labels.txt` through your own tooling for exact symbol addresses in
-any given build. The address ranges above are derived from the current
-`master`-equivalent build and will drift slightly as code size changes.
+any given build. The address ranges above are from the v0.7.0 build and will
+drift slightly as code size changes; the symbol names are stable.
 
 ## 3. Initialization sequence (required)
 
 The host program must perform the following calls, in order, before any field
-or point routine is used. All of them are defined in `main.s` / `points256.s`
-/ `points384.s` and are public labels.
+or point routine is used. All of them are defined in `main.s` /
+`points256_comb.s` / `points384_comb.s` and are public labels.
 
 1. **Bank out BASIC ROM** (optional but recommended) so `$A000`-`$BFFF` is RAM:
 
@@ -89,7 +102,10 @@ or point routine is used. All of them are defined in `main.s` / `points256.s`
 
 3. **`jsr reu_mul_init`** — fills REU banks 0-1 with the full 128 KB 8x8 -> 16
    multiply table and pre-configures the REU DMA registers. Required for any
-   multiply. Takes ~7 seconds on a real C64 (~4 s of prior baseline plus
+   multiply **in the default (DMA-table) profile**; consumers linking a
+   `FP_ONCHIP_MUL` turbo-profile archive (§8.4.2) skip this step entirely —
+   their multiply rows are generated on-chip and only `sqtab_init` is needed.
+   Takes ~7 seconds on a real C64 (~4 s of prior baseline plus
    ~2.8 s added by the constant-time `mul_8x8` port of issue #14; the boot
    cost is a one-time tax, no runtime call path is affected).
 
@@ -106,7 +122,11 @@ or point routine is used. All of them are defined in `main.s` / `points256.s`
    + 762 mixed adds + 255 J->A conversions on 48-byte operands).
 
 If your host program only uses one curve, you may omit that curve's
-`ec_precompute_*` call. `sqtab_init` and `reu_mul_init` are mandatory for both.
+`ec_precompute_*` call. In the default profile, `sqtab_init` and
+`reu_mul_init` are mandatory for both curves. In the `FP_ONCHIP_MUL`
+turbo profile (§8.4.2) only `sqtab_init` is mandatory — the
+`*-verify-onchip` archives additionally exclude the comb, so they need
+no `ec_precompute_*` and issue no REU DMA at all.
 
 ### Test-harness sentinel (optional)
 
@@ -172,8 +192,8 @@ curves are fine, but the host must never interleave library calls —
 in particular, it must not invoke any field or point routine from an IRQ
 handler while the mainline is already inside one. Mask IRQs around crypto
 work or keep all library calls on a single thread of control. See the
-re-entrancy comment block at the top of `src/data.s` for the canonical
-statement.
+re-entrancy comment block in `src/data_shared.s` (above `mul_cached_a`)
+for the canonical statement.
 
 ### Persistent REU DMA descriptor state
 
@@ -234,19 +254,23 @@ identically to the P-256 version.
 | `ec_mulp` / `ec_mulp_384` | mod256/mod384 | `fp_src1`, `fp_src2`, `fp_dst` | `(fp_dst)` := (src1 * src2) mod p | Wrapper: `ec_set_modp` + `fp_mod_mul` + copy `fp_r0` to `(fp_dst)`. Preserves `fp_src1`. |
 | `ec_sqrp` / `ec_sqrp_384` | mod256/mod384 | `fp_src1`, `fp_dst` | `(fp_dst)` := src1^2 mod p | Wrapper as above using `fp_mod_sqr`. |
 
-### 5.3 Point operations (`points256.s`, `points384.s`)
+### 5.3 Point operations (`points256_core.s` / `points256_comb.s`, `points384_core.s` / `points384_comb.s`)
+
+The `_core` modules carry the verify-path primitives (present in every
+curve archive); the `_comb` modules carry the Lim-Lee fixed-base comb
+(excluded from the `*-verify` archives — see §8.4).
 
 | Name | Source | Inputs | Output | Notes |
 |---|---|---|---|---|
-| `ec_point_double` / `ec_point_double_384` | points256/384 | `ec_p1` / `ec384_p1` (Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Handles Z=0 (infinity) input. Uses curve-specific `a = -3` formula. |
-| `ec_point_add` / `ec_point_add_384` | points256/384 | `ec_p1` / `ec384_p1` (Jacobian), `ec_p2` / `ec384_p2` (affine X in first half, Y in second half; Z ignored) | `ec_p3` / `ec384_p3` (Jacobian) | Mixed Jacobian+affine addition (7M + 4S). Handles both-infinity / same-point cases. The Lim-Lee comb evaluate loop uses this primitive. |
-| `ec_point_add_jj` / `ec_point_add_jj_384` | points256/384 | `ec_p1` / `ec384_p1` (full Jacobian), `ec_p2` / `ec384_p2` (full Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Full Jacobian+Jacobian addition (Bernstein-Lange add-2007-bl, 11M + 5S). Reads Z2 from `ec_p2+64` (or `ec384_p2+96`) — caller must populate it. Handles P1∞, P2∞, both∞, same projective point (tail-calls `ec_point_double`), and P1=-P2 natively. Used by `ecdsa_verify_256/384` at the `u1*G + u2*Q` join. |
-| `ec_scalar_mul` | points256 | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. |
-| `ec_scalar_mul_384` | points384 | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
-| `ec_jacobian_to_affine` | points256 | `ec_p3` | `ec_affine_x`, `ec_affine_y` | Sets `fp_misc` to p256 internally. |
-| `ec_jacobian_to_affine_384` | points384 | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y` | P-384 analogue. |
-| `ec_precompute_256` | points256 | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~25 s on real C64). |
-| `ec_precompute_384` | points384 | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~80 s on real C64). |
+| `ec_point_double` / `ec_point_double_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Handles Z=0 (infinity) input. Uses curve-specific `a = -3` formula. |
+| `ec_point_add` / `ec_point_add_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (Jacobian), `ec_p2` / `ec384_p2` (affine X in first half, Y in second half; Z ignored) | `ec_p3` / `ec384_p3` (Jacobian) | Mixed Jacobian+affine addition (7M + 4S). Handles both-infinity / same-point cases. The Lim-Lee comb evaluate loop uses this primitive. |
+| `ec_point_add_jj` / `ec_point_add_jj_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (full Jacobian), `ec_p2` / `ec384_p2` (full Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Full Jacobian+Jacobian addition (Bernstein-Lange add-2007-bl, 11M + 5S). Reads Z2 from `ec_p2+64` (or `ec384_p2+96`) — caller must populate it. Handles P1∞, P2∞, both∞, same projective point (tail-calls `ec_point_double`), and P1=-P2 natively. Used by `ecdsa_verify_256/384` at the `u1*G + u2*Q` join. |
+| `ec_scalar_mul` | points256_comb | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. |
+| `ec_scalar_mul_384` | points384_comb | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
+| `ec_jacobian_to_affine` | points256_core | `ec_p3` | `ec_affine_x`, `ec_affine_y` | Sets `fp_misc` to p256 internally. |
+| `ec_jacobian_to_affine_384` | points384_core | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y` | P-384 analogue. |
+| `ec_precompute_256` | points256_comb | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~25 s on real C64). |
+| `ec_precompute_384` | points384_comb | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~80 s on real C64). |
 
 ### 5.4 Hash functions (`sha384.s`)
 
@@ -378,15 +402,17 @@ and `jsr ecdsa_verify_384` directly.
 - **Not re-entrant.** The library shares global scratch and ZP slots across
   all field and point routines; callers must serialize all library calls and
   never invoke them from an IRQ handler that can preempt mainline crypto work.
-  See the comment block in `src/data.s` and section 4 above.
+  See the comment block in `src/data_shared.s` and section 4 above.
 - **Shared P-256 / P-384 scratch.** Sequential cross-curve calls are fine, but
   there is no support for running a P-256 multiply "in parallel" with a P-384
   multiply.
 - **Data buffers live at fixed absolute addresses.** Relocating them requires
-  editing `src/data.s` and re-assembling. The code / ZP layout is somewhat
-  more flexible: code is position-independent within the PRG and ZP slots can
-  be renamed via `src/zp_config.s`.
-- **Zero-page footprint is ~16 bytes.** See `src/zp_config.s` for the
+  re-placing the `LIB_NISTCURVES_*` data segments (declared across the
+  `src/data_*.s` modules) in the consumer's ld65 config and re-linking. The
+  code / ZP layout is somewhat more flexible: code is position-independent
+  within the PRG and ZP slots can be renamed via `src/zp_config.s`.
+- **Zero-page footprint is 31 bytes** (`LIB_NISTCURVES_ZP_USAGE_BYTES`).
+  See `src/zp_config.s` for the
   complete, editable list of slots. The hardware-fixed `proc_port` at `$01`
   is the only slot that cannot be moved.
 - **Scalar multiplication is non-constant-time.** Both the fixed-base
@@ -420,17 +446,17 @@ release tag.
 ```
 git submodule add https://github.com/JC-000/c64-nist-curves \
     lib/c64-nist-curves
-git -C lib/c64-nist-curves checkout v0.4.0
-git commit -m "Import c64-nist-curves v0.4.0 as submodule"
+git -C lib/c64-nist-curves checkout v0.7.0
+git commit -m "Import c64-nist-curves v0.7.0 as submodule"
 ```
 
 Bumping to a later release:
 
 ```
 git -C lib/c64-nist-curves fetch --tags
-git -C lib/c64-nist-curves checkout v0.4.1    # or whichever tag
+git -C lib/c64-nist-curves checkout v0.7.1    # or whichever tag
 git add lib/c64-nist-curves
-git commit -m "Bump c64-nist-curves to v0.4.1"
+git commit -m "Bump c64-nist-curves to v0.7.1"
 ```
 
 Consumers should pin to a specific tag rather than tracking `master`
@@ -501,21 +527,25 @@ The library owns specific absolute addresses in the C64 memory map and
 in the REU banks. Consumer programs must accommodate these without
 overlap:
 
+Addresses below are from the current build (v0.7.0); `build/labels.txt`
+is authoritative per §2 — the symbol names are the stable anchors.
+
 | Resource | Library-owned | Consumer restriction |
 |---|---|---|
-| C64 page $4B (`mul_dma_lo`) | $4B00–$4BFF | Do not use; page-aligned DMA target |
-| C64 page $4C (`mul_dma_hi`) | $4C00–$4CFF | Do not use |
-| C64 pages ~$46–$58 | field / point buffers, Lim-Lee anchors | See §2 for the full map |
+| C64 page $7B (`mul_dma_lo`) | $7B00–$7BFF | Do not use; page-aligned DMA target |
+| C64 page $7C (`mul_dma_hi`) | $7C00–$7CFF | Do not use |
+| C64 pages ~$7B–$97 | mul scratch, field / point / ECDSA buffers, Lim-Lee anchors, SHA state | See §2 for the full map |
 | C64 pages $9C–$9F | Quarter-square multiply tables (`sqtab_lo/hi`) | Do not use |
-| C64 zero-page | ~16 slots; see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
-| REU bank 0 / bank 1 | Full 128 KB multiply table | Do not write; initialized by `reu_mul_init` |
+| C64 zero-page | 31 bytes (`LIB_NISTCURVES_ZP_USAGE_BYTES`); see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
+| REU bank 0 / bank 1 | Full 128 KB multiply table | Do not write; initialized by `reu_mul_init` (default profile only — the `FP_ONCHIP_MUL` archives, §8.4.2, never populate or read these banks) |
 | REU bank 2, $0000–$3FFF | P-256 Lim-Lee anchors (16 KB, 256 × 64) | Do not write |
 | REU bank 2, $4000–$9F9F | P-384 Lim-Lee anchors (24 KB, 256 × 96) | Do not write |
 | REU bank 2, $9FA0–$FFFF | Unused (~24 KB free) | Safe for consumer use |
 | REU banks 3+ (if present) | Unused by library | Safe for consumer use |
 
-Relocating library-owned C64 data addresses requires editing `src/data.s`
-and reassembling. ZP slots can be relocated via `src/zp_config.s`, or
+Relocating library-owned C64 data addresses means re-placing the
+`LIB_NISTCURVES_*` data segments (declared across the `src/data_*.s`
+modules) in the consumer's ld65 config. ZP slots can be relocated via `src/zp_config.s`, or
 overridden from the consumer's own source without editing the library
 (every slot in `zp_config.s` is `.ifndef`-guarded — pre-define the symbol
 before the library assembles and the host choice wins). REU bank
@@ -567,19 +597,21 @@ Exclusion summary (per minimal archive):
   cipher-suite use case where the consumer wants a single
   hash-then-verify entry point.
 
-**Note:** the verify / curve archives ship the `-D ECDSA_NO_COMB`
+**Note:** the verify / curve archives — both the default-profile ones
+and their `*-onchip` counterparts — ship the `-D ECDSA_NO_COMB`
 variants of the packaged verifiers (issue #61), so `ecdsa_verify_256` /
 `ecdsa_verify_384` / `ecdsa_verify_with_message_384` all link standalone
 — `u1·G` runs on the variable-base ladder instead of the excluded comb.
 See §8.4.1 for the contract and the performance trade-off.
 
-The standalone test PRG (`make` with no args, default target) continues
-to be byte-identical to the pre-PR-#40 baseline (37302 bytes loaded at
-$0801); only the source-file layout changed. Consumers that built
-their own integration scripts against the pre-split layout (e.g.
-`tools/integration/build_nistcurves_p256.sh` in `c64-https`) can
-collapse those scripts to a `make lib-p256-verify && cp` pattern when
-they next refresh.
+The PR-#40 source-file split itself changed no bytes; the standalone
+test PRG (`make` with no args, default target) has since moved with
+normal code evolution — 37302 B at the split, 37171 B after the
+issue #54 BSS trim, 37683 B as of v0.7.0's issue #66 verify gate.
+Consumers that built their own integration scripts against the
+pre-split layout (e.g. `tools/integration/build_nistcurves_p256.sh` in
+`c64-https`) can collapse those scripts to a
+`make lib-p256-verify && cp` pattern when they next refresh.
 
 ### 8.4.1 Packaged verifiers: comb vs no-comb variants
 
@@ -593,8 +625,8 @@ sources (`src/ecdsa256.s` / `src/ecdsa384.s`), differing only in how
 
 | Variant | `u1·G` path | Shipped in |
 |---|---|---|
-| comb (default) | h=8 Lim-Lee fixed-base comb (`ec_scalar_mul[_384]`) | `nistcurves.a` (full), standalone PRG |
-| `-D ECDSA_NO_COMB` | variable-base ladder seeded at `G` (`ec_scalar_mul_var[_384]`) | `nistcurves-p256-verify.a`, `nistcurves-p384-verify.a`, `nistcurves-p384-curve.a` |
+| comb (default) | h=8 Lim-Lee fixed-base comb (`ec_scalar_mul[_384]`) | `nistcurves.a` (full), `nistcurves-onchip.a`, standalone PRG |
+| `-D ECDSA_NO_COMB` | variable-base ladder seeded at `G` (`ec_scalar_mul_var[_384]`) | `nistcurves-p256-verify.a`, `nistcurves-p384-verify.a`, `nistcurves-p384-curve.a`, and their `*-onchip` counterparts (`nistcurves-p256-verify-onchip.a`, `nistcurves-p384-verify-onchip.a`, `nistcurves-p384-curve-onchip.a`) |
 
 The no-comb variant exists so the trimmed verify archives need no
 `points256_comb.o` / `points384_comb.o` (issue #60's gap, closed by
@@ -713,6 +745,11 @@ Boot cost on a stock C64, in warp mode:
 | `ec_precompute_384` | ~80 s |
 | **Total (both curves)** | **~113 s** |
 
+The `reu_mul_init` row applies to the default (DMA-table) profile only:
+`FP_ONCHIP_MUL` turbo-profile consumers (§8.4.2) skip it — their boot
+obligation is `sqtab_init` alone (plus `ec_precompute_*` if they link a
+comb-carrying onchip archive and use fixed-base scalar_mul).
+
 Programs using only one curve may omit the other's `ec_precompute_*`
 call. Programs using neither curve's scalar_mul (e.g. only raw field
 arithmetic or point double/add on caller-supplied points) may omit both
@@ -729,8 +766,8 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
 .import LIB_VERSION_MAJOR, LIB_VERSION_MINOR, LIB_VERSION_PATCH
 .import LIB_ABI_VERSION
 
-.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 4
-    .error "c64-nist-curves v0.4.0 or newer is required"
+.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 7
+    .error "c64-nist-curves v0.7.0 or newer is required"
 .endif
 
 .if LIB_ABI_VERSION <> 0
@@ -744,10 +781,10 @@ it changes only when public exports are removed or renamed.
 
 The library is currently in the v0.x pre-stable series. Version policy:
 
-- **PATCH** bumps (v0.4.0 → v0.4.1) ship bugfixes or performance
+- **PATCH** bumps (v0.7.0 → v0.7.1) ship bugfixes or performance
   improvements with no public API changes. Always safe to adopt;
   `LIB_ABI_VERSION` unchanged.
-- **MINOR** bumps (v0.3.x → v0.4.0) may add public symbols (new entry
+- **MINOR** bumps (v0.6.x → v0.7.0) may add public symbols (new entry
   points, new constants, new SPEC §3/§5/§8 manifest equates) but will
   not remove or rename existing ones. Additive changes; safe to adopt
   if your consumer's `.import` list is a subset of what the new
@@ -820,10 +857,30 @@ holds. Standalone default-profile builds (no switches) export `$0007`;
 deliberate omission rather than a `SHARED_REU_MUL_INIT` deferral
 (§8.4.2, issue #78).
 
+**§8.0 precalc-table manifest** (`src/precalc_manifest.s`): alongside
+the equates above, every archive ships the SPEC §8.0 precalculated-table
+enumeration — one `LIB_PRECALC_TABLE` macro invocation (macro defined in
+`src/precalc_table.inc`, copied verbatim from c64-lib-contract) per
+table of ≥ 256 B that is REU-resident, hot-loop-read, or page-aligned.
+Default-profile archives enumerate five tables: `sqtab` (1 KB RAM),
+`reu_mul` (128 KB REU), `lim_lee_comb_p256` (16 KB REU),
+`lim_lee_comb_p384` (24 KB REU), `sha384_k` (640 B RODATA). The
+`FP_ONCHIP_MUL` archives ship `precalc_manifest_onchip.o`, which gates
+out the `reu_mul` row (the profile never builds that table — 12 exports
+instead of 15, no `LIB_PRECALC_reu_mul_*`; issue #78); see the Profiles
+column in `docs/precalc-tables.md` for the per-profile enumeration.
+Each invocation exports `LIB_PRECALC_<name>_{SIZE,REGION,SHARED}`
+equates, discoverable via
+`od65 --dump-exports build/precalc_manifest.o | grep LIB_PRECALC`,
+which consumers and cross-adopter audits use to detect duplicate tables
+when co-linking sibling libraries. The doc-level twin (with the
+per-table classification rationale) is `docs/precalc-tables.md`; the
+two forms must stay in lock-step.
+
 ### 8.7 Reference integrations
 
 The `c64-https` and `c64-wireguard` projects are planned reference
-integrations. As of v0.3.0, both have adopted ca65 sufficient to drive
+integrations. Both have adopted ca65 sufficient to drive
 the c64-lib-contract SPEC §6 archive-link pattern, and tracking issues
 for the sqtab §8.1 placement contract are open in
 [`c64-ChaCha20-Poly1305`](https://github.com/JC-000/c64-ChaCha20-Poly1305/issues/40)
@@ -849,5 +906,10 @@ and consult `CHANGELOG.md` for the per-release notes before bumping.
   history, and known issues.
 - `README.md` — benchmark results and current performance numbers.
 - `src/zp_config.s` — editable zero-page allocation.
-- `src/data.s` — data-segment layout, including all shared scratch buffers.
+- `src/data_shared.s`, `src/data_p256.s`, `src/data_p256_invref.s`,
+  `src/data_p256_limlee.s`, `src/data_p384.s`, `src/data_p384_limlee.s`,
+  `src/data_sha.s`, `src/data_test.s` — data-segment layout, including all
+  shared scratch buffers (split from the former monolithic `data.s`).
+- `docs/precalc-tables.md` — SPEC §8.0 precalculated-table enumeration
+  (doc twin of `src/precalc_manifest.s`).
 - `build/labels.txt` — authoritative VICE symbol table with current addresses.

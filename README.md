@@ -11,7 +11,7 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - Packaged ECDSA verify (`ecdsa_verify_256` / `ecdsa_verify_384`) with big-endian wire-format ABI
 - SHA-384 streaming hash (FIPS 180-4 §6.4) and one-shot
   `ecdsa_verify_with_message_384` hash-then-verify wrapper
-- Full [c64-lib-contract](https://github.com/JC-000/c64-lib-contract) SPEC §1–§6 adoption: stable `LIB_NISTCURVES_*` segment names, `.ifndef`-guarded REU bank/ZP equates, four-equate version manifest, and five `make lib-*` minimal-archive targets so consumers fetch exactly the symbols they need (see API.md §8.2–§8.4)
+- Full [c64-lib-contract](https://github.com/JC-000/c64-lib-contract) SPEC §1–§6 and §8.0–§8.3 adoption: stable `LIB_NISTCURVES_*` segment names, `.ifndef`-guarded REU bank/ZP equates, four-equate version manifest, shared-primitive ownership mask + precalc-table manifest, and nine `make lib-*` minimal-archive targets (five default-profile + four `-onchip`) so consumers fetch exactly the symbols they need (see API.md §8.2–§8.4)
 - RFC 6979 test vector validation
 - Optimizations ported from [c64-x25519](https://github.com/JC-000/c64-x25519):
   REU DMA multiply tables, self-modifying code, loop unrolling, dedicated squaring
@@ -29,6 +29,19 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - Python 3.10+ with [c64-test-harness](https://github.com/JC-000/c64-test-harness)
 - Python `cryptography` package (external oracle for point tests / benches)
 - [Ultimate 64 Elite](https://ultimate64.com/) (optional, for hardware benchmarking)
+
+### Running without an REU
+
+The REU requirement applies to the default (DMA-table) profile only. The
+four `FP_ONCHIP_MUL` turbo-profile archives (`make lib-onchip` /
+`lib-p256-verify-onchip` / `lib-p384-verify-onchip` /
+`lib-p384-curve-onchip`) compute multiply rows on-chip; the
+`*-verify-onchip` archives issue **zero REU traffic** and need only
+`sqtab_init` at boot, so they run on an REU-less C64. Trade-off: ~2.5×
+slower than the default profile at stock 1 MHz, but faster above the
+~22 MHz (P-256) / ~33 MHz (P-384) crossovers on accelerated hosts. See
+the "Turbo scaling and the FP_ONCHIP_MUL profile" section below and
+API.md §8.4.2.
 
 ## Build & Test
 
@@ -77,6 +90,14 @@ oracle invariant and refresh procedure.
 | ec_point_add_jj (full J+J)  |      1295.420 |      2454.480 |         1.89x |
 | ec_scalar_mul (k=RFC 6979)  |       46733.3 |      131433.3 |         2.81x |
 
+Provenance: measured via `tools/bench_p256.py` / `tools/bench_p384.py`
+(VICE, oracle-gated). Core rows date to the Wave 7a source state
+(2026-04-11, `b90dc80`); the `ec_point_add_jj` and `fp_mod_mul_n` rows
+were measured 2026-05-19 at master `406ae66` (PR #38). Not re-measured
+since; the numbers predate v0.7.0's +512 B verify gate, which adds cost
+only to the `ecdsa_verify_*` entry paths (≪ 1 jiffy), not to these
+primitives. Re-run the bench tools to refresh.
+
 S/M ratio after Wave 4e: P-256 fp_mod_sqr / fp_mod_mul = 0.94; P-384 = 0.86.
 
 ### Ultimate 64 Elite turbo benchmarks (VIC blanked)
@@ -97,6 +118,14 @@ so DMA-heavy routines scale sub-linearly.
 | ec_point_add (Jacobian)     |    85,225 cyc |    68,180 cyc |   136,360 cyc |   102,270 cyc |
 | ec_point_add_jj (full J+J)  |   168,958 cyc |   122,866 cyc |   284,438 cyc |   194,833 cyc |
 | ec_scalar_mul (h=8 comb)    | 6,323,695 cyc | 4,636,240 cyc |16,005,255 cyc |11,130,385 cyc |
+
+Provenance: measured via `tools/bench_p256_u64.py` /
+`tools/bench_p384_u64.py` on U64E fw 3.14d. Core rows date to the
+Wave 7a-era sweep (2026-04-12, `c377277`); the `ec_point_add_jj` and
+`fp_mod_mul_n` rows were measured 2026-05-19 at master `406ae66`
+(PR #38). Not re-measured since; the numbers predate v0.7.0's +512 B
+verify gate, which affects only the `ecdsa_verify_*` entry paths.
+Re-run the bench tools (`U64_HOST=<ip>`) to refresh.
 
 At 48 MHz, P-256 `ec_scalar_mul` completes in ~4.5 s wall-clock (vs ~47 s
 at stock 1 MHz). P-384 `ec_scalar_mul_384` completes in ~10.9 s (vs ~131 s).
@@ -307,7 +336,7 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 - [x] Lim-Lee fixed-base comb scalar multiplication on both curves (h=4 Wave 5, upgraded to h=8 Wave 7a)
 - [x] Packaged ECDSA verify (`ecdsa_verify_256` / `ecdsa_verify_384`) with big-endian wire-format ABI (v0.2.0); `ecdsa_verify_with_message_384` hash-then-verify wrapper (PR #23)
 - [x] SHA-384 streaming hash (FIPS 180-4 §6.4): `sha384_init` / `sha384_update` / `sha384_final` (PR #23)
-- [x] Comprehensive test suite (1074 oracle-verified vectors across fp256, points256 --full, fp384, points384 --full)
+- [x] Comprehensive test suite: 1000+ oracle-verified vectors across six suites (fp256, points256 `--full`, fp384, points384 `--full`, SHA-384, ECDSA verify incl. the v0.7.0 negative-Q cases); the 1074 figure often quoted is the v0.1.0-era field/point count
 - [x] Fermat inversion (addition chain): implemented for P-256 in
       `src/inv256.s` but 41x slower than binary GCD, retained for reference only
 
@@ -434,12 +463,12 @@ convention is the same.
 
 ## Integration as a library
 
-Downstream C64 programs can import `c64-nist-curves` as a git submodule pinned to a release tag, then link against the library's `.s` modules from their own `ca65/ld65` build. See [`API.md` §8 "Consumer integration"](API.md#8-consumer-integration) for the full integration reference, including:
+Downstream C64 programs import `c64-nist-curves` as a git submodule pinned to a release tag, run one of the nine `make lib-<variant>` targets, and pass the resulting pre-built `ar65` archive (`build/lib/nistcurves-*.a`) straight to `ld65` — no source patching, no per-file `ca65` staging (c64-lib-contract SPEC §6). See [`API.md` §8 "Consumer integration"](API.md#8-consumer-integration) for the full integration reference, including:
 
-- How to add the library as a git submodule and pin to a tag
-- A consumer Makefile fragment that links the library modules (omitting `main.s`, which is the library's own test driver)
-- Memory-layout constraints the consumer must honour (C64 buffer addresses, zero-page slots, REU bank assignments)
-- Required initialization sequence (`sqtab_init`, `reu_mul_init`, `ec_precompute_256`, `ec_precompute_384`)
-- Assembly-time version compatibility checks via the `LIB_VERSION_*` equates exported from `src/lib_version.s`
+- How to add the library as a git submodule and pin to a tag (§8.1)
+- The consumer Makefile fragment that fetches an archive and links it (§8.2), and the archive-variant inventory (§8.4) — five default-profile archives plus four `FP_ONCHIP_MUL` `-onchip` variants
+- Memory-layout constraints the consumer must honour (C64 buffer addresses, zero-page slots, REU bank assignments) (§8.3)
+- Required initialization sequence (§3 / §8.5): `sqtab_init` + `reu_mul_init` (+ `ec_precompute_256` / `ec_precompute_384` for fixed-base scalar_mul) in the default profile; `-onchip` consumers need only `sqtab_init` (§8.4.2)
+- Assembly-time version compatibility checks via the `LIB_VERSION_*` equates exported from `src/lib_version.s` (§8.6)
 
 Planned consumer projects: `c64-https` and `c64-wireguard` will adopt this library once both are migrated from ACME to the ca65 toolchain.
