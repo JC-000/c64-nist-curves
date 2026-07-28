@@ -45,7 +45,18 @@
 .include "precalc_table.inc"
 
 LIB_PRECALC_TABLE "sqtab",             1024,   PRECALC_REGION_RAM,    PRECALC_SHARED_YES
+
+; FP_ONCHIP_MUL (issue #78): the turbo profile generates multiply rows
+; on-chip -- no onchip archive builds or reads an REU multiply table, so
+; the reu_mul row is not enumerated under the profile (gating the macro
+; call itself matches c64-x25519 PR #73). Scope note: ONLY reu_mul
+; (banks $00/$01) disappears under onchip; the lim_lee_comb_* tables
+; below stay unconditional because the onchip full/curve archives still
+; populate and read REU bank $02.
+.ifndef FP_ONCHIP_MUL
 LIB_PRECALC_TABLE "reu_mul",           131072, PRECALC_REGION_REU,    PRECALC_SHARED_YES
+.endif
+
 LIB_PRECALC_TABLE "lim_lee_comb_p256", 16384,  PRECALC_REGION_REU,    PRECALC_SHARED_NO
 LIB_PRECALC_TABLE "lim_lee_comb_p384", 24576,  PRECALC_REGION_REU,    PRECALC_SHARED_NO
 LIB_PRECALC_TABLE "sha384_k",          640,    PRECALC_REGION_RODATA, PRECALC_SHARED_NO

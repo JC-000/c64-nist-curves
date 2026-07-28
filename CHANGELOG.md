@@ -12,6 +12,21 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **FP_ONCHIP_MUL manifest alignment (issue #78):** onchip builds no
+  longer claim the §8.2 `reu_mul` ownership bit —
+  `LIB_NISTCURVES_SHARED_PRIMITIVES` is `$0005` standalone under the
+  profile (was `$0007`), guarded by a permanent `.assert` — and the
+  onchip archives no longer enumerate the `reu_mul` precalc table
+  (`precalc_manifest_onchip.o`); the `lim_lee_comb_*` rows stay
+  (bank `$02` is still used). Matches c64-x25519 PR #73. §5 accounting
+  refreshed against v0.7.0 labels: `COLD_BYTES` 2500 → 2000 (the
+  generated 1 KB sqtab RAM table is excluded as non-code+rodata; the
+  old figure was outside the ±5% band), onchip resident/cold
+  28200/1900 → shared 27000/2000. Makefile `.PHONY` gains the four
+  onchip lib targets. Default PRG byte-identical.
+
 ## [0.7.0] — 2026-07-25
 
 ### ECDSA verify public-key validation (issue #66)

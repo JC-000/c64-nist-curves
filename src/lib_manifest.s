@@ -26,7 +26,7 @@
 ;
 ; The numbers are approximate -- within ±5% per SPEC §5. Refreshed at each
 ; release that substantively changes one of them. Build size as of this
-; equate refresh: 37171 B PRG (build/nist-curves.prg).
+; equate refresh: 37683 B PRG (build/nist-curves.prg, v0.7.0 / issue #66).
 ; =============================================================================
 
 
@@ -99,40 +99,47 @@
 ; -----------------------------------------------------------------------------
 ; Library code + rodata that MUST stay in CPU RAM at runtime to serve an
 ; `ecdsa_verify_256` / `ecdsa_verify_384` call. Summed from build/labels.txt
-; address ranges (this release):
+; address ranges (v0.7.0, 37683 B PRG):
 ;
-;   reu_fetch_mul_row + fp256/mod256/curve256/points256/ecdsa256
-;     (reu_fetch_mul_row $0AFB -> ec_precompute_256 $277B)        7296
-;   ec_scalar_mul + ec_scalar_mul_var + ec_jacobian_to_affine
-;     ($29E3 -> fp_mod_inv_fast $2CB9)                             726
+;   reu_fetch_mul_row + fp256/mod256/curve256/points256_core
+;     + sm256_reu_* comb runtime helpers
+;     (reu_fetch_mul_row $0B0D -> ec_precompute_256 $2914)        7687
+;   ec_scalar_mul comb evaluate body
+;     ($2B7C -> fp_mod_inv_fast $2CC9)                             333
 ;   fp_reverse32 + ecdsa_verify_256 + fp384/mod384/curve384
-;     /points384/ecdsa384 ($2D28 -> ec_precompute_384 $49CC)      7332
-;   ec_scalar_mul_384 + ec_jacobian_to_affine_384 +
-;     ecdsa_verify_384 + ecdsa_verify_with_message_384
-;     ($4C50 -> ecdsa_verify_with_msg_384_tramp $526C)            1564
+;     /points384_core + sm384w_* helpers
+;     ($2D38 -> ec_precompute_384 $4C4E)                          7958
+;   ec_scalar_mul_384 evaluate + ecdsa_verify_384 +
+;     ecdsa_verify_with_message_384
+;     ($4ED2 -> sha384_init $541C)                                1354
 ;   sha384_init + sha384_update + sha384_final + sha_compress
-;     + rotr/sigma/shr bodies ($527A -> title_msg $66E3)          5225
-;   p256 curve constants ec_p256..ec_gy256 ($6702..$67C2)          192
-;   p384 curve constants ec_a384..ec_gy384 ($6902..$69C2)          192
-;   sha384_iv + sha384_k ($6A22..$6D00)                            734
-;   sha rotr LUTs lo_2_tbl..hi_7_tbl ($6D00..$7900)               3072
+;     + rotr/sigma/shr bodies ($541C -> title_msg $6885)          5225
+;   p256 curve constants ec_p256..ec_gy256 ($68A4..$6964)          192
+;   p384 curve constants ec_a384..ec_gy384 ($6AA4..$6B64)          192
+;   sha384_iv + sha384_k ($6BC4..$6E84)                            704
+;   sha rotr LUTs lo_2_tbl..hi_7_tbl ($6F00..$7B00)               3072
 ;                                                              -------
-;                                                                26333
+;                                                                26717
 ;
-; Rounded to 27000 for the ±5% manifest commitment. Excludes RW BSS
-; state (fp_*, ec_*, ecdsa_*, sha_state, sha_w, ...) since SPEC §5
-; defines RESIDENT_BYTES as code+rodata.
+; Rounded to 27000 for the ±5% manifest commitment (margin ~1.1%).
+; Excludes RW BSS state (fp_*, ec_*, ecdsa_*, sha_state, sha_w, ...)
+; AND the runtime-GENERATED sqtab_lo/hi RAM table (1024 B at
+; LIB_SHARED_SQTAB_BASE) since SPEC §5 defines RESIDENT_BYTES as
+; code+rodata. (The old terminus ecdsa_verify_with_msg_384_tramp $526C
+; is dead -- issue #63 moved the trampoline into the never-archived
+; main.s, now at $0984.)
 ; -----------------------------------------------------------------------------
-; FP_ONCHIP_MUL: ct_mul_8x8 + the og_common row generator + entry stubs
-; (~250 B code) and the 1 KB sqtab_lo/hi quarter-square tables become
-; verify-hot (the row generator runs inside every fp_mul/fp_sqr), moving
-; them from the cold set into the resident set: 27000 + ~1250 -> 28200.
+; FP_ONCHIP_MUL: the og_common row generator + gen_mul_row[_384] entry
+; stubs (~250 B code) become verify-hot (the generator runs inside every
+; fp_mul/fp_sqr) while the six REU row-fetch sites drop out -- a net
+; delta inside the rounding above, so both profiles share the 27000
+; figure. NOTE: the generated 1 KB sqtab RAM table is verify-hot under
+; this profile (the inline quarter-square reads it per product); it is
+; excluded from the equate per the generated-RW-state rule above, so
+; onchip consumers must budget those 1024 B at LIB_SHARED_SQTAB_BASE
+; separately.
 .ifndef LIB_NISTCURVES_RESIDENT_BYTES
-  .ifdef FP_ONCHIP_MUL
-    LIB_NISTCURVES_RESIDENT_BYTES = 28200
-  .else
-    LIB_NISTCURVES_RESIDENT_BYTES = 27000
-  .endif
+  LIB_NISTCURVES_RESIDENT_BYTES = 27000
 .endif
 
 
@@ -141,41 +148,44 @@
 ; -----------------------------------------------------------------------------
 ; Library code + rodata that a consumer MAY page-overlay (load on demand
 ; from REU, kernal-banked RAM, or external storage) without breaking a
-; verify call:
+; verify call (v0.7.0 labels.txt):
 ;
 ;   reu_mul_init + sqtab_init + mul_8x8 body (boot-only path)
-;     ($08AE -> reu_fetch_mul_row $0AFB)                           589
+;     ($08AE -> reu_fetch_mul_row $0B0D)                           607
 ;   ec_precompute_256 (boot-only; populates REU bank $02 P-256 half)
-;     ($277B -> ec_scalar_mul $29E3)                               616
+;     ($2914 -> ec_scalar_mul $2B7C)                               616
 ;   ec_precompute_384 (boot-only; populates REU bank $02 P-384 half)
-;     ($49CC -> ec_scalar_mul_384 $4C50)                           644
+;     ($4C4E -> ec_scalar_mul_384 $4ED2)                           644
 ;   fp_mod_inv_fast (Fermat addition-chain, reference only --
 ;     41× slower than mod256 binary GCD; not called at verify time)
-;     ($2CB9 -> fp_reverse32 $2D28)                                111
+;     ($2CC9 -> fp_reverse32 $2D38)                                111
 ;   fp_inv_exp_p2 (addition-chain step table for fp_mod_inv_fast)
-;     ($68E2 -> ec_a384 $6902)                                      32
-;   sqtab_lo + sqtab_hi (quarter-square tables; only read by
-;     mul_8x8, which only runs at boot)                            512
+;     ($6A84 -> ec_a384 $6AA4)                                      32
 ;                                                              -------
-;                                                                 2504
+;                                                                 2010
+;
+; The sqtab_lo/hi quarter-square table (1024 B at LIB_SHARED_SQTAB_BASE)
+; is deliberately NOT counted: it is runtime-GENERATED RAM state, not
+; code+rodata, so it is excluded on the same basis as the RW BSS
+; exclusion in RESIDENT above. (Earlier revisions counted it here -- at
+; 512 B, which was also half its true size -- putting the declared 2500
+; outside the ±5% band under either self-consistent accounting;
+; issue #78.)
 ;
 ; Plus Lim-Lee anchor RAM (~544 B P-256 affine anchors + ~816 B P-384
 ; affine anchors) is reclaimable if the consumer drives only
 ; variable-base scalar mul. That isn't code+rodata though, so it stays
 ; out of this number per SPEC §5 wording.
 ;
-; Rounded to 2500 for the ±5% manifest commitment.
+; Rounded to 2000 for the ±5% manifest commitment (margin ~0.5%).
 ; -----------------------------------------------------------------------------
-; FP_ONCHIP_MUL: sqtab tables + the ct_mul_8x8 share of the mul_8x8 boot
-; block leave the cold set (now verify-hot, see RESIDENT above); the
-; reu_mul_init path stays cold (and is unnecessary -- the profile never
-; reads the REU mul table): 2500 - ~600 -> 1900.
+; FP_ONCHIP_MUL: the cold set is materially the same blocks -- the
+; reu_mul_init path stays cold (and is unnecessary: the profile never
+; reads an REU mul table), sqtab_init remains the one mandatory boot
+; step, ct_mul_8x8 remains boot/diag-only (the issue #71 row generator
+; inlines its own quarter-square). Both profiles share the 2000 figure.
 .ifndef LIB_NISTCURVES_COLD_BYTES
-  .ifdef FP_ONCHIP_MUL
-    LIB_NISTCURVES_COLD_BYTES = 1900
-  .else
-    LIB_NISTCURVES_COLD_BYTES = 2500
-  .endif
+  LIB_NISTCURVES_COLD_BYTES = 2000
 .endif
 
 
@@ -218,10 +228,25 @@
 .else
   _OWN_SQTAB      = LIB_SHARED_PRIMITIVES_SQTAB
 .endif
-.ifdef SHARED_REU_MUL_INIT
+; FP_ONCHIP_MUL (issue #78): the turbo profile OMITS the §8.2 reu_mul bit
+; entirely -- the profile does not CONSUME §8.2 at all (fp_mul/fp_sqr
+; generate rows on-chip; no onchip archive builds or reads an REU
+; multiply table), so there is no reu_mul table to own. Standalone onchip
+; mask: $0005 (sqtab $0001 | ct_mul_8x8 $0004). This is deliberately NOT
+; expressed via the SHARED_REU_MUL_INIT deferral switch: that switch
+; means "a canonical provider elsewhere in the PRG owns the table" (the
+; bit moves to another adopter); under FP_ONCHIP_MUL nobody needs to own
+; it. Matches the sibling profile in c64-x25519 PR #73, and makes the
+; mask consistent with LIB_NISTCURVES_REU_BANKS_USED above, which is
+; already profile-aware ($04 -- mul banks dropped -- under onchip).
+.ifdef FP_ONCHIP_MUL
   _OWN_REU_MUL    = 0
 .else
-  _OWN_REU_MUL    = LIB_SHARED_PRIMITIVES_REU_MUL
+  .ifdef SHARED_REU_MUL_INIT
+    _OWN_REU_MUL    = 0
+  .else
+    _OWN_REU_MUL    = LIB_SHARED_PRIMITIVES_REU_MUL
+  .endif
 .endif
 .ifdef SHARED_CT_MUL_8X8
   _OWN_CT_MUL_8X8 = 0
@@ -231,6 +256,12 @@
 
 .ifndef LIB_NISTCURVES_SHARED_PRIMITIVES
   LIB_NISTCURVES_SHARED_PRIMITIVES = _OWN_SQTAB | _OWN_REU_MUL | _OWN_CT_MUL_8X8
+  ; Permanent guard (issue #78, mirrors c64-x25519 PR #73): an onchip
+  ; build must never claim §8.2 ownership. Fires at assemble time if a
+  ; future edit re-couples _OWN_REU_MUL to the profile switch wrongly.
+  .ifdef FP_ONCHIP_MUL
+    .assert (LIB_NISTCURVES_SHARED_PRIMITIVES & LIB_SHARED_PRIMITIVES_REU_MUL) = 0, error, "FP_ONCHIP_MUL manifest must not claim the SPEC 8.2 reu_mul ownership bit"
+  .endif
 .endif
 
 
