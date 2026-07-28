@@ -151,7 +151,8 @@ archive contract.
 
 | File | Purpose |
 |------|---------|
-| main.s | Entry point, VIC blanking, REU DMA init (`reu_mul_init`), precompute table generation, benchmarking. Test/bench driver for the library's own PRG — NOT linked into consumer projects (see API.md §8.2). |
+| main.s | Entry point, VIC blanking, boot-init call sequence, benchmarking. Test/bench driver for the library's own PRG — NOT linked into consumer projects (see API.md §8.2). |
+| reu_mul_init.s | SPEC §8.2 reu_mul provider: `reu_mul_init` / `reu_mul_tables_init` (128 KB REU multiply-table init). Moved out of main.s by issue #81 so the default-profile archives ship it (via Makefile `LIB_MUL_OBJS`); excluded from the FP_ONCHIP_MUL archives, which never build or read the table. Body gated on `.ifndef SHARED_REU_MUL_INIT`. |
 | constants.s | Hardware addresses, REU registers |
 | zp_config.s | Zero-page allocations (consumer-tunable, `.exportzp` per SPEC §2) |
 | reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`), consumer-overridable via `ca65 --asm-define` |
@@ -596,7 +597,8 @@ keep all library calls on a single thread of control.
   opcodes from `mul_8x8:` to `rts` across all three adopters (nist-curves
   body is now 59 B, hash `3ed9025b…`, matching chacha).** The new entry
   convention is SMC-baked: `a` is written into `smc_sum_a_imm+1` /
-  `smc_diff_a_imm+1` and `b` passed in Y; `reu_mul_init` (src/main.s)
+  `smc_diff_a_imm+1` and `b` passed in Y; `reu_mul_init` (src/reu_mul_init.s
+  since issue #81; src/main.s at the time of this note)
   bakes `a` once per outer-a iteration and varies b in Y across the inner
   loop. `mul_8x8` is kept as a back-compat alias of `ct_mul_8x8`; the body
   is gated by `.ifndef SHARED_CT_MUL_8X8` (mirrors §8.1 `SHARED_SQTAB_INIT`).
