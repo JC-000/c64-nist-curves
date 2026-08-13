@@ -8,30 +8,28 @@
 ; refers to these locations only by symbolic name, so moving an address
 ; here is sufficient to relocate a slot.
 ;
-; Immovable:
-;   proc_port ($01) - 6510 CPU I/O port, hardware-fixed.
+; proc_port ($01, hardware-fixed 6510 I/O port) is NOT a library slot.
+; ROM banking around REU access is the driving consumer's responsibility
+; (see main.s / API.md §3 step 1); no archived library object references
+; it (issue #90).
 ;
-; Movable: everything else. Pick any free zero-page bytes; the slots do
-; not need to remain contiguous, but the library currently uses roughly
-; 16 bytes plus the two 2-byte general pointers. Required slots:
+; Movable: everything below. Pick any free zero-page bytes; the slots do
+; not need to remain contiguous. Full-library (default-profile) usage is
+; 27 bytes across 16 slots; minimal archives use fewer -- see the
+; per-variant `.exportzp` block below and API.md §8.4. Slots:
 ;
 ;   fp_src1/fp_src2/fp_dst/fp_misc : four 2-byte pointers (8 bytes total)
-;   fp_carry/fp_loop/fp_mul_i/fp_mul_j : four 1-byte scratch (4 bytes)
-;   ec_scalar_ptr  : 1 byte (scalar index)
-;   poly_i..poly_tmp : four 1-byte scratch used by mul_8x8
+;   fp_carry/fp_mul_i/fp_mul_j : three 1-byte scratch (3 bytes)
+;   ec_scalar_ptr  : 2-byte pointer to the scalar currently being processed
 ;   zp_tmp1/zp_tmp2  : two 1-byte temps
 ;   zp_ptr1/zp_ptr2  : two 2-byte general-purpose pointers (4 bytes)
+;   sha_src/sha_len/sha_w_ptr/sha_w_ptr2 : four 2-byte pointers (8 bytes)
 ;
 ; Default layout below mirrors the historical c64-x25519 allocation and
 ; leaves the BASIC/KERNAL ZP regions free.
 ; =============================================================================
 
 .segment "ZEROPAGE"
-
-; --- Immovable (hardware) ---
-.ifndef proc_port
-  proc_port  = $01                      ; processor port (ROM banking)
-.endif
 
 ; --- General-purpose pointers / temps ---
 .ifndef zp_tmp1
@@ -63,9 +61,6 @@
 .ifndef fp_carry
   fp_carry  = $2a                       ; carry/borrow byte
 .endif
-.ifndef fp_loop
-  fp_loop  = $2b                        ; loop counter
-.endif
 .ifndef fp_mul_i
   fp_mul_i  = $2c                       ; multiply outer index
 .endif
@@ -92,36 +87,41 @@
   sha_w_ptr2 = $0a                      ; 2-byte LE scratch ptr into sha_w[]
 .endif
 
-; --- mul_8x8 working variables ---
-.ifndef poly_i
-  poly_i  = $1a                         ; inner loop counter
-.endif
-.ifndef poly_j
-  poly_j  = $1b                         ; outer loop counter
-.endif
-.ifndef poly_carry
-  poly_carry  = $1c                     ; carry byte
-.endif
-.ifndef poly_tmp
-  poly_tmp  = $1d                       ; temp
-.endif
-
 ; --- Exports ---
 ; LIB_SHA384_ONLY (issue #88): the `lib-p384-sha384` archive contains no
 ; field, point, or multiply code. `sha384.o` `.importzp`s exactly four
 ; slots -- sha_src, sha_len, sha_w_ptr, sha_w_ptr2 (8 bytes, contiguous
-; at $04..$0b) -- and no object in that archive references any other,
-; not even proc_port (SHA does no ROM banking, since it issues no REU
-; DMA). Exporting the other 17 slots from that archive would claim 23
-; bytes of zero page the SHA path never writes.
+; at $04..$0b) -- and no object in that archive references any other.
+; Exporting the other 12 slots from that archive would claim 19 bytes of
+; zero page the SHA path never writes.
 ;
 ; That over-claim is NOT harmless on this machine. Zero page is the
 ; scarcest resource on a 6502, and on a C64 with BASIC and KERNAL live
-; the genuinely free bytes number in the low tens -- so a 31-byte claim
+; the genuinely free bytes number in the low tens -- so a 27-byte claim
 ; against a real need of 8 can make a consumer's assemble-time collision
 ; check reject an integration that would have fit comfortably. Same
 ; fail-closed shape as the RESIDENT_BYTES overstatement in issue #90:
 ; the consumer is refused a configuration that actually works.
+;
+; The three minimal curve variants (issue #90) narrow the same way, each
+; to the slot set its archive's objects actually `.importzp`:
+;
+;   LIB_P256_VERIFY_ONLY / LIB_P384_VERIFY_ONLY -- the field/point layer
+;     plus the ecdsa*_nocomb verifier: 9 slots, 15 bytes. Neither ships
+;     sha384.o, nor the Lim-Lee comb objects -- which are the only
+;     archived users of zp_ptr1 (anchor copy in ec_precompute_*) and
+;     zp_tmp1/zp_tmp2 (sm384w_calc_reu_offset). The two switches stay
+;     separate even though they select the same arm today: the two
+;     curves' verify-only ZP need is not guaranteed to stay identical,
+;     and splitting a shared switch retroactively would break every
+;     consumer that had already adopted it.
+;   LIB_P384_CURVE_ONLY -- those 9 plus the four sha_* pointers (this
+;     variant bundles sha384.o + ecdsa_verify_with_message_384): 13 slots,
+;     23 bytes.
+;
+; None of these depend on FP_ONCHIP_MUL: the profile changes which REU
+; registers the field layer touches, not which ZP scratch it uses, so one
+; zp_config object per variant serves both that variant's archives.
 ;
 ; The slot DEFINITIONS above stay unconditional -- they are inert
 ; equates, cost nothing, and keep this file single-source. Only the
@@ -129,9 +129,16 @@
 ; and the §5 ZP_USAGE_BYTES equate are computed from.
 .ifdef LIB_SHA384_ONLY
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
+.elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY)
+  .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
+  .exportzp ec_scalar_ptr, zp_ptr2
+.elseif .defined(LIB_P384_CURVE_ONLY)
+  .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
+  .exportzp ec_scalar_ptr, zp_ptr2
+  .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
 .else
-  .exportzp proc_port, zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
-  .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_loop, fp_mul_i, fp_mul_j
-  .exportzp ec_scalar_ptr, poly_i, poly_j, poly_carry, poly_tmp
+  .exportzp zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
+  .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
+  .exportzp ec_scalar_ptr
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
 .endif

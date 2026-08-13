@@ -76,7 +76,7 @@ regenerate it with `make` and plan your memory map from the symbols there.
 | SHA-384 streaming state + buffers | `$9163`-`$9573` | `sha_state` (64, `$9163`) + `sha_w` (640) + `sha_abcdefgh` (64) + `sha_t` (16) + `sha_scratch` (64) + `sha_block_buf` (128) + `sha_block_len` (1) + `sha_total_len` (16) + `sha384_digest` (48) ≈ 1041 B (`data_sha.s`). K[80] round constants (640 B) live in RODATA inside `src/sha384.s`. |
 | Test-harness staging buffers | `$9574`-`$9B66` | `ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf` (1024), `fp_tmp2..4` (`data_test.s`). Standalone PRG only — excluded from every consumer archive. |
 | Quarter-square multiply tables | `$9C00`-`$9FFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. Moved from `$7800` on 2026-05-17 to clear the linker-managed `mul_dma_*` page-aligned slots as code grew (see CLAUDE.md "Known issues"); base overridable via `LIB_SHARED_SQTAB_BASE` (§8.6.1). |
-| Zero-page | 32 bytes, see `zp_config.s` | `LIB_NISTCURVES_ZP_USAGE_BYTES = 32` (8 for the SHA-384 archive, §8.4); every slot is `.ifndef`-guarded so a consumer pre-definition wins. |
+| Zero-page | 8-27 bytes depending on archive, see `zp_config.s` | `LIB_NISTCURVES_ZP_USAGE_BYTES = 27` for the full archive (8-23 for the minimal archives — §8.4 has the complete per-archive table); every slot is `.ifndef`-guarded so a consumer pre-definition wins. |
 | REU bank 0-1 | `$00_0000`-`$01_FFFF` | 128 KB full 8x8 -> 16 multiply table, built once by `reu_mul_init`. |
 | REU bank 2, offset `$0000`-`$3FFF` | 16 KB | P-256 Lim-Lee comb precompute (256 entries x 64 bytes, X + Y only). Wave 7a h=8. |
 | REU bank 2, offset `$4000`-`$9F9F` | 24 KB | P-384 Lim-Lee comb precompute (256 entries x 96 bytes). Wave 7a h=8. |
@@ -416,11 +416,14 @@ and `jsr ecdsa_verify_384` directly.
   `src/data_*.s` modules) in the consumer's ld65 config and re-linking. The
   code / ZP layout is somewhat more flexible: code is position-independent
   within the PRG and ZP slots can be renamed via `src/zp_config.s`.
-- **Zero-page footprint is 32 bytes** (`LIB_NISTCURVES_ZP_USAGE_BYTES`;
-  8 for the SHA-384-only archive — see §8.4).
-  See `src/zp_config.s` for the
-  complete, editable list of slots. The hardware-fixed `proc_port` at `$01`
-  is the only slot that cannot be moved.
+- **Zero-page footprint ranges 8-27 bytes depending on archive**
+  (`LIB_NISTCURVES_ZP_USAGE_BYTES`; 8 for `lib-p384-sha384`, 15 for the two
+  `*-verify` archives, 23 for `lib-p384-curve`, 27 for the full archive —
+  see §8.4 for the complete per-archive table). See `src/zp_config.s` for
+  the complete, editable list of slots. `proc_port` ($01, the 6510 CPU I/O
+  port) is hardware-fixed but is **not** a library-claimed slot (issue
+  #90) — ROM banking around REU access is the consumer's own
+  responsibility; see the §3 step 1 example.
 - **Scalar multiplication is non-constant-time.** Both the fixed-base
   `ec_scalar_mul[_384]` (Lim-Lee comb, branches on comb index and infinity
   flag) and the variable-base `ec_scalar_mul_var[_384]` (double-and-add,
@@ -542,7 +545,7 @@ is authoritative per §2 — the symbol names are the stable anchors.
 | C64 page $7C (`mul_dma_hi`) | $7C00–$7CFF | Do not use |
 | C64 pages ~$7B–$97 | mul scratch, field / point / ECDSA buffers, Lim-Lee anchors, SHA state | See §2 for the full map |
 | C64 pages $9C–$9F | Quarter-square multiply tables (`sqtab_lo/hi`) | Do not use |
-| C64 zero-page | 32 bytes (`LIB_NISTCURVES_ZP_USAGE_BYTES`; 8 for `lib-p384-sha384`); see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
+| C64 zero-page | 8-27 bytes depending on archive (`LIB_NISTCURVES_ZP_USAGE_BYTES`; see §8.4 for the full per-archive table); see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
 | REU bank 0 / bank 1 | Full 128 KB multiply table | Do not write; initialized by `reu_mul_init` (default profile only — the `FP_ONCHIP_MUL` archives, §8.4.2, never populate or read these banks) |
 | REU bank 2, $0000–$3FFF | P-256 Lim-Lee anchors (16 KB, 256 × 64) | Do not write |
 | REU bank 2, $4000–$9F9F | P-384 Lim-Lee anchors (24 KB, 256 × 96) | Do not write |
@@ -599,18 +602,43 @@ Exclusion summary (per minimal archive):
   `lib_manifest_sha384.o` / `precalc_manifest_sha384.o`. No `mul_8x8`,
   no REU, no `constants.o` — SHA-384 has no shared scratch with the
   field / point / ECDSA code paths. Because it carries no field layer at
-  all, its §5 manifest is built with `-D LIB_SHA384_ONLY` and differs
-  from every other archive's (issue #88):
+  all, its §5 manifest is built with `-D LIB_SHA384_ONLY`, one of five
+  variant gates that together make each archive's §5 manifest describe
+  that archive rather than the whole library (issue #90 closes this for
+  the four gates other than SHA-384; issue #88 was the first, narrower
+  fix, SHA-384 only):
 
-  | Equate | SHA-384 archive | all other archives |
-  |---|---|---|
-  | `ZP_USAGE_BYTES` | 8 | 32 |
-  | `REU_BANKS_USED` | `$00` | `$07` (`$04` onchip) |
-  | `SHARED_PRIMITIVES` | `$0000` | `$0007` (`$0005` onchip) |
-  | `SHARED_CONSUMES` | `$0000` | `$0007` (`$0005` onchip) |
-  | `RESIDENT_BYTES` | 9000 | 27000 |
-  | `COLD_BYTES` | 0 | 1800 |
-  | precalc rows | `sha384_k` only | five (four onchip) |
+  | Archive | `-D` switch(es) | `ZP_USAGE_BYTES` | `REU_BANKS_USED` | `SHARED_PRIMITIVES` | `SHARED_CONSUMES` | `RESIDENT_BYTES` | `COLD_BYTES` | precalc rows |
+  |---|---|---:|---|---|---|---:|---:|---|
+  | `nistcurves.a` | (default) | 27 | `$07` | `$0007` | `$0007` | 27000 | 2200 | sqtab, reu_mul, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (5) |
+  | `nistcurves-onchip.a` | `FP_ONCHIP_MUL` | 27 | `$04` | `$0005` | `$0005` | 27000 | 2000 | sqtab, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (4) |
+  | `nistcurves-p256-verify.a` | `LIB_P256_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8700 | 720 | sqtab, reu_mul (2) |
+  | `nistcurves-p256-verify-onchip.a` | `LIB_P256_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8700 | 530 | sqtab (1) |
+  | `nistcurves-p384-verify.a` | `LIB_P384_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8300 | 530 | sqtab, reu_mul (2) |
+  | `nistcurves-p384-verify-onchip.a` | `LIB_P384_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8300 | 340 | sqtab (1) |
+  | `nistcurves-p384-curve.a` | `LIB_P384_CURVE_ONLY` | 23 | `$03` | `$0007` | `$0007` | 17400 | 530 | sqtab, reu_mul, sha384_k (3) |
+  | `nistcurves-p384-curve-onchip.a` | `LIB_P384_CURVE_ONLY` + `FP_ONCHIP_MUL` | 23 | `$00` | `$0005` | `$0005` | 17400 | 340 | sqtab, sha384_k (2) |
+  | `nistcurves-p384-sha384.a` | `LIB_SHA384_ONLY` | 8 | `$00` | `$0000` | `$0000` | 9000 | 0 | sha384_k (1) |
+
+  Before issue #90, six of these nine rows were wrong: the three
+  non-onchip verify/curve archives claimed `REU_BANKS_USED = $07`
+  (inherited from the default-profile manifest) despite never shipping
+  the Lim-Lee comb objects that are bank 2's only consumer — true value
+  `$03` — and their three onchip counterparts claimed `$04` for the same
+  reason despite issuing **no REU DMA at all** — true value `$00`, now
+  correctly reported by the manifest itself rather than something a
+  consumer had to override (see §8.4.2). The precalc-row enumeration had
+  the identical defect: `nistcurves-p256-verify.a`, a P-256-only archive
+  with zero P-384 code linked in, was advertising a 24 KB
+  `lim_lee_comb_p384` REU table it does not contain (and, symmetrically,
+  its own `lim_lee_comb_p256` table too — neither minimal verify archive
+  ships the comb objects). `ZP_USAGE_BYTES` and `RESIDENT_BYTES`/
+  `COLD_BYTES` had the same "one manifest object describes the whole
+  library" defect shape #88 first fixed for SHA-384.
+  `SHARED_PRIMITIVES`/`SHARED_CONSUMES` were the one pair already correct
+  across all nine archives before this fix — the verify/curve archives
+  genuinely do ship `mul_8x8.o` (owns sqtab + ct_mul_8x8) and, in the DMA
+  profile, `reu_mul_init.o` (owns reu_mul), so no change was needed there.
 
   The zero-page claim narrows with the rest: `sha384.o` `.importzp`s
   exactly four slots — `sha_src`, `sha_len`, `sha_w_ptr`, `sha_w_ptr2`,
@@ -772,11 +800,21 @@ issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
 **Contract deltas vs the default profile:**
 
 - **REU banks (§5):** `LIB_NISTCURVES_REU_BANKS_USED = $04` (comb bank
-  only) in the onchip manifest. The verify-onchip archives additionally
-  exclude the comb, so they issue **no REU DMA at all** — consumers may
-  override the mask to `$00`. (Issue-#33 defensive REU register writes
-  remain at entry points; they are harmless expansion-I/O writes and
-  claim no banks.)
+  only) for `nistcurves-onchip.a` — the only onchip archive that still
+  ships `points256_comb.o`/`points384_comb.o`. The three onchip
+  verify/curve archives (`*-verify-onchip.a`, `nistcurves-p384-curve-
+  onchip.a`) correctly report `$00`: none of them ship the comb objects,
+  so bank 2 is never referenced, and the onchip profile already drops
+  banks 0/1. Before issue #90 all four onchip archives inherited the
+  same `$04` from one shared manifest object, over-claiming REU for the
+  three that in fact issue **no REU DMA at all** — the same REU-less
+  claim this doc's own opening summary makes (§1) and `make
+  onchip-nocomb-prg` + `C64_NO_REU=1` runtime-validates (35/35, CLAUDE.md
+  "Key optimizations"), but which the manifest equate itself previously
+  contradicted. The manifest now states it natively rather than
+  requiring a consumer override. (Issue-#33 defensive REU register
+  writes remain at entry points regardless; they are harmless
+  expansion-I/O writes and claim no banks.)
 - **Boot obligation:** onchip consumers need only `sqtab_init` — no
   §8.2 `reu_mul` provider, and (verify archives) no `ec_precompute_*`.
   Accordingly the onchip archives do not ship `reu_mul_init.o` (the
@@ -784,9 +822,14 @@ issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
   issue #81) — `reu_mul_init` is deliberately unlinkable from them.
 - **Resident/cold (§5):** the row generator (~250 B) becomes verify-hot
   and the REU row-fetch path drops out — a net delta inside the §5
-  rounding, so both profiles share `RESIDENT_BYTES = 27000` /
-  `COLD_BYTES = 1800` (issue #78 accounting refresh; #81 trimmed the
-  cold sweep of main.s trampoline bytes). Note the
+  rounding, so `RESIDENT_BYTES` still shares one figure across both
+  profiles for a given variant (27000 for the full archive; see §8.4 for
+  the per-variant figures). `COLD_BYTES` does **not** share across
+  profiles: every default/onchip pair differs by ~186-200 B, the
+  boot-only `reu_mul_init` body present in every DMA-profile archive and
+  absent from every onchip one (issues #78/#81) — 2200 vs. 2000 for the
+  full archive, and a larger relative delta (26-35%) on the minimal
+  archives, outside the SPEC §5 ±5% band either way (issue #90). Note the
   runtime-generated 1 KB `sqtab` RAM table is verify-hot under this
   profile but excluded from the equates (generated RW state, not
   code+rodata) — budget it separately at `LIB_SHARED_SQTAB_BASE`.
@@ -923,10 +966,10 @@ ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 **§5 manifest equates** (consumer imports for cfg-side fit checks):
 
 ```asm
-.import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07
-.import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 32, SHA archive 8
+.import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07 ($00-$04 for the minimal archives, §8.4)
+.import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 27, 8-23 for the minimal archives (§8.4)
 .import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
-.import LIB_NISTCURVES_COLD_BYTES           ; default 1800
+.import LIB_NISTCURVES_COLD_BYTES           ; default 2200 (2000 under FP_ONCHIP_MUL; §8.4)
 .import LIB_NISTCURVES_SHARED_PRIMITIVES    ; standalone default $0007
                                             ; (sqtab | reu_mul | ct_mul_8x8);
                                             ; conditional per SPEC §8.0 — each

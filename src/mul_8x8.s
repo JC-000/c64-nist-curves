@@ -26,8 +26,6 @@
 ;   with SMC dispatch -- ratified in SPEC §8.1's "Placement contract".
 ; =============================================================================
 
-.importzp poly_i, poly_j, poly_carry, poly_tmp
-
 ; --- data imports (for reu_fetch_mul_row) ---
 .import mul_cached_a
 

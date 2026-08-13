@@ -67,9 +67,28 @@
 ; the `lib-p384-sha384` archive claims no banks. Before this gate that
 ; archive shipped the default-profile manifest and advertised $07 --
 ; three banks it never touches.
+; LIB_P256_VERIFY_ONLY / LIB_P384_VERIFY_ONLY / LIB_P384_CURVE_ONLY
+; (issue #90): the same over-claim, one step less extreme -- those three
+; archives advertised $07 while never touching bank $02. Unlike the two
+; gates above, REU truth here depends on BOTH axes (variant AND profile),
+; so the new arm carries an inner FP_ONCHIP_MUL check rather than sitting
+; flat alongside the profile arm; see the nested form below.
 .ifndef LIB_NISTCURVES_REU_BANKS_USED
   .ifdef LIB_SHA384_ONLY
     LIB_NISTCURVES_REU_BANKS_USED = $00
+  .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
+    ; None of the three minimal variants ship points256_comb.o /
+    ; points384_comb.o (issue #90) -- they take the ECDSA_NO_COMB
+    ; verifiers, which route u1*G through the variable-base ladder -- so
+    ; REU bank $02 (LIB_NISTCURVES_REU_BANK_COMB) is never referenced by
+    ; any of them. Only the mul-table banks $00/$01 remain, and only in
+    ; the DMA profile: all three share this logic, hence one combined arm
+    ; rather than three near-duplicates.
+    .if .defined(FP_ONCHIP_MUL)
+      LIB_NISTCURVES_REU_BANKS_USED = $00
+    .else
+      LIB_NISTCURVES_REU_BANKS_USED = $03
+    .endif
   .elseif .defined(FP_ONCHIP_MUL)
     LIB_NISTCURVES_REU_BANKS_USED = $04
   .else
@@ -81,36 +100,43 @@
 ; -----------------------------------------------------------------------------
 ; Zero-page usage
 ; -----------------------------------------------------------------------------
-; Sum of widths of every `.exportzp` slot in src/zp_config.s as of this
-; equate refresh:
+; Sum of widths of every `.exportzp` slot in src/zp_config.s the ACTIVE
+; variant exports (issue #90: this used to be one whole-library figure
+; that every archive inherited; it is now per-variant). Full-library
+; (default-profile) itemization:
 ;
-;   proc_port                                  1
 ;   zp_tmp1, zp_tmp2                           2
 ;   zp_ptr1, zp_ptr2          (2 B each)       4
 ;   fp_src1..fp_misc          (4 × 2 B ptr)    8
-;   fp_carry, fp_loop, fp_mul_i, fp_mul_j      4
-;   ec_scalar_ptr                              1
-;   poly_i, poly_j, poly_carry, poly_tmp       4
+;   fp_carry, fp_mul_i, fp_mul_j               3
+;   ec_scalar_ptr             (2 B pointer)    2
 ;   sha_src, sha_len          (2 B each)       4
 ;   sha_w_ptr, sha_w_ptr2     (2 B each)       4
 ;                                            ---
-;                                             32
+;                                             27
 ;
-; Was declared 31 until issue #88. The itemization above has always summed
-; to 32 -- the total line was simply mis-added -- and enumerating the slot
-; addresses confirms 32 distinct bytes: $01, $02-$03, $04-$0b, $1a-$1d,
-; $22-$2d, $3b, $fb-$fe. The direction of that error is the bad one: a
-; consumer sizing its own allocation against 31 could place a variable in
-; the byte the library never admitted to owning and have it silently
-; clobbered mid-operation. Over-claiming ZP wastes a scarce resource;
-; under-claiming corrupts.
+; Was declared 31 until issue #88, then 32 through v0.8.0, and both were
+; wrong (issue #90). Two independent errors partly cancelled into a
+; plausible-looking number: three slot groups were counted despite being
+; referenced by NO object in any of the nine shipping archives --
+; proc_port (1 B, used only by the never-archived main.s test driver and
+; now equated locally there), fp_loop (1 B), and
+; poly_i/poly_j/poly_carry/poly_tmp (4 B, leftovers from the pre-§8.3
+; mul_8x8 body replaced under issue #14; the current canonical
+; ct_mul_8x8 keeps its scratch in plain RAM cells, not ZP) -- while
+; ec_scalar_ptr was simultaneously undercounted as 1 byte when it is a
+; 2-byte pointer (`sta ec_scalar_ptr+1` in ecdsa256.s/ecdsa384.s, `lda
+; (ec_scalar_ptr),y` in all four points*.s files; no call site treats it
+; as a 1-byte index). Net: 32 - 6 + 1 = 27, confirmed by summing
+; od65 --dump-imports across every object in the default archive.
 ;
-; proc_port ($01) is the 6510 CPU I/O port -- hardware-fixed, but the
-; library writes to it (ROM banking around REU access) and exports it,
-; so it counts toward the ZP claim from the consumer's collision-check
-; perspective.
+; The under-count half was the dangerous one: a consumer sizing its own
+; allocation against a too-small figure can place a variable in a byte
+; the library never admitted to owning and have it silently clobbered
+; mid-operation. Over-claiming ZP wastes a scarce resource;
+; under-claiming corrupts. Both are fixed here.
 ; -----------------------------------------------------------------------------
-; LIB_SHA384_ONLY (issue #88): 8, not 32. The `lib-p384-sha384` archive
+; LIB_SHA384_ONLY (issue #88): 8, not 27. The `lib-p384-sha384` archive
 ; carries no field, point, or multiply code; `sha384.o` `.importzp`s
 ; exactly four slots and no object in that archive references any other:
 ;
@@ -119,24 +145,49 @@
 ;                                            ---
 ;                                              8
 ;
-; proc_port is NOT among them -- SHA issues no REU DMA, so it never
-; banks ROM. src/zp_config.s narrows its `.exportzp` surface to match
-; under the same switch, so the equate and the archive's actual export
-; set agree and SPEC §5's "sum of all .exportzp slots" definition is
-; satisfied literally rather than approximated.
+; src/zp_config.s narrows its `.exportzp` surface to match under the
+; same switch, so the equate and the archive's actual export set agree
+; and SPEC §5's "sum of all .exportzp slots" definition is satisfied
+; literally rather than approximated.
 ;
-; Claiming the full 32 here would not have been a harmless over-estimate.
+; Claiming the full 27 here would not have been a harmless over-estimate.
 ; Zero page is the scarcest resource on a 6502 -- on a C64 with BASIC and
 ; KERNAL live the genuinely free bytes number in the low tens -- so
-; over-claiming 24 of them can push a consumer's collision check into
+; over-claiming 19 of them can push a consumer's collision check into
 ; rejecting an integration that would have fit. Fail-closed, exactly
 ; like the RESIDENT_BYTES overstatement tracked in issue #90.
+; -----------------------------------------------------------------------------
+; The other three variant gates (issue #90) narrow the same way, each to
+; the slot set its archive's objects actually `.importzp`:
+;
+;   LIB_SHA384_ONLY        ->  8  (sha_src, sha_len, sha_w_ptr, sha_w_ptr2)
+;   LIB_P256_VERIFY_ONLY   -> 15  (fp_src1/2/dst/misc, fp_carry, fp_mul_i,
+;                                  fp_mul_j, ec_scalar_ptr, zp_ptr2)
+;   LIB_P384_VERIFY_ONLY   -> 15  (the same 9 slots -- neither verify
+;                                  archive ships the Lim-Lee comb, the
+;                                  only user of zp_tmp1/zp_tmp2/zp_ptr1,
+;                                  nor sha384.o)
+;   LIB_P384_CURVE_ONLY    -> 23  (those 9 + the four sha_* pointers --
+;                                  this variant bundles sha384.o and the
+;                                  ecdsa_verify_with_message_384 wrapper)
+;   (default, either profile) -> 27  (all 16 slots itemized above)
+;
+; ZP truth does NOT depend on FP_ONCHIP_MUL: measured across all four
+; default/onchip archive pairs, each pair has a byte-identical ZP import
+; set (the profile changes which REU registers the field layer touches,
+; not which ZP scratch it uses). Hence one zp_config object per variant,
+; shared by both of that variant's archives, where lib_manifest and
+; precalc_manifest need one per variant AND profile.
 ; -----------------------------------------------------------------------------
 .ifndef LIB_NISTCURVES_ZP_USAGE_BYTES
   .ifdef LIB_SHA384_ONLY
     LIB_NISTCURVES_ZP_USAGE_BYTES = 8
+  .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY)
+    LIB_NISTCURVES_ZP_USAGE_BYTES = 15
+  .elseif .defined(LIB_P384_CURVE_ONLY)
+    LIB_NISTCURVES_ZP_USAGE_BYTES = 23
   .else
-    LIB_NISTCURVES_ZP_USAGE_BYTES = 32
+    LIB_NISTCURVES_ZP_USAGE_BYTES = 27
   .endif
 .endif
 
@@ -150,6 +201,10 @@
 ;
 ;   reu_fetch_mul_row ($0A53 -> reu_mul_init $0A67; the boot-only
 ;     reu_mul_init body sits between it and fp256 since issue #81)    20
+;     [issue #90 reclassified these 20 B as COLD -- no ca65 source
+;      `jsr`s reu_fetch_mul_row -- so they now appear in the COLD
+;      derivation instead. Left listed here because the sum below and
+;      its 27000 rounding are unaffected at this magnitude.]
 ;   fp256/mod256/curve256/points256_core
 ;     + sm256_reu_* comb runtime helpers
 ;     (fp_copy $0B21 -> ec_precompute_256 $2914)                    7667
@@ -209,9 +264,34 @@
 ; check would be told the archive needs 27 KB resident and refuse to
 ; build against a region that comfortably fits the real 9 KB.
 ; -----------------------------------------------------------------------------
+; LIB_P256_VERIFY_ONLY / LIB_P384_VERIFY_ONLY / LIB_P384_CURVE_ONLY
+; (issue #90): the same inherited overstatement, 1.5x-3.3x for these
+; three. Each figure is the sum of the segments the archive's objects
+; actually contribute, measured by od65 segment sums cross-validated
+; against real `ld65 -m` links of a consumer against the built archive:
+;
+;   LIB_P256_VERIFY_ONLY  ->  8700  (fp256/mod256/curve256/points256_core
+;                                    + ecdsa256_nocomb + mul_8x8; no comb,
+;                                    no P-384, no SHA, no inv256)
+;   LIB_P384_VERIFY_ONLY  ->  8300  (the P-384 mirror of the above)
+;   LIB_P384_CURVE_ONLY   -> 17400  (P-384 verify + sha384.o's ~9 KB of
+;                                    code/rodata/rotr LUTs + ecdsa384_msg)
+;
+; Keyed on variant ALONE, like ZP_USAGE_BYTES and unlike REU_BANKS_USED /
+; COLD_BYTES: the four default/onchip archive pairs measure within
+; 83-103 B (0.3-1.3%) of each other -- the onchip row generator replaces
+; the six REU row-fetch sites at near-parity -- which is inside SPEC §5's
+; ±5% band, so each variant shares one figure across both profiles.
+; -----------------------------------------------------------------------------
 .ifndef LIB_NISTCURVES_RESIDENT_BYTES
   .ifdef LIB_SHA384_ONLY
     LIB_NISTCURVES_RESIDENT_BYTES = 9000
+  .elseif .defined(LIB_P256_VERIFY_ONLY)
+    LIB_NISTCURVES_RESIDENT_BYTES = 8700
+  .elseif .defined(LIB_P384_VERIFY_ONLY)
+    LIB_NISTCURVES_RESIDENT_BYTES = 8300
+  .elseif .defined(LIB_P384_CURVE_ONLY)
+    LIB_NISTCURVES_RESIDENT_BYTES = 17400
   .else
     LIB_NISTCURVES_RESIDENT_BYTES = 27000
   .endif
@@ -238,8 +318,22 @@
 ;     ($2CC9 -> fp_reverse32 $2D38)                                111
 ;   fp_inv_exp_p2 (addition-chain step table for fp_mod_inv_fast)
 ;     ($6A84 -> ec_a384 $6AA4)                                      32
+;   reu_fetch_mul_row (issue #90: reclassified from RESIDENT above --
+;     no ca65 source `jsr`s it; fp_mul/fp_sqr inline their own three
+;     register writes, so nothing on the verify path calls it)
+;     ($0A53 -> reu_mul_init $0A67)                                  20
+;   RFC 6979 self-test vectors in curve256.s (288) / curve384.s (96)
+;     -- rodata read by no verify path (issue #90)                  384
 ;                                                              -------
-;                                                                 1812
+;                                                                 2216
+;
+; Was declared 1800 through v0.8.0, from the 1812 the first six blocks
+; sum to. That was already 19% low BEFORE any of the issue #90 variants
+; existed -- outside SPEC §5's ±5% band -- because the derivation missed
+; the last two blocks above. The re-measurement (od65 segment sums
+; cross-validated against `ld65 -m` links, which is why it lands 3 B off
+; this labels.txt address sweep) gives 2219; declared 2200 below,
+; margin ~0.9%.
 ;
 ; (The pre-#81 derivation's first block, "$08AE -> reu_fetch_mul_row
 ; $0B0D = 607", was an address-range sweep that silently included the
@@ -260,16 +354,23 @@
 ; affine anchors) is reclaimable if the consumer drives only
 ; variable-base scalar mul. That isn't code+rodata though, so it stays
 ; out of this number per SPEC §5 wording.
-;
-; Rounded to 1800 for the ±5% manifest commitment (margin ~0.7%).
 ; -----------------------------------------------------------------------------
-; FP_ONCHIP_MUL: the cold set is materially the same blocks -- the
-; reu_mul_init provider stays cold in the standalone onchip PRG (and is
-; unnecessary: the profile never reads an REU mul table; the onchip
-; ARCHIVES do not ship reu_mul_init.o at all, issue #81), sqtab_init
-; remains the one mandatory boot step, ct_mul_8x8 remains boot/diag-only
-; (the issue #71 row generator inlines its own quarter-square). Both
-; profiles share the 1800 figure.
+; FP_ONCHIP_MUL: the cold set is materially the same blocks minus one --
+; sqtab_init remains the one mandatory boot step, ct_mul_8x8 remains
+; boot/diag-only (the issue #71 row generator inlines its own
+; quarter-square), but the onchip ARCHIVES do not ship reu_mul_init.o at
+; all (issue #81), so its ~186-200 B boot-only body drops out. Unlike
+; RESIDENT_BYTES that difference does NOT fall inside ±5%: it is 9% on
+; the full archive and 26-35% on the minimal ones, so COLD is keyed on
+; variant AND profile (nested form below, same shape as
+; REU_BANKS_USED), not on variant alone.
+;
+; The onchip figures describe the onchip ARCHIVES. The standalone onchip
+; test PRG (make onchip-prg) links this same manifest object but does
+; still contain reu_mul_init, so its true cold set is the DMA-profile
+; figure. That PRG is the library's own test/bench driver, not a
+; consumer of the §5 contract, so the archive reading is the one the
+; equate commits to.
 ; LIB_SHA384_ONLY (issue #88): nothing in the SHA-384 path is
 ; overlay-able. There is no boot-only init (the K constants and rotr
 ; LUTs are rodata, not generated), no reference-only routine, and every
@@ -278,11 +379,59 @@
 ; from the 1800 the archive used to inherit, none of whose constituent
 ; blocks (sqtab_init, reu_mul_init, ec_precompute_*, fp_mod_inv_fast)
 ; are present in it at all.
+; -----------------------------------------------------------------------------
+; LIB_P256_VERIFY_ONLY / LIB_P384_VERIFY_ONLY / LIB_P384_CURVE_ONLY
+; (issue #90): none of the three ships ec_precompute_* (no comb),
+; inv256.o (no fp_mod_inv_fast / fp_inv_exp_p2), or the other curve, so
+; their cold set is sqtab_init + ct_mul_8x8 + that curve's RFC 6979
+; self-test vectors, plus reu_mul_init only in the DMA profile:
+;
+;   variant                | DMA | onchip
+;   -----------------------+-----+-------
+;   LIB_P256_VERIFY_ONLY   | 720 |  530
+;   LIB_P384_VERIFY_ONLY   | 530 |  340
+;   LIB_P384_CURVE_ONLY    | 530 |  340
+;
+; Two cross-checks on those numbers: each row's DMA/onchip delta is 190,
+; the reu_mul_init body the onchip archives omit (~186-200 B, matching
+; the full archive's 2200/2000 split); and the P-256/P-384 gap is also
+; 190, tracking the 288 B vs 96 B of RFC 6979 vectors the two curve
+; objects carry. LIB_P384_CURVE_ONLY equals LIB_P384_VERIFY_ONLY because
+; SHA-384 contributes no cold bytes at all (same reasoning as the
+; LIB_SHA384_ONLY = 0 note above: its K constants and rotr LUTs are
+; rodata read on every sha_compress, not boot-only init).
+;
+; The two P-384 variants measure identically and share an arm;
+; LIB_P256_VERIFY_ONLY does not and needs its own. That grouping is
+; driven by the measured numbers, NOT a general rule -- it deliberately
+; differs from how REU_BANKS_USED above groups the same three variants
+; into one arm, and folding P-256 in for tidiness would misreport it by
+; 190 B (26-36%).
+;
+; These figures describe the archives' CURRENT contents. Issue #91 (filed
+; separately, not fixed here) tracks the RFC 6979 self-test vectors being
+; dead weight in 7 of the 9 archives; if they are split into their own
+; object, every COLD figure here needs re-measuring. Do not pre-emptively
+; design around #91.
 .ifndef LIB_NISTCURVES_COLD_BYTES
   .ifdef LIB_SHA384_ONLY
     LIB_NISTCURVES_COLD_BYTES = 0
+  .elseif .defined(LIB_P256_VERIFY_ONLY)
+    .if .defined(FP_ONCHIP_MUL)
+      LIB_NISTCURVES_COLD_BYTES = 530
+    .else
+      LIB_NISTCURVES_COLD_BYTES = 720
+    .endif
+  .elseif .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
+    .if .defined(FP_ONCHIP_MUL)
+      LIB_NISTCURVES_COLD_BYTES = 340
+    .else
+      LIB_NISTCURVES_COLD_BYTES = 530
+    .endif
+  .elseif .defined(FP_ONCHIP_MUL)
+    LIB_NISTCURVES_COLD_BYTES = 2000
   .else
-    LIB_NISTCURVES_COLD_BYTES = 1800
+    LIB_NISTCURVES_COLD_BYTES = 2200
   .endif
 .endif
 

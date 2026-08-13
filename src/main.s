@@ -10,7 +10,18 @@
 ; =============================================================================
 
 ; --- ZP imports ---
-.importzp proc_port, zp_ptr1, fp_misc
+.importzp zp_ptr1, fp_misc
+
+; proc_port ($01, 6510 CPU I/O port) is hardware-fixed and used only by
+; this test/bench driver for ROM banking around REU access (never by the
+; library itself, issue #90) -- defined locally rather than imported from
+; zp_config.s so the library no longer claims/exports it in any archive.
+; Codegen is identical either way: `lda proc_port` / `sta proc_port`
+; assemble to the same zero-page opcodes whether the symbol resolves via
+; import or local equate, so the PRG stays byte-identical.
+.ifndef proc_port
+  proc_port = $01
+.endif
 
 ; --- Constants imports ---
 .import chrout, screen_ram, vic_ctrl1
