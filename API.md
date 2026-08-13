@@ -888,8 +888,8 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
     .error "c64-nist-curves v0.7.0 or newer is required"
 .endif
 
-.if LIB_NISTCURVES_ABI_VERSION <> 0
-    .error "c64-nist-curves ABI v0 expected; rebuild consumer"
+.if LIB_NISTCURVES_ABI_VERSION <> 1
+    .error "c64-nist-curves ABI v1 expected; rebuild consumer"
 .endif
 ```
 

@@ -37,11 +37,20 @@ defining it locally must now supply its own. For `proc_port` that is a
 one-line `proc_port = $01` equate — it is the hardware-fixed 6510 I/O port,
 and the library's shipped code never writes it.
 
-> **The `LIB_ABI_VERSION` guard will NOT fire for this.** It stays `0`,
-> because SPEC §1/§7 defines it as tracking `LIB_VERSION_MAJOR`, and pre-1.0
-> the contract allows breaking changes on a MINOR bump. If your build relies
-> on `.if LIB_ABI_VERSION <> 0 / .error` to catch export changes, that guard
-> is not sufficient here — check the symbol list above.
+> **`LIB_ABI_VERSION` bumps `0` → `1`,** so the breakage gate fires. A
+> consumer guarding with `.if LIB_NISTCURVES_ABI_VERSION <> 0 / .error` will
+> now fail loudly rather than silently linking against a reduced export
+> surface — which is the point.
+>
+> The new value also corrects a divergence that predates this release. SPEC
+> §1/§7 describe this equate as "matching the MAJOR component", but that
+> reading cannot hold pre-1.0: §7 equally states breaking changes ride MINOR
+> bumps while the contract is in v0.x, so MAJOR stays `0` across exactly the
+> breakage the gate exists to catch. Every sibling adopter — c64-x25519,
+> c64-ChaCha20-Poly1305, c64-polyval — treats it as an independent generation
+> counter starting at `1`, and SPEC §7's own worked example gates on `!= 1`.
+> This library shipped `0` from v0.3.0 through v0.8.0 and was the outlier.
+> Reported upstream for a SPEC clarification.
 
 **The RFC 6979 test vectors are retained.** #91 removed a redundant *second*
 copy that was compiled into the shipped library and read by nothing. The
@@ -130,6 +139,7 @@ the consumer surface.
 
 ## Upgrading from v0.8.0
 
+0. Update any ABI guard: `LIB_NISTCURVES_ABI_VERSION` is now `1`, not `0`.
 1. If you `.importzp proc_port` from this library, add
    `proc_port = $01` locally.
 2. If you import `fp_loop` or any `poly_*` slot, define it yourself — the
