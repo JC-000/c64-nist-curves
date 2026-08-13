@@ -17,7 +17,12 @@ contract).
 > (`aad47104…`, 37683 B), every existing consumer `.import` keeps
 > resolving, and `LIB_ABI_VERSION` stays `0`. SPEC §13 (network backend
 > ABI, contract v0.6.0) is deliberately not adopted — this library has no
-> network surface.
+> network surface. **Exception:** the issue #90 zero-page dead-slot
+> removal below is NOT additive — three symbol groups leave
+> `zp_config.s`'s `.exportzp` surface, so a consumer that imported
+> `proc_port`/`fp_loop`/any `poly_*` slot directly from this library
+> (rather than defining it locally) would no longer resolve. See that
+> entry for the MINOR-bump implication.
 
 ### Fixed (issue #88)
 
@@ -181,6 +186,110 @@ contract).
   aggregates. They are scalar parameters, not addresses, and their small
   values would otherwise be tagged `zeropage` and warn at consumer import
   sites.
+
+### Fixed (issue #90)
+
+- **`RESIDENT_BYTES`/`COLD_BYTES`/`ZP_USAGE_BYTES`/`REU_BANKS_USED`/precalc
+  rows were whole-library figures inherited by every minimal archive** —
+  the same defect shape issue #88 fixed for `lib-p384-sha384`, now closed
+  for the other eight. `src/lib_manifest.s` and `src/precalc_manifest.s`
+  previously gated only on `LIB_SHA384_ONLY` / `FP_ONCHIP_MUL`, so the
+  three verify/curve archives and their onchip counterparts all inherited
+  the full-library numbers regardless of what they actually shipped. Four
+  new build gates (`LIB_P256_VERIFY_ONLY`, `LIB_P384_VERIFY_ONLY`,
+  `LIB_P384_CURVE_ONLY`, alongside the existing `LIB_SHA384_ONLY`) give
+  each of the nine archives its own `lib_manifest_<variant>[_onchip].o` /
+  `precalc_manifest_<variant>[_onchip].o` / (for ZP) `zp_config_<variant>.o`.
+  Full per-archive table: `API.md` §8.4.
+
+  Two defects were the most consequential because they were **wrong in a
+  direction that misleads a consumer's own correctness checks**, not just
+  imprecise:
+
+  - `REU_BANKS_USED` was wrong in **6 of 9** archives. The three
+    non-onchip verify/curve archives claimed `$07` (all three REU banks)
+    despite never linking the Lim-Lee comb objects that are bank 2's only
+    consumer — true value `$03`. Their three onchip counterparts claimed
+    `$04` despite issuing **no REU DMA at all** — true value `$00`. A
+    consumer relocating a sibling library's REU footprint to avoid a
+    collision, trusting this equate, would have reserved a bank the
+    archive never touches.
+  - Precalc-row enumeration was false in **6 of 9** archives, most
+    strikingly: `nistcurves-p256-verify.a` — a P-256-only archive with
+    zero P-384 code linked in — was advertising a 24 KB
+    `lim_lee_comb_p384` REU table it does not contain, alongside its own
+    (also absent) `lim_lee_comb_p256` table. This is exactly the audit
+    surface c64-lib-contract SPEC §8.0's cross-adopter grep relies on to
+    detect duplicate table ownership across sibling libraries; a false
+    row doesn't just mis-inform a human reader, it can make a
+    completely absent table look like a duplicate-ownership conflict to
+    that audit.
+
+  A third defect was a correction to a number `RESIDENT_BYTES`/
+  `COLD_BYTES` had used as their shared baseline for every archive,
+  independent of the per-variant work: **`COLD_BYTES = 1800` for the
+  FULL archive was already 19% low** (measured 2219, re-baselined to
+  2200) — outside SPEC §5's ±5% commitment even before any minimal
+  archive existed. The prior derivation missed `reu_fetch_mul_row` (20 B,
+  exported but uncalled by the library — see the `mul_8x8.s` correction
+  below) and 384 B of RFC 6979 self-test vectors carried in
+  `curve256.s`/`curve384.s`. Re-measured per archive: `COLD_BYTES` does
+  **not** share a figure between a variant's onchip and DMA-profile
+  archives (unlike `RESIDENT_BYTES`, which does) — every pair differs by
+  the ~186-200 B boot-only `reu_mul_init` body, present in DMA-profile
+  archives and absent from onchip ones.
+
+- **`ZP_USAGE_BYTES = 32`, set by PR #89 (issue #88) for every archive
+  except SHA-384, was itself wrong by one byte** — found while deriving
+  the per-variant figures above. `ec_scalar_ptr` was documented in
+  `src/zp_config.s`'s header comment and itemized in `src/lib_manifest.s`
+  as a 1-byte "scalar index"; it is actually a 2-byte zero-page pointer
+  (`sta ec_scalar_ptr+1` / `lda (ec_scalar_ptr),y` at multiple call sites
+  in `ecdsa256.s`/`ecdsa384.s`/`points256_core.s`/`points256_comb.s`/
+  `points384_comb.s`/`points384_core.s`). Corrected pre-cleanup total: 33,
+  not 32.
+
+- **Three zero-page slot groups were claimed but referenced by no
+  archived object at all — `fp_loop` (1 B), `poly_i`/`poly_j`/
+  `poly_carry`/`poly_tmp` (4 B, leftover from the pre-§8.3 `mul_8x8` body,
+  issue #14), and `proc_port` (1 B).** `poly_i`/`poly_j`/`poly_carry`/
+  `poly_tmp` were superseded by the canonical `ct_mul_8x8` body's
+  `poly_prod_lo`/`poly_prod_hi` RAM cells (not ZP) and had already been
+  silently dropped from every object's import table by ca65 — the
+  `.importzp` line in `mul_8x8.s` was dead source, confirmed removing it
+  changes zero object bytes. `proc_port` is used only by the never-
+  archived `main.s` test/bench driver; it moves to a local equate there
+  and is **no longer part of the library's ZP contract in any archive**,
+  including the full one. Net: 33 (corrected pre-cleanup total above) − 6
+  dead bytes = **27**, the new default figure.
+
+  **This is an ABI-surface change and needs a MINOR version bump before
+  release** — unlike the rest of this entry's number corrections, which
+  only fix documentation/manifest-equate accuracy, dropping three symbol
+  groups from `zp_config.s`'s `.exportzp` means a consumer that had
+  imported `proc_port`, `fp_loop`, or any `poly_*` slot from this library
+  (rather than defining it locally, as the ROM-banking example in API.md
+  §3 always assumed) will no longer resolve. No known consumer does this
+  — these were dead/hardware-fixed slots, not part of any documented
+  integration path — but it is a real subtraction from the exported
+  symbol surface, not merely additive, so it cannot ride on a PATCH bump
+  under this project's semver policy.
+
+- **`src/mul_8x8.s` — `reu_fetch_mul_row` was documented as "the REU DMA
+  row-fetch helper used by `fp_sqr_384`".** False: `fp_sqr_384` (and
+  every other REU-consuming field routine) inlines its own row-fetch
+  register writes directly; `reu_fetch_mul_row` has zero callers anywhere
+  in the library. It remains exported as a public helper for a consumer
+  driving the fetch sequence directly, and is classified `COLD` in the
+  §5 footprint accounting for exactly that reason (`CLAUDE.md`,
+  `API.md` §8.4.2).
+
+  Issue #91 (filed separately, **not** fixed here): `curve256.o`/
+  `curve384.o` ship 288 B / 96 B of RFC 6979 self-test vectors in 7 of 9
+  consumer archives — dead weight those archives have no use for. The
+  `COLD_BYTES` figures in this release correctly count those bytes as
+  cold for the archives' **current** contents; they will need
+  re-measuring once #91 splits the vectors into their own object.
 
 ## [0.8.0] — 2026-07-28
 

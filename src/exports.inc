@@ -7,10 +7,12 @@
 
 ; -----------------------------------------------------------------------------
 ; zp_config.s — Zero-page equates (shared via .exportzp / .importzp)
-; EXPORTS (all are ZP equates):
-;   proc_port, zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2,
-;   fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_loop, fp_mul_i, fp_mul_j,
-;   ec_scalar_ptr, poly_i, poly_j, poly_carry, poly_tmp
+; EXPORTS (all are ZP equates; default profile -- the export set narrows
+; per -D LIB_SHA384_ONLY / LIB_P256_VERIFY_ONLY / LIB_P384_VERIFY_ONLY /
+; LIB_P384_CURVE_ONLY, see zp_config.s and issue #90):
+;   zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2,
+;   fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j,
+;   ec_scalar_ptr, sha_src, sha_len, sha_w_ptr, sha_w_ptr2
 ; IMPORTS: (none)
 ; -----------------------------------------------------------------------------
 
@@ -33,7 +35,6 @@
 ;          smc_diff_a_imm, poly_prod_lo, poly_prod_hi,
 ;          sqtab_lo, sqtab_hi, reu_fetch_mul_row
 ; IMPORTS:
-;   ZP: poly_i, poly_j, poly_carry, poly_tmp (from zp_config)
 ;   data: mul_cached_a
 ;   constants: reu_reu_hi, reu_reu_bank, reu_command
 ; -----------------------------------------------------------------------------
@@ -283,7 +284,8 @@
 ;          clrscr, print_string, print_hex_byte,
 ;          ecdsa_verify_256_tramp, ecdsa_verify_384_tramp
 ; IMPORTS:
-;   ZP: proc_port, zp_ptr1, fp_misc
+;   ZP (imported): zp_ptr1, fp_misc
+;   ZP (local equate, not a library slot since issue #90): proc_port
 ;   constants: chrout, screen_ram, jiffy_clock, vic_ctrl1
 ;   mul_8x8: sqtab_init
 ;   reu_mul_init: reu_mul_init

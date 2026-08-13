@@ -133,49 +133,77 @@ def _precalc_syms(*names):
 # mirrors the REU_MUL_PROVIDER_SYMS direction at the manifest layer.
 PRECALC_REU_MUL_SYMS = _precalc_syms("reu_mul")
 
+# The remaining rows, split so each archive can pin exactly the tables it
+# carries (issue #90). Before that, sqtab / lim_lee_comb_* were gated only on
+# LIB_SHA384_ONLY and sha384_k was emitted unconditionally, so the six
+# minimal-variant archives each enumerated 2-3 tables they do not contain.
+PRECALC_SQTAB_SYMS = _precalc_syms("sqtab")
+PRECALC_COMB_SYMS = _precalc_syms("lim_lee_comb_p256", "lim_lee_comb_p384")
+PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
+
 # The lib-p384-sha384 archive contains no field, point, or multiply code,
 # so sha384_k is the only precalc table it actually has (issue #88). It
 # previously shipped the default-profile manifest pair and enumerated all
 # five, describing four tables it does not carry — and, because the §8.0
 # cross-adopter audit greps exactly these symbols, advertising itself as an
 # sqtab provider to any sibling library that genuinely ships one.
-PRECALC_NON_SHA_SYMS = _precalc_syms(
-    "sqtab", "reu_mul", "lim_lee_comb_p256", "lim_lee_comb_p384"
-)
-PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
+PRECALC_NON_SHA_SYMS = PRECALC_SQTAB_SYMS | PRECALC_REU_MUL_SYMS | PRECALC_COMB_SYMS
 
-# --- Zero-page claim pins (issue #88) ----------------------------------------
-# The SHA archive exports only the four slots sha384.o actually .importzp's;
-# the other 17 must NOT ship in it. Zero page is the scarcest resource on a
-# 6502 -- on a C64 with BASIC and KERNAL live the genuinely free bytes number
-# in the low tens -- so exporting 31 slots against a real need of 8 can make a
-# consumer's collision check reject an integration that would have fit. Both
-# directions ratchet: the four must be present (sha384.o cannot link without
-# them) and the rest absent.
-ZP_SHA384_SYMS = {"sha_src", "sha_len", "sha_w_ptr", "sha_w_ptr2"}
-ZP_NON_SHA_SYMS = {
-    "proc_port", "zp_tmp1", "zp_tmp2", "zp_ptr1", "zp_ptr2",
-    "fp_src1", "fp_src2", "fp_dst", "fp_misc",
-    "fp_carry", "fp_loop", "fp_mul_i", "fp_mul_j",
-    "ec_scalar_ptr", "poly_i", "poly_j", "poly_carry", "poly_tmp",
-}
-
-# --- §5 manifest VALUE pins (issue #88) --------------------------------------
-# Each archive's §5 equates must describe THAT archive, not the library as a
-# whole. Only values that are contractually load-bearing are pinned here:
+# --- Zero-page claim pins (issues #88 / #90) ---------------------------------
+# Each archive exports only the slots its own objects .importzp; everything
+# else must NOT ship in it. Zero page is the scarcest resource on a 6502 -- on
+# a C64 with BASIC and KERNAL live the genuinely free bytes number in the low
+# tens -- so exporting the whole-library set against a real need of 8-15 can
+# make a consumer's collision check reject an integration that would have fit.
+# Both directions ratchet: the slots an archive's objects import must be
+# present (it cannot link without them) and the rest absent.
 #
+# The field/point layer plus an ecdsa*_nocomb verifier -- what every curve
+# archive has in common (9 slots, 15 B).
+ZP_VERIFY_SYMS = {
+    "fp_src1", "fp_src2", "fp_dst", "fp_misc",
+    "fp_carry", "fp_mul_i", "fp_mul_j",
+    "ec_scalar_ptr", "zp_ptr2",
+}
+# Used only by points256_comb.o / points384_comb.o (zp_ptr1 for the anchor
+# copy in ec_precompute_*, zp_tmp1/zp_tmp2 in sm384w_calc_reu_offset), so
+# these ship in the two full archives and nowhere else.
+ZP_COMB_SYMS = {"zp_tmp1", "zp_tmp2", "zp_ptr1"}
+ZP_SHA384_SYMS = {"sha_src", "sha_len", "sha_w_ptr", "sha_w_ptr2"}
+# Default profile: 16 slots, 27 B.
+ZP_DEFAULT_SYMS = ZP_VERIFY_SYMS | ZP_COMB_SYMS | ZP_SHA384_SYMS
+ZP_NON_SHA_SYMS = ZP_VERIFY_SYMS | ZP_COMB_SYMS
+# proc_port, fp_loop, and poly_i/poly_j/poly_carry/poly_tmp are deliberately
+# absent from every set above: issue #90 established that no archived object
+# references any of them and removed their definitions from zp_config.s
+# (proc_port survives as a local equate in the never-archived main.s).
+
+# --- §5 manifest VALUE pins (issues #88 / #90) -------------------------------
+# Each archive's §5 equates must describe THAT archive, not the library as a
+# whole. Every load-bearing value is pinned for all nine:
+#
+#   ZP_USAGE_BYTES     over-claiming can push a consumer's collision check into
+#                      rejecting an integration that would have fit; under-
+#                      claiming lets it place a variable in a byte the library
+#                      silently clobbers mid-operation
 #   REU_BANKS_USED     over-claiming makes a consumer reserve banks it could
 #                      have used for something else
+#   RESIDENT_BYTES     over-claiming fails the §5 fit check closed against a
+#                      region the archive would actually have fit in
+#   COLD_BYTES         mis-states how much the consumer can page-overlay
 #   SHARED_PRIMITIVES  over-claiming trips a co-linked sibling's §8.0
 #                      disjointness assert on a valid composition
 #   SHARED_CONSUMES    over-claiming makes the v0.5.0 coverage assert demand a
 #                      provider the link has no use for
 #
-# RESIDENT_BYTES / COLD_BYTES are deliberately NOT pinned for the curve
-# archives: they still carry whole-library figures (1.5x-3x overstated for the
-# minimal variants) pending the per-variant re-derivation tracked in issue #90.
-# The sha384 archive IS pinned, since issue #88 re-derived it from a measured
-# ld65 map.
+# RESIDENT_BYTES / COLD_BYTES for the curve archives were previously left
+# unpinned because they carried whole-library figures pending issue #90; that
+# re-derivation has now landed, so they ratchet here like everything else.
+# Values are the per-variant measurement: ZP by variant only (the profile does
+# not change which ZP scratch the field layer uses), REU banks and COLD by
+# variant AND profile (the onchip archives ship no reu_mul table and no
+# reu_mul_init body), RESIDENT by variant only (the four default/onchip pairs
+# measure within 0.3-1.3%, inside SPEC §5's ±5% band).
 MANIFEST_VALUES = {
     "nistcurves-p384-sha384.a": {
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
@@ -186,52 +214,116 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_COLD_BYTES": 0,
     },
     "nistcurves.a": {
-        "LIB_NISTCURVES_ZP_USAGE_BYTES": 32,
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 27000,
+        "LIB_NISTCURVES_COLD_BYTES": 2200,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
     "nistcurves-onchip.a": {
-        "LIB_NISTCURVES_ZP_USAGE_BYTES": 32,
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 27000,
+        "LIB_NISTCURVES_COLD_BYTES": 2000,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    },
+    "nistcurves-p256-verify.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8700,
+        "LIB_NISTCURVES_COLD_BYTES": 720,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
     "nistcurves-p256-verify-onchip.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8700,
+        "LIB_NISTCURVES_COLD_BYTES": 530,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    },
+    "nistcurves-p384-verify.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8300,
+        "LIB_NISTCURVES_COLD_BYTES": 530,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
     "nistcurves-p384-verify-onchip.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8300,
+        "LIB_NISTCURVES_COLD_BYTES": 340,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
+    "nistcurves-p384-curve.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 17400,
+        "LIB_NISTCURVES_COLD_BYTES": 530,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
+    },
     "nistcurves-p384-curve-onchip.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 17400,
+        "LIB_NISTCURVES_COLD_BYTES": 340,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
 }
 
+# Per-archive precalc row sets, straight from what each archive contains:
+# the comb rows only where points*_comb.o ships (the two full archives), the
+# sha384_k row only where sha384.o ships, the reu_mul row only in the DMA
+# profile. Pinning both directions is what regression-tests the issue #90 bug
+# class -- a future edit that re-broadens a gate would otherwise stay green.
+PRECALC_FULL = PRECALC_SQTAB_SYMS | PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
+PRECALC_VERIFY = PRECALC_SQTAB_SYMS
+PRECALC_CURVE = PRECALC_SQTAB_SYMS | PRECALC_SHA384_K_SYMS
+
 MUST_EXPORT = {
-    "nistcurves.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
-    "nistcurves-p256-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
-    "nistcurves-p384-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
-    "nistcurves-p384-curve.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
+    "nistcurves.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
+                     | PRECALC_FULL | PRECALC_REU_MUL_SYMS | ZP_DEFAULT_SYMS),
+    "nistcurves-p256-verify.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
+                                 | PRECALC_VERIFY | PRECALC_REU_MUL_SYMS
+                                 | ZP_VERIFY_SYMS),
+    "nistcurves-p384-verify.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
+                                 | PRECALC_VERIFY | PRECALC_REU_MUL_SYMS
+                                 | ZP_VERIFY_SYMS),
+    "nistcurves-p384-curve.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
+                                | PRECALC_CURVE | PRECALC_REU_MUL_SYMS
+                                | ZP_VERIFY_SYMS | ZP_SHA384_SYMS),
     "nistcurves-p384-sha384.a": MANIFEST_SYMS | PRECALC_SHA384_K_SYMS | ZP_SHA384_SYMS,
-    "nistcurves-onchip.a": MANIFEST_SYMS,
-    "nistcurves-p256-verify-onchip.a": MANIFEST_SYMS,
-    "nistcurves-p384-verify-onchip.a": MANIFEST_SYMS,
-    "nistcurves-p384-curve-onchip.a": MANIFEST_SYMS,
+    "nistcurves-onchip.a": MANIFEST_SYMS | PRECALC_FULL | ZP_DEFAULT_SYMS,
+    "nistcurves-p256-verify-onchip.a": MANIFEST_SYMS | PRECALC_VERIFY | ZP_VERIFY_SYMS,
+    "nistcurves-p384-verify-onchip.a": MANIFEST_SYMS | PRECALC_VERIFY | ZP_VERIFY_SYMS,
+    "nistcurves-p384-curve-onchip.a": (MANIFEST_SYMS | PRECALC_CURVE
+                                       | ZP_VERIFY_SYMS | ZP_SHA384_SYMS),
 }
 MUST_NOT_EXPORT = {
     "nistcurves.a": set(),
-    "nistcurves-p256-verify.a": set(),
-    "nistcurves-p384-verify.a": set(),
-    "nistcurves-p384-curve.a": set(),
+    "nistcurves-p256-verify.a": (PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
+                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS),
+    "nistcurves-p384-verify.a": (PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
+                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS),
+    "nistcurves-p384-curve.a": PRECALC_COMB_SYMS | ZP_COMB_SYMS,
     "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS | ZP_NON_SHA_SYMS,
     "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
-    "nistcurves-p256-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
-    "nistcurves-p384-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
-    "nistcurves-p384-curve-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
+    "nistcurves-p256-verify-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
+                                        | PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
+                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS),
+    "nistcurves-p384-verify-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
+                                        | PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
+                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS),
+    "nistcurves-p384-curve-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
+                                       | PRECALC_COMB_SYMS | ZP_COMB_SYMS),
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------

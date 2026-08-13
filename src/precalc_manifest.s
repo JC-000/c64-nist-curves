@@ -64,30 +64,74 @@
 
 .include "precalc_table.inc"
 
-; LIB_SHA384_ONLY (issue #88): the `lib-p384-sha384` archive carries no
-; field or multiply code, so the only precalculated table it actually
-; contains is sha384_k. Enumerating sqtab / reu_mul / lim_lee_comb_*
-; there described tables absent from the archive, and -- since the
-; enumeration is what the SPEC §8.0 cross-adopter audit greps -- would
-; have made a SHA-only link look like a duplicate sqtab provider to any
-; sibling library that genuinely ships one.
-.ifndef LIB_SHA384_ONLY
-LIB_PRECALC_TABLE "sqtab",             1024,   PRECALC_REGION_RAM,    PRECALC_SHARED_YES, "NISTCURVES"
+; --- Row-presence flags per build configuration (issue #90) -----------------
+; Each table's presence depends on the variant switch (if any) AND, for
+; reu_mul, the profile switch -- not on LIB_SHA384_ONLY alone as it did
+; through v0.8.0. Computed once here, then used to gate each
+; LIB_PRECALC_TABLE invocation below, mirroring the _OWN_* / _USE_* flag
+; pattern in lib_manifest.s.
+;
+; Two rows were wrong before this gate existed, in the same shape issue
+; #88 fixed for the SHA archive: `lim_lee_comb_p256` / `_p384` were gated
+; only on LIB_SHA384_ONLY, and `sha384_k` was emitted unconditionally.
+; Correct while `default` and `default+onchip` were the only non-SHA
+; archives; false once minimal variants exist that ship neither the comb
+; objects nor sha384.o. Since the enumeration is exactly what the SPEC
+; §8.0 cross-adopter audit greps, an over-enumerated archive advertises
+; itself as a provider of tables it does not carry.
 
-; FP_ONCHIP_MUL (issue #78): the turbo profile generates multiply rows
-; on-chip -- no onchip archive builds or reads an REU multiply table, so
-; the reu_mul row is not enumerated under the profile (gating the macro
-; call itself matches c64-x25519 PR #73). Scope note: ONLY reu_mul
-; (banks $00/$01) disappears under onchip; the lim_lee_comb_* tables
-; below stay unconditional because the onchip full/curve archives still
-; populate and read REU bank $02.
-.ifndef FP_ONCHIP_MUL
-LIB_PRECALC_TABLE "reu_mul",           131072, PRECALC_REGION_REU,    PRECALC_SHARED_YES, "NISTCURVES"
+; sqtab: every build that has field arithmetic at all -- i.e. everything
+; except LIB_SHA384_ONLY.
+.ifdef LIB_SHA384_ONLY
+  _HAS_SQTAB = 0
+.else
+  _HAS_SQTAB = 1
 .endif
 
+; reu_mul: field-arithmetic builds that DMA-fetch multiply rows from the
+; REU. Not LIB_SHA384_ONLY (no field layer) and not FP_ONCHIP_MUL (rows
+; generated on-chip; no onchip archive builds or reads the table, issue
+; #78) -- the one row whose presence depends on the profile axis.
+.ifdef LIB_SHA384_ONLY
+  _HAS_REU_MUL = 0
+.elseif .defined(FP_ONCHIP_MUL)
+  _HAS_REU_MUL = 0
+.else
+  _HAS_REU_MUL = 1
+.endif
+
+; lim_lee_comb_{p256,p384}: only the two full archives ship
+; points256_comb.o / points384_comb.o. LIB_SHA384_ONLY and all three
+; minimal verify/curve variants take the ECDSA_NO_COMB verifiers, which
+; route u1*G through the variable-base ladder, and never link the comb
+; objects (issue #90). This row set is variant-only: the onchip full
+; archives still populate and read REU bank $02.
+.if .defined(LIB_SHA384_ONLY) .or .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
+  _HAS_LIMLEE_COMB = 0
+.else
+  _HAS_LIMLEE_COMB = 1
+.endif
+
+; sha384_k: builds that ship sha384.o -- the two full archives,
+; LIB_SHA384_ONLY itself, and LIB_P384_CURVE_ONLY (which bundles SHA-384
+; plus the packaged ecdsa_verify_with_message_384 wrapper). The two
+; *_VERIFY_ONLY variants do not.
+.if .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY)
+  _HAS_SHA384_K = 0
+.else
+  _HAS_SHA384_K = 1
+.endif
+
+.if _HAS_SQTAB
+LIB_PRECALC_TABLE "sqtab",             1024,   PRECALC_REGION_RAM,    PRECALC_SHARED_YES, "NISTCURVES"
+.endif
+.if _HAS_REU_MUL
+LIB_PRECALC_TABLE "reu_mul",           131072, PRECALC_REGION_REU,    PRECALC_SHARED_YES, "NISTCURVES"
+.endif
+.if _HAS_LIMLEE_COMB
 LIB_PRECALC_TABLE "lim_lee_comb_p256", 16384,  PRECALC_REGION_REU,    PRECALC_SHARED_NO,  "NISTCURVES"
 LIB_PRECALC_TABLE "lim_lee_comb_p384", 24576,  PRECALC_REGION_REU,    PRECALC_SHARED_NO,  "NISTCURVES"
-.endif ; LIB_SHA384_ONLY
-
-; The one table a SHA-only build does contain -- unconditional.
+.endif
+.if _HAS_SHA384_K
 LIB_PRECALC_TABLE "sha384_k",          640,    PRECALC_REGION_RODATA, PRECALC_SHARED_NO,  "NISTCURVES"
+.endif

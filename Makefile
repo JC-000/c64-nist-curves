@@ -218,6 +218,82 @@ LIB_CORE_SHA384_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/precalc_manifest_sha384.o \
                 $(BUILD_DIR)/zp_config_sha384.o
 
+# Per-variant manifest triples (issue #90). The three minimal curve
+# archives previously inherited the whole-library ZP_USAGE_BYTES /
+# REU_BANKS_USED / RESIDENT_BYTES / COLD_BYTES and precalc row set from
+# lib_manifest.o / precalc_manifest.o / zp_config.o -- the same "one
+# manifest object describes the whole library" defect issue #88 fixed for
+# LIB_SHA384_ONLY, and over-claiming in the same fail-closed direction
+# (ZP 32 vs a real 15/23, banks $07 vs $03, four precalc rows for tables
+# the archive lacks).
+#
+# zp_config needs ONE object per variant, shared between that variant's
+# onchip and non-onchip archives, because ZP truth does not depend on
+# FP_ONCHIP_MUL (measured: each variant's two archives have byte-identical
+# ZP import sets). lib_manifest / precalc_manifest need TWO per variant,
+# because REU banks, COLD_BYTES, and the reu_mul precalc row all do depend
+# on it. Same asymmetry as the un-suffixed zp_config.o already shared
+# between nistcurves.a and nistcurves-onchip.a today.
+$(BUILD_DIR)/zp_config_p256verify.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/zp_config_p384verify.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/zp_config_p384curve.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) -o $@ $<
+
+$(BUILD_DIR)/lib_manifest_p256verify.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/lib_manifest_p256verify_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/lib_manifest_p384verify.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/lib_manifest_p384verify_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/lib_manifest_p384curve.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/lib_manifest_p384curve_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+
+$(BUILD_DIR)/precalc_manifest_p256verify.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_p256verify_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_p384verify.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_p384verify_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_p384curve.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_p384curve_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) -o $@ $<
+
+LIB_CORE_P256VERIFY_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p256verify.o \
+                $(BUILD_DIR)/precalc_manifest_p256verify.o \
+                $(BUILD_DIR)/zp_config_p256verify.o
+LIB_CORE_P256VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p256verify_onchip.o \
+                $(BUILD_DIR)/precalc_manifest_p256verify_onchip.o \
+                $(BUILD_DIR)/zp_config_p256verify.o
+
+LIB_CORE_P384VERIFY_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p384verify.o \
+                $(BUILD_DIR)/precalc_manifest_p384verify.o \
+                $(BUILD_DIR)/zp_config_p384verify.o
+LIB_CORE_P384VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p384verify_onchip.o \
+                $(BUILD_DIR)/precalc_manifest_p384verify_onchip.o \
+                $(BUILD_DIR)/zp_config_p384verify.o
+
+LIB_CORE_P384CURVE_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p384curve.o \
+                $(BUILD_DIR)/precalc_manifest_p384curve.o \
+                $(BUILD_DIR)/zp_config_p384curve.o
+LIB_CORE_P384CURVE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p384curve_onchip.o \
+                $(BUILD_DIR)/precalc_manifest_p384curve_onchip.o \
+                $(BUILD_DIR)/zp_config_p384curve.o
+
 # Field / multiply machinery (shared by every curve-using archive).
 # reu_mul_init.o is the SPEC §8.2 reu_mul provider (issue #81): default-
 # profile archive consumers must be able to `jsr reu_mul_init` at boot
@@ -328,13 +404,13 @@ $(LIB_DIR)/nistcurves.a: $(LIB_FULL_OBJS) | $(LIB_DIR)
 	rm -f $@
 	ar65 a $@ $(LIB_FULL_OBJS)
 
-$(LIB_DIR)/nistcurves-p256-verify.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_VERIFY_OBJS) | $(LIB_DIR)
+$(LIB_DIR)/nistcurves-p256-verify.a: $(LIB_CORE_P256VERIFY_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_VERIFY_OBJS) | $(LIB_DIR)
 	rm -f $@
-	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_VERIFY_OBJS)
+	ar65 a $@ $(LIB_CORE_P256VERIFY_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_VERIFY_OBJS)
 
-$(LIB_DIR)/nistcurves-p384-verify.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) | $(LIB_DIR)
+$(LIB_DIR)/nistcurves-p384-verify.a: $(LIB_CORE_P384VERIFY_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) | $(LIB_DIR)
 	rm -f $@
-	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS)
+	ar65 a $@ $(LIB_CORE_P384VERIFY_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS)
 
 # SHA-384 is self-contained: no REU, no multiply tables. Drop the entire
 # LIB_MUL_OBJS set to keep the archive minimal, and use the SHA-only
@@ -344,25 +420,25 @@ $(LIB_DIR)/nistcurves-p384-sha384.a: $(LIB_CORE_SHA384_OBJS) $(LIB_SHA384_OBJS) 
 	rm -f $@
 	ar65 a $@ $(LIB_CORE_SHA384_OBJS) $(LIB_SHA384_OBJS)
 
-$(LIB_DIR)/nistcurves-p384-curve.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
+$(LIB_DIR)/nistcurves-p384-curve.a: $(LIB_CORE_P384CURVE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
 	rm -f $@
-	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
+	ar65 a $@ $(LIB_CORE_P384CURVE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
 
 $(LIB_DIR)/nistcurves-onchip.a: $(LIB_FULL_ONCHIP_OBJS) | $(LIB_DIR)
 	rm -f $@
 	ar65 a $@ $(LIB_FULL_ONCHIP_OBJS)
 
-$(LIB_DIR)/nistcurves-p256-verify-onchip.a: $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_VERIFY_ONCHIP_OBJS) | $(LIB_DIR)
+$(LIB_DIR)/nistcurves-p256-verify-onchip.a: $(LIB_CORE_P256VERIFY_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_VERIFY_ONCHIP_OBJS) | $(LIB_DIR)
 	rm -f $@
-	ar65 a $@ $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_VERIFY_ONCHIP_OBJS)
+	ar65 a $@ $(LIB_CORE_P256VERIFY_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_VERIFY_ONCHIP_OBJS)
 
-$(LIB_DIR)/nistcurves-p384-verify-onchip.a: $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) | $(LIB_DIR)
+$(LIB_DIR)/nistcurves-p384-verify-onchip.a: $(LIB_CORE_P384VERIFY_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) | $(LIB_DIR)
 	rm -f $@
-	ar65 a $@ $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS)
+	ar65 a $@ $(LIB_CORE_P384VERIFY_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS)
 
-$(LIB_DIR)/nistcurves-p384-curve-onchip.a: $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
+$(LIB_DIR)/nistcurves-p384-curve-onchip.a: $(LIB_CORE_P384CURVE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
 	rm -f $@
-	ar65 a $@ $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
+	ar65 a $@ $(LIB_CORE_P384CURVE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P384_VERIFY_ONCHIP_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o
 
 # --- Archive linkability contract ratchet (issue #60) ------------------------
 # Builds all five archives, then runs tools/check_archives.py, which pins the
