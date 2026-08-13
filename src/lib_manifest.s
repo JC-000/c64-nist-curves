@@ -19,6 +19,10 @@
 ;                                     consumer MAY page-overlay (boot-only
 ;                                     init, reference-only routines, LUTs
 ;                                     that could be re-loaded on demand).
+;   LIB_NISTCURVES_SHARED_PRIMITIVES- §8 primitives OWNED by this build.
+;   LIB_NISTCURVES_SHARED_CONSUMES  - §8 primitives CONSUMED by this build
+;                                     (v0.5.0 companion mask; see the
+;                                     three-state discussion below).
 ;
 ; All values are integer equates. Consumer-side assemble-time `.assert`
 ; checks compare them against ld65-published `__<MEMORY>_SIZE__` symbols
@@ -47,9 +51,9 @@
 ; | (1 << BANK_COMB)` because ca65 cannot evaluate arithmetic expressions
 ; over `.import`-ed symbols at assembly time -- imports are unresolved until
 ; link. A consumer that overrides LIB_NISTCURVES_REU_BANK_MUL or _COMB via
-; `ca65 --asm-define` MUST also override LIB_NISTCURVES_REU_BANKS_USED to
-; keep the bitmask consistent. The standalone library build uses the default
-; layout; the override path is exercised by consumer cfgs.
+; `ca65 -D` MUST also override LIB_NISTCURVES_REU_BANKS_USED to keep the
+; bitmask consistent. The standalone library build uses the default layout;
+; the override path is exercised by consumer cfgs.
 ; -----------------------------------------------------------------------------
 ; FP_ONCHIP_MUL (issue #69 turbo profile): the field layer computes multiply
 ; rows on-chip via ct_mul_8x8 and never DMA-fetches from the mul-table
@@ -287,6 +291,85 @@
 .endif
 
 
+; -----------------------------------------------------------------------------
+; Shared-primitives CONSUMPTION bitmask (SPEC §5 + §8.0, required v0.5.0)
+; -----------------------------------------------------------------------------
+; Companion to the ownership mask above. A clear OWNERSHIP bit is ambiguous
+; on its own -- it means either of two states that impose OPPOSITE
+; obligations on the composed consumer (lib-contract #44 / PR #45):
+;
+;   deferring consumer  -- the build still READS the primitive at runtime.
+;                          The composed link MUST contain exactly one owner,
+;                          and boot MUST initialize it before first use.
+;   non-consumer        -- the primitive is absent from this build config
+;                          entirely. No provider obligation at all.
+;
+; This library is the worked example of the ambiguity: our
+; SHARED_REU_MUL_INIT deferral build and our FP_ONCHIP_MUL profile build
+; BOTH export LIB_NISTCURVES_SHARED_PRIMITIVES = $0005, while the first
+; requires a §8.2 provider in the link and the second requires none.
+;
+; The consumes bit is set iff this build configuration consumes the
+; primitive AT ALL. The distinction from the ownership mask is which
+; switches gate it:
+;
+;   profile / config gates (FP_ONCHIP_MUL)  -- drop the bit from BOTH masks
+;   SHARED_* deferral switches              -- drop the bit from the
+;                                              OWNERSHIP mask ONLY
+;
+; Resulting per-config values:
+;
+;   build config                      | PRIMITIVES | CONSUMES
+;   ----------------------------------+------------+----------
+;   default, standalone               |   $0007    |  $0007
+;   default + SHARED_REU_MUL_INIT     |   $0005    |  $0007
+;   FP_ONCHIP_MUL                     |   $0005    |  $0005
+;
+; §8.1 sqtab and §8.3 ct_mul_8x8 are consumed unconditionally, so neither
+; is gated below. Under FP_ONCHIP_MUL sqtab is in fact verify-HOT (the
+; issue #71 inline quarter-square reads it per product) where in the
+; default profile it is boot-only -- consumed either way.
+;
+; ct_mul_8x8 under FP_ONCHIP_MUL deserves a note, since the runtime path
+; never calls it (the issue #71 row generator inlines its own
+; quarter-square; ct_mul_8x8 remains boot/diag-only). SPEC §8.0 is
+; explicit that this still counts as consumption: "exporting a
+; primitive's canonical body or init per its §8.x clause counts as
+; consuming it, even when no runtime path in that build config invokes
+; it" -- the body is present, callable, and available for a co-linked
+; sibling to defer to. The clause names this library's FP_ONCHIP_MUL
+; build as its worked example and warns specifically against resolving
+; it by dropping the ownership bit, because a sibling's deferral may
+; depend on that body being here.
+; -----------------------------------------------------------------------------
+.ifdef FP_ONCHIP_MUL
+  _USE_REU_MUL = 0
+.else
+  _USE_REU_MUL = LIB_SHARED_PRIMITIVES_REU_MUL
+.endif
+
+.ifndef LIB_NISTCURVES_SHARED_CONSUMES
+  LIB_NISTCURVES_SHARED_CONSUMES = LIB_SHARED_PRIMITIVES_SQTAB | _USE_REU_MUL | LIB_SHARED_PRIMITIVES_CT_MUL_8X8
+.endif
+
+; Subset invariant (SPEC §8.0, required): a build cannot own a primitive
+; it does not consume. Catches the mis-gating that would otherwise ship a
+; mask pair claiming provider duty for a primitive this profile compiled
+; out -- e.g. re-expressing the onchip §8.2 exclusion through
+; SHARED_REU_MUL_INIT (which zeroes ownership but NOT consumption) would
+; leave CONSUMES claiming $0002 with no provider, and the consumer-side
+; coverage assert would then demand a §8.2 owner in a link that needs
+; none.
+.assert (LIB_NISTCURVES_SHARED_PRIMITIVES & ~LIB_NISTCURVES_SHARED_CONSUMES) = 0, error, "a build cannot own a primitive it does not consume"
+
+; Permanent profile guard, mirroring the ownership-side assert above: an
+; FP_ONCHIP_MUL build consumes no §8.2 reu_mul table, so a consumer
+; composing it must not be told to supply a provider for one.
+.ifdef FP_ONCHIP_MUL
+  .assert (LIB_NISTCURVES_SHARED_CONSUMES & LIB_SHARED_PRIMITIVES_REU_MUL) = 0, error, "FP_ONCHIP_MUL manifest must not claim SPEC 8.2 reu_mul consumption"
+.endif
+
+
 ; --- Exports ---
 ; Force absolute address-size on the exports: the integer-equate values
 ; can fit in zero-page so ca65 would otherwise tag them as `zeropage` and
@@ -298,3 +381,4 @@
 .export LIB_NISTCURVES_RESIDENT_BYTES:abs
 .export LIB_NISTCURVES_COLD_BYTES:abs
 .export LIB_NISTCURVES_SHARED_PRIMITIVES:abs
+.export LIB_NISTCURVES_SHARED_CONSUMES:abs

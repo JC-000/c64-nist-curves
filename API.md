@@ -800,21 +800,51 @@ checks, defined in `src/lib_version.s` (the fourth, `LIB_ABI_VERSION`,
 landed in v0.3.0 per c64-lib-contract SPEC §1):
 
 ```asm
-.import LIB_VERSION_MAJOR, LIB_VERSION_MINOR, LIB_VERSION_PATCH
-.import LIB_ABI_VERSION
+.import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
+.import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
-.if LIB_VERSION_MAJOR <> 0 .or LIB_VERSION_MINOR < 7
+.if LIB_NISTCURVES_VERSION_MAJOR <> 0 .or LIB_NISTCURVES_VERSION_MINOR < 7
     .error "c64-nist-curves v0.7.0 or newer is required"
 .endif
 
-.if LIB_ABI_VERSION <> 0
+.if LIB_NISTCURVES_ABI_VERSION <> 0
     .error "c64-nist-curves ABI v0 expected; rebuild consumer"
 .endif
 ```
 
-`LIB_ABI_VERSION` bumps in lockstep with `LIB_VERSION_MAJOR` and is the
-load-bearing gate for consumers pinning to a specific ABI generation —
-it changes only when public exports are removed or renamed.
+`LIB_NISTCURVES_ABI_VERSION` bumps in lockstep with
+`LIB_NISTCURVES_VERSION_MAJOR` and is the load-bearing gate for consumers
+pinning to a specific ABI generation — it changes only when public
+exports are removed or renamed.
+
+**Bare vs prefixed forms.** The library-prefixed names above are
+canonical as of c64-lib-contract v0.7.0. The library additionally exports
+the unprefixed `LIB_VERSION_MAJOR` / `_MINOR` / `_PATCH` /
+`LIB_ABI_VERSION` as aliases, so consumers written against v0.8.0 and
+earlier keep working with no change. Those bare names are **deprecated
+and removed at contract v1.0**: they are identical across every library
+adopting the contract, so a consumer that links two sibling libraries and
+imports both manifests gets
+
+```
+ld65: Error: Duplicate external identifier: 'LIB_VERSION_MAJOR'
+```
+
+A consumer composing two or more contract libraries builds **all** of
+them with
+
+```sh
+ca65 -D LIB_NO_BARE_EXPORTS=1 ...
+```
+
+which suppresses the bare forms library-wide, and imports the prefixed
+names only. Beyond avoiding the collision, the prefixed form makes a
+version guard name *which* library is out of date instead of reporting
+one anonymous version. Single-library consumers need not define it.
+
+The same `-D LIB_NO_BARE_EXPORTS=1` switch also suppresses the bare
+`LIB_PRECALC_<name>_*` triples described in §8.6.1 — it is one build-wide
+flag covering both symbol families.
 
 The library is currently in the v0.x pre-stable series. Version policy:
 
@@ -843,13 +873,13 @@ surface a consumer can use at assemble time to (a) override placement
 decisions and (b) detect cross-library conflicts when linking multiple
 sibling crypto libraries into the same PRG.
 
-**§3 REU placement** (consumer overrides via `ca65 --asm-define`):
+**§3 REU placement** (consumer overrides via `ca65 -D`):
 
 ```asm
-ca65 --asm-define LIB_NISTCURVES_REU_BANK_MUL=$03 ...        # default $00
-ca65 --asm-define LIB_NISTCURVES_REU_BANK_COMB=$05 ...       # default $02
-ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P256=$0000  # default $0000
-ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
+ca65 -D LIB_NISTCURVES_REU_BANK_MUL=$03 ...        # default $00
+ca65 -D LIB_NISTCURVES_REU_BANK_COMB=$05 ...       # default $02
+ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P256=$0000  # default $0000
+ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 ```
 
 **§5 manifest equates** (consumer imports for cfg-side fit checks):
@@ -870,17 +900,24 @@ ca65 --asm-define LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 provides one base address, all sqtab-consuming sibling libs agree):
 
 ```asm
-ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<page-aligned-addr>
+ca65 -D LIB_SHARED_SQTAB_BASE=$<page-aligned-addr>
 ```
 
 Default `$9c00`. Page-aligned + `sqtab_hi = sqtab_lo + $0200` are
 enforced by `.assert` in `src/mul_8x8.s`. `LIB_NISTCURVES_SHARED_PRIMITIVES`
 bit `$0001` (= `LIB_SHARED_PRIMITIVES_SQTAB`) signals to consumers that
 this library claims ownership of the §8.1 primitive; consumers `.assert
-(LIB_NISTCURVES_SHARED_PRIMITIVES .and LIB_X_SHARED_PRIMITIVES) = 0` to
+(LIB_NISTCURVES_SHARED_PRIMITIVES & LIB_X_SHARED_PRIMITIVES) = 0` to
 catch double-ownership at link time when also pulling in another
 sqtab-consuming sibling (`c64-x25519`, `c64-ChaCha20-Poly1305`). See
 c64-lib-contract SPEC §8.1 for the full placement contract.
+
+> **Use `&`, not `.and`.** ca65's `.and` is the *boolean* operator; on
+> integer masks it evaluates operands for truthiness, so two correctly
+> **disjoint** masks like `$0005` and `$0002` yield true-and-true = true
+> and the assert fires spuriously. The bitwise operator is `&`. (Fixed
+> upstream in c64-lib-contract v0.4.2, issue #41; this page carried the
+> `.and` spelling until issue #86.)
 
 The mask is **conditional** (SPEC §8.0, v0.4.0): building with a
 primitive's deferral switch defined (`-D SHARED_SQTAB_INIT`,
@@ -894,6 +931,66 @@ holds. Standalone default-profile builds (no switches) export `$0007`;
 deliberate omission rather than a `SHARED_REU_MUL_INIT` deferral
 (§8.4.2, issue #78).
 
+**Companion mask `LIB_NISTCURVES_SHARED_CONSUMES`** (SPEC §5 + §8.0,
+required since contract v0.5.0; adopted here in issue #86). The
+ownership mask alone is ambiguous when a bit is *clear*, because two
+different build configurations clear it for opposite reasons:
+
+| State | `SHARED_PRIMITIVES` | `SHARED_CONSUMES` | What the consumer must do |
+|---|---|---|---|
+| **owner** | set | set | Nothing — this library provides the primitive. |
+| **deferring consumer** | clear | set | Ensure exactly one *other* module in the link owns it, and that boot initializes it before first use. |
+| **non-consumer** | clear | clear | Nothing — the primitive is absent from this build entirely. |
+
+This library is the worked example the contract clause was written
+against: our `-D SHARED_REU_MUL_INIT` build and our `-D FP_ONCHIP_MUL`
+build both export `LIB_NISTCURVES_SHARED_PRIMITIVES = $0005`, but the
+first *requires* a §8.2 provider elsewhere in the link and the second
+requires none. The consumes mask separates them:
+
+| Build configuration | `SHARED_PRIMITIVES` | `SHARED_CONSUMES` |
+|---|---|---|
+| default, standalone | `$0007` | `$0007` |
+| default + `-D SHARED_REU_MUL_INIT` | `$0005` | `$0007` |
+| `-D FP_ONCHIP_MUL` | `$0005` | `$0005` |
+
+The gating rule: **profile switches** (`FP_ONCHIP_MUL`) drop a bit from
+*both* masks; **deferral switches** (`SHARED_*`) drop it from the
+ownership mask *only*. The library pins the invariant itself at
+assemble time in `src/lib_manifest.s`:
+
+```asm
+.assert (LIB_NISTCURVES_SHARED_PRIMITIVES & ~LIB_NISTCURVES_SHARED_CONSUMES) = 0, error, "a build cannot own a primitive it does not consume"
+```
+
+Consumers pair the existing disjointness check with a coverage check, so
+every consumed primitive has exactly one owner somewhere in the link:
+
+```asm
+; no double ownership (v0.4.0)
+.assert (LIB_NISTCURVES_SHARED_PRIMITIVES & LIB_X_SHARED_PRIMITIVES) = 0, error, "shared-primitive double-ownership"
+; no consumed primitive without an owner (v0.5.0)
+.assert ((LIB_NISTCURVES_SHARED_CONSUMES | LIB_X_SHARED_CONSUMES) & ~(LIB_NISTCURVES_SHARED_PRIMITIVES | LIB_X_SHARED_PRIMITIVES)) = 0, error, "consumed shared primitive with no owner in the link"
+```
+
+If the consumer application supplies a primitive from its own modules
+(the original intent of the `SHARED_*` switches — every linked library
+defers, the app provides), OR its own contribution into the owner union:
+
+```asm
+APP_OWNED = LIB_SHARED_PRIMITIVES_SQTAB
+.assert ((LIB_NISTCURVES_SHARED_CONSUMES | LIB_X_SHARED_CONSUMES) & ~(LIB_NISTCURVES_SHARED_PRIMITIVES | LIB_X_SHARED_PRIMITIVES | APP_OWNED)) = 0, error, "consumed shared primitive with no owner in the link"
+```
+
+One subtlety worth stating explicitly, because it looks like an error:
+the `FP_ONCHIP_MUL` build claims §8.3 `ct_mul_8x8` (`$0004`) in **both**
+masks even though its row generator never calls `ct_mul_8x8` at runtime
+(issue #71 inlines its own quarter-square; the canonical body stays
+boot/diag-only). Per SPEC §8.0, shipping a primitive's canonical body
+counts as consuming it — the body is present, callable, and available
+for a co-linked sibling to defer to. Dropping the bit would break that
+sibling's deferral.
+
 **§8.0 precalc-table manifest** (`src/precalc_manifest.s`): alongside
 the equates above, every archive ships the SPEC §8.0 precalculated-table
 enumeration — one `LIB_PRECALC_TABLE` macro invocation (macro defined in
@@ -903,16 +1000,49 @@ Default-profile archives enumerate five tables: `sqtab` (1 KB RAM),
 `reu_mul` (128 KB REU), `lim_lee_comb_p256` (16 KB REU),
 `lim_lee_comb_p384` (24 KB REU), `sha384_k` (640 B RODATA). The
 `FP_ONCHIP_MUL` archives ship `precalc_manifest_onchip.o`, which gates
-out the `reu_mul` row (the profile never builds that table — 12 exports
-instead of 15, no `LIB_PRECALC_reu_mul_*`; issue #78); see the Profiles
+out the `reu_mul` row (the profile never builds that table — no
+`*_PRECALC_reu_mul_*` exports at all; issue #78); see the Profiles
 column in `docs/precalc-tables.md` for the per-profile enumeration.
-Each invocation exports `LIB_PRECALC_<name>_{SIZE,REGION,SHARED}`
-equates, discoverable via
-`od65 --dump-exports build/precalc_manifest.o | grep LIB_PRECALC`,
-which consumers and cross-adopter audits use to detect duplicate tables
-when co-linking sibling libraries. The doc-level twin (with the
-per-table classification rationale) is `docs/precalc-tables.md`; the
-two forms must stay in lock-step.
+
+Each invocation exports **two** equate triples since contract v0.7.0
+(adopted here in issue #86):
+
+| Form | Symbols | Status |
+|---|---|---|
+| prefixed | `LIB_NISTCURVES_PRECALC_<name>_{SIZE,REGION,SHARED}` | canonical |
+| bare | `LIB_PRECALC_<name>_{SIZE,REGION,SHARED}` | deprecated, removed at contract v1.0 |
+
+The bare triple is what collides when two adopters describe the same
+shared table — measured upstream between `c64-x25519` v0.8.0 and
+`c64-ChaCha20-Poly1305` v0.6.0 on `LIB_PRECALC_sqtab_*`, which is why
+the prefix exists. A consumer composing two or more contract libraries
+builds them all with `-D LIB_NO_BARE_EXPORTS=1` (the same flag that
+governs the §8.6 version equates) and imports the prefixed forms, which
+additionally lets it cross-check that two libraries *agree* on a shared
+table's shape — a check the bare form could never express, since both
+libraries emitted the same symbol name. Default single-library builds
+keep emitting both.
+
+Discover them with:
+
+```sh
+od65 --dump-exports build/precalc_manifest.o | grep _PRECALC_
+```
+
+Note both details of that command. Dump the **`.o`**, not the `.a` —
+`od65` reads single ca65 object files only and reports `(no xo65 object
+file)` on an archive while still exiting `0`, so a grep over its output
+silently finds nothing. And grep on **`_PRECALC_`**, not `LIB_PRECALC_`,
+so the pattern matches the prefixed and bare forms alike.
+
+Also note the address-size limit on the assemble-time form: a consumer
+can `.import` a `_SIZE` equate and `.assert` on it only for tables
+≤ 65535 B, since ca65's `.import` has no 24-bit hint. Importing
+`LIB_NISTCURVES_PRECALC_reu_mul_SIZE` (131072) raises `Range error`; use
+the `od65` dump for that one. The producer-side `.export` is unaffected.
+
+The doc-level twin (with the per-table classification rationale) is
+`docs/precalc-tables.md`; the two forms must stay in lock-step.
 
 ### 8.7 Reference integrations
 

@@ -84,16 +84,60 @@ KNOWN_EXTERNAL = {
 # reads the REU multiply table; verify-onchip archives are advertised as
 # containing zero REU DMA code, API.md §8.4.2). Both directions ratchet.
 REU_MUL_PROVIDER_SYMS = {"reu_mul_init", "reu_mul_tables_init"}
+
+# --- SPEC §1/§5/§8.4 manifest-surface pins (issue #86) -----------------------
+# Every archive carries lib_version.o + lib_manifest.o + precalc_manifest.o
+# (Makefile LIB_CORE_OBJS / LIB_CORE_ONCHIP_OBJS), so the consumer-facing
+# manifest surface is uniform across all nine and ratchets here.
+#
+# Library-PREFIXED forms are canonical since contract v0.7.0 (lib-contract
+# #43): the bare LIB_VERSION_* / LIB_PRECALC_* families are byte-identical
+# across every adopter, so a consumer linking two sibling libraries and
+# importing both manifests hits `ld65: Duplicate external identifier`. The
+# bare forms stay emitted by default for back-compat and are suppressed
+# build-wide with `ca65 -D LIB_NO_BARE_EXPORTS=1`; they are removed at
+# contract v1.0. Pinning the prefixed set guards against a regression that
+# drops the fifth "NISTCURVES" LIB_PRECALC_TABLE argument or reverts
+# src/lib_version.s to bare-only.
+MANIFEST_VERSION_SYMS = {
+    "LIB_NISTCURVES_VERSION_MAJOR",
+    "LIB_NISTCURVES_VERSION_MINOR",
+    "LIB_NISTCURVES_VERSION_PATCH",
+    "LIB_NISTCURVES_ABI_VERSION",
+}
+# §5 + §8.0 v0.5.0: the ownership mask and its required companion consumes
+# mask. Shipping PRIMITIVES without CONSUMES leaves a consumer unable to
+# tell "deferring consumer" (needs a provider in the link) from
+# "non-consumer" (needs none) -- the exact ambiguity lib-contract #44 was
+# filed against, with this library's own $0005-vs-$0005 pair as the
+# demonstrator.
+MANIFEST_SHARED_SYMS = {
+    "LIB_NISTCURVES_SHARED_PRIMITIVES",
+    "LIB_NISTCURVES_SHARED_CONSUMES",
+}
+MANIFEST_SYMS = MANIFEST_VERSION_SYMS | MANIFEST_SHARED_SYMS
+
+# §8.4 reu_mul precalc row, BOTH the prefixed and the deprecated bare
+# triple. Gated out under FP_ONCHIP_MUL (issue #78) -- the profile never
+# builds or reads an REU multiply table, so an onchip archive that
+# advertised the row would be describing a table it does not have. This
+# mirrors the REU_MUL_PROVIDER_SYMS direction below at the manifest layer.
+PRECALC_REU_MUL_SYMS = {
+    f"LIB{p}_PRECALC_reu_mul_{f}"
+    for p in ("", "_NISTCURVES")
+    for f in ("SIZE", "REGION", "SHARED")
+}
+
 MUST_EXPORT = {
-    "nistcurves.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-p256-verify.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-p384-verify.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-p384-curve.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-p384-sha384.a": set(),
-    "nistcurves-onchip.a": set(),
-    "nistcurves-p256-verify-onchip.a": set(),
-    "nistcurves-p384-verify-onchip.a": set(),
-    "nistcurves-p384-curve-onchip.a": set(),
+    "nistcurves.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
+    "nistcurves-p256-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
+    "nistcurves-p384-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
+    "nistcurves-p384-curve.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
+    "nistcurves-p384-sha384.a": MANIFEST_SYMS,
+    "nistcurves-onchip.a": MANIFEST_SYMS,
+    "nistcurves-p256-verify-onchip.a": MANIFEST_SYMS,
+    "nistcurves-p384-verify-onchip.a": MANIFEST_SYMS,
+    "nistcurves-p384-curve-onchip.a": MANIFEST_SYMS,
 }
 MUST_NOT_EXPORT = {
     "nistcurves.a": set(),
@@ -101,10 +145,10 @@ MUST_NOT_EXPORT = {
     "nistcurves-p384-verify.a": set(),
     "nistcurves-p384-curve.a": set(),
     "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-p256-verify-onchip.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-p384-verify-onchip.a": REU_MUL_PROVIDER_SYMS,
-    "nistcurves-p384-curve-onchip.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
+    "nistcurves-p256-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
+    "nistcurves-p384-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
+    "nistcurves-p384-curve-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------

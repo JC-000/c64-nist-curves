@@ -155,11 +155,11 @@ archive contract.
 | reu_mul_init.s | SPEC §8.2 reu_mul provider: `reu_mul_init` / `reu_mul_tables_init` (128 KB REU multiply-table init). Moved out of main.s by issue #81 so the default-profile archives ship it (via Makefile `LIB_MUL_OBJS`); excluded from the FP_ONCHIP_MUL archives, which never build or read the table. Body gated on `.ifndef SHARED_REU_MUL_INIT`. |
 | constants.s | Hardware addresses, REU registers |
 | zp_config.s | Zero-page allocations (consumer-tunable, `.exportzp` per SPEC §2) |
-| reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`), consumer-overridable via `ca65 --asm-define` |
-| lib_version.s | Semver + ABI version equates per SPEC §1 (`LIB_VERSION_MAJOR` / `_MINOR` / `_PATCH` / `LIB_ABI_VERSION`) |
-| lib_manifest.s | Aggregate manifest equates per SPEC §5 (`LIB_NISTCURVES_REU_BANKS_USED` / `_ZP_USAGE_BYTES` / `_RESIDENT_BYTES` / `_COLD_BYTES`) |
-| precalc_manifest.s | Precalc-table enumeration per SPEC §8.0: one `LIB_PRECALC_TABLE` invocation per qualifying table (sqtab, reu_mul, lim_lee_comb_p256/p384, sha384_k), exporting `LIB_PRECALC_<name>_{SIZE,REGION,SHARED}`. Doc twin (with rationale + Profiles column): `docs/precalc-tables.md` — the two must stay in lock-step. Linked into every archive; onchip archives take `precalc_manifest_onchip.o`, which gates out the `reu_mul` row (issue #78). |
-| precalc_table.inc | Canonical `LIB_PRECALC_TABLE` macro + region/shared constants, copied byte-for-byte from c64-lib-contract SPEC §8.0. Do not edit locally; updates land via coordinated cross-repo PR. |
+| reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`), consumer-overridable via `ca65 -D` |
+| lib_version.s | Semver + ABI version equates per SPEC §1: canonical prefixed `LIB_NISTCURVES_VERSION_MAJOR` / `_MINOR` / `_PATCH` / `LIB_NISTCURVES_ABI_VERSION`, plus the deprecated bare `LIB_VERSION_*` / `LIB_ABI_VERSION` aliases (emitted by default, suppressed by `-D LIB_NO_BARE_EXPORTS=1`, removed at contract v1.0). **TU isolation is load-bearing** — this file must export the version equates and nothing else, or the bare names ride into a consumer's link uninvited via ld65's whole-member pull and collide with a sibling library (issue #86). |
+| lib_manifest.s | Aggregate manifest equates per SPEC §5 (`LIB_NISTCURVES_REU_BANKS_USED` / `_ZP_USAGE_BYTES` / `_RESIDENT_BYTES` / `_COLD_BYTES`) plus the §8.0 mask pair `LIB_NISTCURVES_SHARED_PRIMITIVES` (owned) and `LIB_NISTCURVES_SHARED_CONSUMES` (consumed). The two masks differ by design: profile gates (`FP_ONCHIP_MUL`) drop a bit from **both**, `SHARED_*` deferral switches drop it from **ownership only** — that gap is what distinguishes "deferring consumer, needs a provider in the link" from "non-consumer, needs none". Subset invariant `.assert`ed in-file. |
+| precalc_manifest.s | Precalc-table enumeration per SPEC §8.0: one `LIB_PRECALC_TABLE` invocation per qualifying table (sqtab, reu_mul, lim_lee_comb_p256/p384, sha384_k), each passing `"NISTCURVES"` as the §1 library prefix so the emitted equates are collision-free. Exports both `LIB_NISTCURVES_PRECALC_<name>_{SIZE,REGION,SHARED}` and the deprecated bare `LIB_PRECALC_<name>_*` triple. Doc twin (with rationale + Profiles column): `docs/precalc-tables.md` — the two must stay in lock-step. Linked into every archive; onchip archives take `precalc_manifest_onchip.o`, which gates out the `reu_mul` row (issue #78). |
+| precalc_table.inc | Canonical `LIB_PRECALC_TABLE` macro + region/shared constants, copied byte-for-byte from `c64-lib-contract/precalc_table.inc` (currently at upstream `62a5318`). Do not edit locally; updates land via coordinated cross-repo PR. |
 | mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, the REU DMA row-fetch helper used by `fp_sqr_384` (moved here from main.s by issue #18 fix so standalone-link consumers resolve it). |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
@@ -545,7 +545,7 @@ keep all library calls on a single thread of control.
   quarter-square multiply tables `sqtab_lo` and `sqtab_hi` (1 KB total)
   now derive from `LIB_SHARED_SQTAB_BASE` per c64-lib-contract SPEC §8.1
   — `.ifndef`-guarded with a `$9c00` default for standalone builds, and
-  overridable by consumers via `ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<addr>`
+  overridable by consumers via `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>`
   so multiple sqtab-using libraries linked into the same PRG agree on
   one placement. The previous failure mode that motivated the 2026-05-17
   move from `$7800` to `$9C00` (code growth from J+J primitives +
