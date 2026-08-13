@@ -610,14 +610,14 @@ Exclusion summary (per minimal archive):
 
   | Archive | `-D` switch(es) | `ZP_USAGE_BYTES` | `REU_BANKS_USED` | `SHARED_PRIMITIVES` | `SHARED_CONSUMES` | `RESIDENT_BYTES` | `COLD_BYTES` | precalc rows |
   |---|---|---:|---|---|---|---:|---:|---|
-  | `nistcurves.a` | (default) | 27 | `$07` | `$0007` | `$0007` | 27000 | 2200 | sqtab, reu_mul, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (5) |
-  | `nistcurves-onchip.a` | `FP_ONCHIP_MUL` | 27 | `$04` | `$0005` | `$0005` | 27000 | 2000 | sqtab, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (4) |
-  | `nistcurves-p256-verify.a` | `LIB_P256_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8700 | 720 | sqtab, reu_mul (2) |
-  | `nistcurves-p256-verify-onchip.a` | `LIB_P256_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8700 | 530 | sqtab (1) |
-  | `nistcurves-p384-verify.a` | `LIB_P384_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8300 | 530 | sqtab, reu_mul (2) |
-  | `nistcurves-p384-verify-onchip.a` | `LIB_P384_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8300 | 340 | sqtab (1) |
-  | `nistcurves-p384-curve.a` | `LIB_P384_CURVE_ONLY` | 23 | `$03` | `$0007` | `$0007` | 17400 | 530 | sqtab, reu_mul, sha384_k (3) |
-  | `nistcurves-p384-curve-onchip.a` | `LIB_P384_CURVE_ONLY` + `FP_ONCHIP_MUL` | 23 | `$00` | `$0005` | `$0005` | 17400 | 340 | sqtab, sha384_k (2) |
+  | `nistcurves.a` | (default) | 27 | `$07` | `$0007` | `$0007` | 27000 | 1840 | sqtab, reu_mul, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (5) |
+  | `nistcurves-onchip.a` | `FP_ONCHIP_MUL` | 27 | `$04` | `$0005` | `$0005` | 27000 | 1650 | sqtab, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (4) |
+  | `nistcurves-p256-verify.a` | `LIB_P256_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8700 | 430 | sqtab, reu_mul (2) |
+  | `nistcurves-p256-verify-onchip.a` | `LIB_P256_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8700 | 240 | sqtab (1) |
+  | `nistcurves-p384-verify.a` | `LIB_P384_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8300 | 430 | sqtab, reu_mul (2) |
+  | `nistcurves-p384-verify-onchip.a` | `LIB_P384_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8300 | 240 | sqtab (1) |
+  | `nistcurves-p384-curve.a` | `LIB_P384_CURVE_ONLY` | 23 | `$03` | `$0007` | `$0007` | 17400 | 430 | sqtab, reu_mul, sha384_k (3) |
+  | `nistcurves-p384-curve-onchip.a` | `LIB_P384_CURVE_ONLY` + `FP_ONCHIP_MUL` | 23 | `$00` | `$0005` | `$0005` | 17400 | 240 | sqtab, sha384_k (2) |
   | `nistcurves-p384-sha384.a` | `LIB_SHA384_ONLY` | 8 | `$00` | `$0000` | `$0000` | 9000 | 0 | sha384_k (1) |
 
   Before issue #90, six of these nine rows were wrong: the three
@@ -827,7 +827,7 @@ issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
   the per-variant figures). `COLD_BYTES` does **not** share across
   profiles: every default/onchip pair differs by ~186-200 B, the
   boot-only `reu_mul_init` body present in every DMA-profile archive and
-  absent from every onchip one (issues #78/#81) — 2200 vs. 2000 for the
+  absent from every onchip one (issues #78/#81) — 1840 vs. 1650 for the
   full archive, and a larger relative delta (26-35%) on the minimal
   archives, outside the SPEC §5 ±5% band either way (issue #90). Note the
   runtime-generated 1 KB `sqtab` RAM table is verify-hot under this
@@ -969,7 +969,7 @@ ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 .import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07 ($00-$04 for the minimal archives, §8.4)
 .import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 27, 8-23 for the minimal archives (§8.4)
 .import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
-.import LIB_NISTCURVES_COLD_BYTES           ; default 2200 (2000 under FP_ONCHIP_MUL; §8.4)
+.import LIB_NISTCURVES_COLD_BYTES           ; default 1840 (1650 under FP_ONCHIP_MUL; §8.4)
 .import LIB_NISTCURVES_SHARED_PRIMITIVES    ; standalone default $0007
                                             ; (sqtab | reu_mul | ct_mul_8x8);
                                             ; conditional per SPEC §8.0 — each

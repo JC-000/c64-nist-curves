@@ -126,12 +126,8 @@
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
-; curve256.s — P-256 curve parameters + test vectors (read-only data)
-; EXPORTS: ec_a256, ec_b256, ec_gx256, ec_gy256,
-;          ecdsa_test_privkey, ecdsa_test_k, ecdsa_test_hash,
-;          ecdsa_test_r, ecdsa_test_s,
-;          ecdsa_test_pubx, ecdsa_test_puby,
-;          ecdsa_test_2gx, ecdsa_test_2gy
+; curve256.s — P-256 curve parameters (read-only data)
+; EXPORTS: ec_a256, ec_b256, ec_gx256, ec_gy256
 ; IMPORTS: (none — pure data)
 ; -----------------------------------------------------------------------------
 
@@ -237,9 +233,8 @@
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
-; curve384.s — P-384 curve parameters + test vectors (read-only data)
-; EXPORTS: ec_a384, ec_b384, ec_gx384, ec_gy384,
-;          ecdsa_test_2gx_384, ecdsa_test_2gy_384
+; curve384.s — P-384 curve parameters (read-only data)
+; EXPORTS: ec_a384, ec_b384, ec_gx384, ec_gy384
 ; IMPORTS: (none — pure data)
 ; -----------------------------------------------------------------------------
 
