@@ -194,6 +194,30 @@ LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/lib_manifest.o \
                 $(BUILD_DIR)/precalc_manifest.o \
                 $(BUILD_DIR)/zp_config.o
 
+# SHA-only variant of the manifest pair (issue #88). The lib-p384-sha384
+# archive carries no field / point / multiply code, so the default-profile
+# manifest misdescribed it in four ways at once: REU banks $07 (uses none),
+# §8 masks $0007/$0007 (ships none of the three primitives), four precalc
+# rows for tables it lacks, and RESIDENT/COLD 27000/1800 against a real
+# 9001/0. The mask claims were the breaking ones -- a consumer co-linking
+# this archive with a sibling tripped both the §8.0 disjointness assert and
+# the v0.5.0 coverage assert on a perfectly valid link.
+$(BUILD_DIR)/lib_manifest_sha384.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_sha384.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) -o $@ $<
+# zp_config too: sha384.o .importzp's exactly 4 slots (8 B), so the SHA
+# archive exports those and not the other 17. Zero page is the scarcest
+# resource on the machine -- claiming 31 against a real need of 8 can
+# make a consumer's collision check reject an integration that fits.
+$(BUILD_DIR)/zp_config_sha384.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) -o $@ $<
+
+LIB_CORE_SHA384_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_sha384.o \
+                $(BUILD_DIR)/precalc_manifest_sha384.o \
+                $(BUILD_DIR)/zp_config_sha384.o
+
 # Field / multiply machinery (shared by every curve-using archive).
 # reu_mul_init.o is the SPEC §8.2 reu_mul provider (issue #81): default-
 # profile archive consumers must be able to `jsr reu_mul_init` at boot
@@ -313,10 +337,12 @@ $(LIB_DIR)/nistcurves-p384-verify.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384
 	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS)
 
 # SHA-384 is self-contained: no REU, no multiply tables. Drop the entire
-# LIB_MUL_OBJS set to keep the archive minimal.
-$(LIB_DIR)/nistcurves-p384-sha384.a: $(LIB_CORE_OBJS) $(LIB_SHA384_OBJS) | $(LIB_DIR)
+# LIB_MUL_OBJS set to keep the archive minimal, and use the SHA-only
+# manifest objects (issue #88) so the archive stops advertising resources
+# it does not carry.
+$(LIB_DIR)/nistcurves-p384-sha384.a: $(LIB_CORE_SHA384_OBJS) $(LIB_SHA384_OBJS) | $(LIB_DIR)
 	rm -f $@
-	ar65 a $@ $(LIB_CORE_OBJS) $(LIB_SHA384_OBJS)
+	ar65 a $@ $(LIB_CORE_SHA384_OBJS) $(LIB_SHA384_OBJS)
 
 $(LIB_DIR)/nistcurves-p384-curve.a: $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) $(LIB_P384_VERIFY_OBJS) $(LIB_SHA384_OBJS) $(BUILD_DIR)/ecdsa384_msg.o | $(LIB_DIR)
 	rm -f $@

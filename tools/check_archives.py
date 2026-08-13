@@ -117,15 +117,98 @@ MANIFEST_SHARED_SYMS = {
 }
 MANIFEST_SYMS = MANIFEST_VERSION_SYMS | MANIFEST_SHARED_SYMS
 
-# §8.4 reu_mul precalc row, BOTH the prefixed and the deprecated bare
-# triple. Gated out under FP_ONCHIP_MUL (issue #78) -- the profile never
-# builds or reads an REU multiply table, so an onchip archive that
-# advertised the row would be describing a table it does not have. This
-# mirrors the REU_MUL_PROVIDER_SYMS direction below at the manifest layer.
-PRECALC_REU_MUL_SYMS = {
-    f"LIB{p}_PRECALC_reu_mul_{f}"
-    for p in ("", "_NISTCURVES")
-    for f in ("SIZE", "REGION", "SHARED")
+def _precalc_syms(*names):
+    """Both the prefixed and the deprecated bare triple, for each table."""
+    return {
+        f"LIB{p}_PRECALC_{n}_{f}"
+        for n in names
+        for p in ("", "_NISTCURVES")
+        for f in ("SIZE", "REGION", "SHARED")
+    }
+
+
+# §8.4 reu_mul precalc row. Gated out under FP_ONCHIP_MUL (issue #78) -- the
+# profile never builds or reads an REU multiply table, so an onchip archive
+# that advertised the row would be describing a table it does not have. This
+# mirrors the REU_MUL_PROVIDER_SYMS direction at the manifest layer.
+PRECALC_REU_MUL_SYMS = _precalc_syms("reu_mul")
+
+# The lib-p384-sha384 archive contains no field, point, or multiply code,
+# so sha384_k is the only precalc table it actually has (issue #88). It
+# previously shipped the default-profile manifest pair and enumerated all
+# five, describing four tables it does not carry — and, because the §8.0
+# cross-adopter audit greps exactly these symbols, advertising itself as an
+# sqtab provider to any sibling library that genuinely ships one.
+PRECALC_NON_SHA_SYMS = _precalc_syms(
+    "sqtab", "reu_mul", "lim_lee_comb_p256", "lim_lee_comb_p384"
+)
+PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
+
+# --- Zero-page claim pins (issue #88) ----------------------------------------
+# The SHA archive exports only the four slots sha384.o actually .importzp's;
+# the other 17 must NOT ship in it. Zero page is the scarcest resource on a
+# 6502 -- on a C64 with BASIC and KERNAL live the genuinely free bytes number
+# in the low tens -- so exporting 31 slots against a real need of 8 can make a
+# consumer's collision check reject an integration that would have fit. Both
+# directions ratchet: the four must be present (sha384.o cannot link without
+# them) and the rest absent.
+ZP_SHA384_SYMS = {"sha_src", "sha_len", "sha_w_ptr", "sha_w_ptr2"}
+ZP_NON_SHA_SYMS = {
+    "proc_port", "zp_tmp1", "zp_tmp2", "zp_ptr1", "zp_ptr2",
+    "fp_src1", "fp_src2", "fp_dst", "fp_misc",
+    "fp_carry", "fp_loop", "fp_mul_i", "fp_mul_j",
+    "ec_scalar_ptr", "poly_i", "poly_j", "poly_carry", "poly_tmp",
+}
+
+# --- §5 manifest VALUE pins (issue #88) --------------------------------------
+# Each archive's §5 equates must describe THAT archive, not the library as a
+# whole. Only values that are contractually load-bearing are pinned here:
+#
+#   REU_BANKS_USED     over-claiming makes a consumer reserve banks it could
+#                      have used for something else
+#   SHARED_PRIMITIVES  over-claiming trips a co-linked sibling's §8.0
+#                      disjointness assert on a valid composition
+#   SHARED_CONSUMES    over-claiming makes the v0.5.0 coverage assert demand a
+#                      provider the link has no use for
+#
+# RESIDENT_BYTES / COLD_BYTES are deliberately NOT pinned for the curve
+# archives: they still carry whole-library figures (1.5x-3x overstated for the
+# minimal variants) pending the per-variant re-derivation tracked in issue #90.
+# The sha384 archive IS pinned, since issue #88 re-derived it from a measured
+# ld65 map.
+MANIFEST_VALUES = {
+    "nistcurves-p384-sha384.a": {
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0000,
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 8,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 9000,
+        "LIB_NISTCURVES_COLD_BYTES": 0,
+    },
+    "nistcurves.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 32,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
+    },
+    "nistcurves-onchip.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 32,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    },
+    "nistcurves-p256-verify-onchip.a": {
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    },
+    "nistcurves-p384-verify-onchip.a": {
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    },
+    "nistcurves-p384-curve-onchip.a": {
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    },
 }
 
 MUST_EXPORT = {
@@ -133,7 +216,7 @@ MUST_EXPORT = {
     "nistcurves-p256-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
     "nistcurves-p384-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
     "nistcurves-p384-curve.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
-    "nistcurves-p384-sha384.a": MANIFEST_SYMS,
+    "nistcurves-p384-sha384.a": MANIFEST_SYMS | PRECALC_SHA384_K_SYMS | ZP_SHA384_SYMS,
     "nistcurves-onchip.a": MANIFEST_SYMS,
     "nistcurves-p256-verify-onchip.a": MANIFEST_SYMS,
     "nistcurves-p384-verify-onchip.a": MANIFEST_SYMS,
@@ -144,7 +227,7 @@ MUST_NOT_EXPORT = {
     "nistcurves-p256-verify.a": set(),
     "nistcurves-p384-verify.a": set(),
     "nistcurves-p384-curve.a": set(),
-    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS,
+    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS | ZP_NON_SHA_SYMS,
     "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
     "nistcurves-p256-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
     "nistcurves-p384-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
@@ -268,6 +351,24 @@ def od65_names(obj, mode):
     return set(re.findall(r'Name:\s*"([^"]+)"', out))
 
 
+def od65_value(objs, sym):
+    """Exported integer value of `sym`, searched across an archive's objects.
+
+    od65 reads single .o files only -- pointed at a .a it prints
+    '(no xo65 object file)' and exits 0 -- so callers pass the archive's
+    constituent objects, which is how this tool resolves archives anyway.
+    """
+    for obj in objs:
+        _, out = sh(["od65", "--dump-exports", str(obj)])
+        m = re.search(
+            r'Name:\s*"' + re.escape(sym) + r'"(?:.|\n)*?Value:\s*0x([0-9A-Fa-f]+)',
+            out,
+        )
+        if m:
+            return int(m.group(1), 16)
+    return None
+
+
 def parse_makefile_archives():
     """Map archive filename -> [object module names], from the ar65 recipes.
 
@@ -374,6 +475,22 @@ def main():
             print(f"  EXPORT FAIL: symbols must not ship in this archive: {leaked}")
         if not missing and not leaked:
             print("  provider pins OK (reu_mul_init presence/absence matches contract)")
+
+        # (a3) manifest VALUE pins. Symbol presence alone cannot catch a
+        # regression that ships the right equate carrying the wrong number --
+        # exactly how issue #88 slipped in, where the sha384 archive exported
+        # a well-formed manifest describing a different library.
+        obj_paths = [BUILD / (m + ".o") for m in mods]
+        for sym, want in sorted(MANIFEST_VALUES.get(name, {}).items()):
+            got = od65_value(obj_paths, sym)
+            if got is None:
+                failures.append(f"{name}: manifest equate {sym} not found")
+                print(f"  VALUE FAIL: {sym} not exported")
+            elif got != want:
+                failures.append(f"{name}: {sym} = {got}, contract says {want}")
+                print(f"  VALUE FAIL: {sym} = {got}, expected {want}")
+        if MANIFEST_VALUES.get(name):
+            print("  manifest value pins OK (§5 equates match the archive's real content)")
 
         # (b) dummy-link smoke tests.
         for label, imps, expect_link in SMOKE.get(name, []):

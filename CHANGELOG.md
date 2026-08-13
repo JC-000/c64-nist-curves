@@ -19,6 +19,77 @@ contract).
 > ABI, contract v0.6.0) is deliberately not adopted — this library has no
 > network surface.
 
+### Fixed (issue #88)
+
+- **`nistcurves-p384-sha384.a` advertised resources it does not contain.**
+  The archive shipped the default-profile `lib_manifest.o` /
+  `precalc_manifest.o`, so it described the whole library rather than
+  itself — while containing only `sha384.o`, `data_sha.o`, `zp_config.o`
+  and the manifest objects. A new `-D LIB_SHA384_ONLY` variant pair
+  (`lib_manifest_sha384.o` / `precalc_manifest_sha384.o`) corrects all
+  five claims:
+
+  | Equate | was | now | true content |
+  |---|---|---|---|
+  | `ZP_USAGE_BYTES` | 31 | 8 | four `.importzp` slots at `$04..$0b` |
+  | `REU_BANKS_USED` | `$07` | `$00` | issues no REU DMA |
+  | `SHARED_PRIMITIVES` | `$0007` | `$0000` | ships none of the three §8 bodies |
+  | `SHARED_CONSUMES` | `$0007` | `$0000` | consumes none |
+  | `RESIDENT_BYTES` | 27000 | 9000 | 9001 measured from an ld65 map |
+  | `COLD_BYTES` | 1800 | 0 | nothing overlay-able in the SHA path |
+  | precalc rows | 5 | 1 | only `sha384_k` exists |
+
+  The two mask claims were the breaking ones. A consumer co-linking this
+  archive with a sibling that legitimately owns `sqtab` / `ct_mul_8x8`
+  got `shared-primitive double-ownership` from the §8.0 disjointness
+  assert on a perfectly valid link, and the v0.5.0 coverage assert
+  additionally demanded a §8.2 `reu_mul` provider for a link with no use
+  for one. Both masks are now `$0000` rather than absent — the equates
+  still export, declaring the §8.0 **non-consumer** state for all three
+  primitives.
+
+  `RESIDENT_BYTES` failed *closed* rather than silently: a consumer
+  running the §5 fit check was told the archive needs 27 KB resident and
+  would refuse to build against a region that comfortably fits the real
+  9 KB.
+
+  `ZP_USAGE_BYTES` narrows too, via a `zp_config_sha384.o` built under the
+  same switch: `sha384.o` `.importzp`s exactly four slots (`sha_src`,
+  `sha_len`, `sha_w_ptr`, `sha_w_ptr2` — 8 bytes at `$04..$0b`) and no
+  object in the archive references any other, not even `proc_port`, since
+  SHA issues no REU DMA and never banks ROM. Zero page is the scarcest
+  resource on a 6502 — with BASIC and KERNAL live, genuinely free ZP on a
+  C64 runs to the low tens of bytes — so an archive claiming 32 against a
+  real need of 8 can push a consumer's collision check into rejecting an
+  integration that would have fit.
+
+  Third instance of the defect shape fixed for the onchip profile in #78
+  and for the §8.2 provider in #81.
+
+- **`ZP_USAGE_BYTES` was under-claimed by one byte on every other archive**
+  (pre-existing, found while narrowing the SHA figure): declared `31`,
+  actually `32`. The itemization in `src/lib_manifest.s` has always summed
+  to 32; only the total line was mis-added. Enumerating the slot addresses
+  confirms 32 distinct bytes — `$01`, `$02-$03`, `$04-$0b`, `$1a-$1d`,
+  `$22-$2d`, `$3b`, `$fb-$fe`. This error ran in the dangerous direction:
+  a consumer sizing its allocation against 31 could place a variable in
+  the byte the library never admitted to owning and have it silently
+  clobbered mid-operation. Over-claiming ZP wastes a scarce resource;
+  under-claiming corrupts. Within SPEC §5's ±5% band either way, but the
+  band is not the point for a collision check.
+
+- **`tools/check_archives.py` gained §5 manifest *value* pins.** Symbol
+  presence alone cannot catch an archive shipping a well-formed manifest
+  carrying the wrong numbers — which is exactly how this defect survived
+  the #78 and #81 ratchets. The tool now asserts concrete values for
+  `REU_BANKS_USED` / `SHARED_PRIMITIVES` / `SHARED_CONSUMES` on the full,
+  onchip and SHA archives, plus `RESIDENT_BYTES` / `COLD_BYTES` on the
+  SHA archive, and pins the four non-SHA precalc table families as absent
+  from it.
+
+- **API.md described the SHA archive as four objects**; it has six. The
+  line predated `LIB_CORE_OBJS` gaining the two manifest objects.
+
 ### Added
 
 - **§5/§8.0 consumption mask `LIB_NISTCURVES_SHARED_CONSUMES`

@@ -107,7 +107,31 @@
 .endif
 
 ; --- Exports ---
-.exportzp proc_port, zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
-.exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_loop, fp_mul_i, fp_mul_j
-.exportzp ec_scalar_ptr, poly_i, poly_j, poly_carry, poly_tmp
-.exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
+; LIB_SHA384_ONLY (issue #88): the `lib-p384-sha384` archive contains no
+; field, point, or multiply code. `sha384.o` `.importzp`s exactly four
+; slots -- sha_src, sha_len, sha_w_ptr, sha_w_ptr2 (8 bytes, contiguous
+; at $04..$0b) -- and no object in that archive references any other,
+; not even proc_port (SHA does no ROM banking, since it issues no REU
+; DMA). Exporting the other 17 slots from that archive would claim 23
+; bytes of zero page the SHA path never writes.
+;
+; That over-claim is NOT harmless on this machine. Zero page is the
+; scarcest resource on a 6502, and on a C64 with BASIC and KERNAL live
+; the genuinely free bytes number in the low tens -- so a 31-byte claim
+; against a real need of 8 can make a consumer's assemble-time collision
+; check reject an integration that would have fit comfortably. Same
+; fail-closed shape as the RESIDENT_BYTES overstatement in issue #90:
+; the consumer is refused a configuration that actually works.
+;
+; The slot DEFINITIONS above stay unconditional -- they are inert
+; equates, cost nothing, and keep this file single-source. Only the
+; export surface narrows, which is what a consumer's collision check
+; and the §5 ZP_USAGE_BYTES equate are computed from.
+.ifdef LIB_SHA384_ONLY
+  .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
+.else
+  .exportzp proc_port, zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
+  .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_loop, fp_mul_i, fp_mul_j
+  .exportzp ec_scalar_ptr, poly_i, poly_j, poly_carry, poly_tmp
+  .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
+.endif
