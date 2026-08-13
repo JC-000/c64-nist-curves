@@ -117,11 +117,6 @@ MANIFEST_SHARED_SYMS = {
 }
 MANIFEST_SYMS = MANIFEST_VERSION_SYMS | MANIFEST_SHARED_SYMS
 
-# §8.4 reu_mul precalc row, BOTH the prefixed and the deprecated bare
-# triple. Gated out under FP_ONCHIP_MUL (issue #78) -- the profile never
-# builds or reads an REU multiply table, so an onchip archive that
-# advertised the row would be describing a table it does not have. This
-# mirrors the REU_MUL_PROVIDER_SYMS direction below at the manifest layer.
 def _precalc_syms(*names):
     """Both the prefixed and the deprecated bare triple, for each table."""
     return {
@@ -132,6 +127,10 @@ def _precalc_syms(*names):
     }
 
 
+# §8.4 reu_mul precalc row. Gated out under FP_ONCHIP_MUL (issue #78) -- the
+# profile never builds or reads an REU multiply table, so an onchip archive
+# that advertised the row would be describing a table it does not have. This
+# mirrors the REU_MUL_PROVIDER_SYMS direction at the manifest layer.
 PRECALC_REU_MUL_SYMS = _precalc_syms("reu_mul")
 
 # The lib-p384-sha384 archive contains no field, point, or multiply code,
@@ -158,8 +157,9 @@ PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
 #
 # RESIDENT_BYTES / COLD_BYTES are deliberately NOT pinned for the curve
 # archives: they still carry whole-library figures (1.5x-3x overstated for the
-# minimal variants) pending the per-variant re-derivation. The sha384 archive
-# IS pinned, since issue #88 re-derived it from a measured ld65 map.
+# minimal variants) pending the per-variant re-derivation tracked in issue #90.
+# The sha384 archive IS pinned, since issue #88 re-derived it from a measured
+# ld65 map.
 MANIFEST_VALUES = {
     "nistcurves-p384-sha384.a": {
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
