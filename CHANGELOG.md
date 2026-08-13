@@ -26,19 +26,33 @@ contract).
 
 ### Removed (issue #91)
 
-- **384 B of RFC 6979 self-test vectors deleted from `curve256.s` (288 B,
-  9 symbols) and `curve384.s` (96 B, 2 symbols).** They shared translation
-  units with the curve parameters, so ld65's whole-member pull shipped them
-  into **7 of 9 consumer archives** — the same leak shape as the issue #63
-  test-trampoline export and the `data_test.s` split.
+> **The RFC 6979 test vectors are retained and test coverage is unchanged.**
+> What is removed below is a redundant *second* copy of them that was compiled
+> into the shipped library and read by nothing. The vectors the test suite uses
+> live in `tools/test_ecdsa_verify.py`, transcribed from the RFC itself
+> (Appendix A.2.5 for P-256, A.3.1 for P-384), and are untouched — as is the
+> entire `tools/vectors/` NIST corpus and all 8 on-chip curve constants.
 
-  They were not merely misplaced, they were **dead everywhere**: zero
+- **384 B of duplicated RFC 6979 self-test vectors deleted from `curve256.s`
+  (288 B, 9 symbols) and `curve384.s` (96 B, 2 symbols).** They shared
+  translation units with the curve parameters, so ld65's whole-member pull
+  shipped them into **7 of 9 consumer archives** — the same leak shape as the
+  issue #63 test-trampoline export and the `data_test.s` split.
+
+  The on-chip copy was not merely misplaced, it was **dead everywhere**: zero
   importers across all 24 built objects, no reference from any `.s` file, and
-  none from the Python tooling. That is consistent with the project's
-  oracle-driven testing model — expected values come from the `cryptography`
-  package and the NIST KAT files under `tools/vectors/`, and test code never
-  hard-codes values from a previous implementation run. These constants were a
-  fossil of an earlier self-test approach.
+  none from the Python tooling. That is by design, not oversight — under the
+  project's oracle-driven testing model, expected values must come from an
+  external source, and test code never hard-codes values from a previous
+  implementation run. Checking the library against constants shipped inside
+  that same library would be circular, so the on-chip copy could not have
+  served as an audit reference even if something had read it. These constants
+  were a fossil of an earlier self-test approach.
+
+  No on-chip power-on self-test exists today. If one is ever added it will need
+  vectors resident again; they are recoverable from git history or the RFC, and
+  should land as an opt-in object excluded from the default archives rather
+  than silently present in seven of nine.
 
   Deleted outright rather than relocated to a test-only object: relocation
   would have preserved data nothing reads in either place, and would have
