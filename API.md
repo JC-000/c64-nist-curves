@@ -593,10 +593,37 @@ Exclusion summary (per minimal archive):
   `data_p384_limlee`, `ecdsa384_msg` (one-shot wrapper — consumers
   driving streaming SHA themselves link this in via `lib-p384-curve`
   instead), all SHA-384, the test-driver staging buffers.
-- `lib-p384-sha384` is the tightest archive: just `sha384.o`,
-  `data_sha.o`, `zp_config.o`, `lib_version.o`. No `mul_8x8`, no REU,
-  no `constants.o` — SHA-384 has no shared scratch with the field /
-  point / ECDSA code paths.
+- `lib-p384-sha384` is the tightest archive: `sha384.o`, `data_sha.o`,
+  `zp_config.o`, `lib_version.o`, plus the two SHA-only manifest objects
+  `lib_manifest_sha384.o` / `precalc_manifest_sha384.o`. No `mul_8x8`,
+  no REU, no `constants.o` — SHA-384 has no shared scratch with the
+  field / point / ECDSA code paths. Because it carries no field layer at
+  all, its §5 manifest is built with `-D LIB_SHA384_ONLY` and differs
+  from every other archive's (issue #88):
+
+  | Equate | SHA-384 archive | all other archives |
+  |---|---|---|
+  | `REU_BANKS_USED` | `$00` | `$07` (`$04` onchip) |
+  | `SHARED_PRIMITIVES` | `$0000` | `$0007` (`$0005` onchip) |
+  | `SHARED_CONSUMES` | `$0000` | `$0007` (`$0005` onchip) |
+  | `RESIDENT_BYTES` | 9000 | 27000 |
+  | `COLD_BYTES` | 0 | 1800 |
+  | precalc rows | `sha384_k` only | five (four onchip) |
+
+  `ZP_USAGE_BYTES` stays `31`: the archive ships `zp_config.o` whole and
+  §5 counts every `.exportzp` slot, even though SHA-384 writes only 8 of
+  those bytes. Over-claiming ZP is the safe direction — the consumer
+  reserves space it need not have — unlike the REU-bank and §8 mask
+  claims, where over-claiming actively breaks a valid composition.
+
+  Both mask values are `$0000` rather than absent: the equates are still
+  exported, declaring the §8.0 **non-consumer** state for all three
+  primitives. A consumer co-linking this archive with a sibling that
+  owns `sqtab` / `ct_mul_8x8` therefore passes both the disjointness and
+  coverage asserts. Before issue #88 the archive inherited the
+  default-profile `$0007/$0007` and failed the disjointness assert on
+  that entirely valid link, having claimed to own three primitives whose
+  bodies it does not contain.
 - `lib-p384-curve` = `lib-p384-verify` ⊕ SHA-384 objects ⊕
   `ecdsa384_msg.o`. Suitable for the TLS 1.3 secp384r1+SHA-384
   cipher-suite use case where the consumer wants a single

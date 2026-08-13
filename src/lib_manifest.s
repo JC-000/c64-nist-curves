@@ -63,8 +63,14 @@
 ; override the mask to $00. (Defensive issue-#33 REU register writes remain
 ; in the entry points; they are writes to expansion I/O space, harmless
 ; without an REU, and claim no banks.)
+; LIB_SHA384_ONLY (issue #88): SHA-384 issues no REU DMA whatsoever, so
+; the `lib-p384-sha384` archive claims no banks. Before this gate that
+; archive shipped the default-profile manifest and advertised $07 --
+; three banks it never touches.
 .ifndef LIB_NISTCURVES_REU_BANKS_USED
-  .ifdef FP_ONCHIP_MUL
+  .ifdef LIB_SHA384_ONLY
+    LIB_NISTCURVES_REU_BANKS_USED = $00
+  .elseif .defined(FP_ONCHIP_MUL)
     LIB_NISTCURVES_REU_BANKS_USED = $04
   .else
     LIB_NISTCURVES_REU_BANKS_USED = $07
@@ -94,6 +100,20 @@
 ; library writes to it (ROM banking around REU access) and exports it,
 ; so it counts toward the ZP claim from the consumer's collision-check
 ; perspective.
+; -----------------------------------------------------------------------------
+; -----------------------------------------------------------------------------
+; Deliberately NOT gated on LIB_SHA384_ONLY (issue #88). SHA-384 writes
+; only 8 of these bytes at runtime (sha_src, sha_len, sha_w_ptr,
+; sha_w_ptr2), but the `lib-p384-sha384` archive ships zp_config.o whole
+; and that object `.exportzp`s all 31 -- and SPEC §5 defines this equate
+; as the sum of every exported slot, not the subset a given entry point
+; touches. Over-claiming here is also the safe direction: a consumer
+; reserves 23 bytes of ZP it need not have, which costs space but cannot
+; produce a wrong result. That is the opposite of the REU-bank and §8
+; mask claims gated above, where over-claiming actively breaks a valid
+; composition by demanding providers and tripping disjointness asserts.
+; Narrowing this number would require splitting zp_config.s per variant,
+; which is out of scope here.
 ; -----------------------------------------------------------------------------
 .ifndef LIB_NISTCURVES_ZP_USAGE_BYTES
   LIB_NISTCURVES_ZP_USAGE_BYTES = 31
@@ -146,8 +166,34 @@
 ; excluded from the equate per the generated-RW-state rule above, so
 ; onchip consumers must budget those 1024 B at LIB_SHARED_SQTAB_BASE
 ; separately.
+; -----------------------------------------------------------------------------
+; LIB_SHA384_ONLY (issue #88): the `lib-p384-sha384` archive contains only
+; sha384.o + data_sha.o + zp_config.o + the three manifest objects, so its
+; resident set is the SHA segments alone. Measured by linking a consumer
+; that imports sha384_init/update/final against the archive and reading
+; the ld65 map:
+;
+;   LIB_NISTCURVES_SHA384_CODE     $1469    5225
+;   LIB_NISTCURVES_SHA384_RODATA   $02C0     704   (sha384_iv + sha384_k)
+;   LIB_NISTCURVES_SHA384_TABLES   $0C00    3072   (rotr LUTs, page-aligned)
+;                                          ------
+;                                            9001
+;
+; Declared as 9000 (margin 0.01%). LIB_NISTCURVES_SHA384_BSS ($0411 =
+; 1041 B of sha_state / sha_w / sha_block_buf / digest) is RW state and
+; excluded per SPEC §5, same basis as the main derivation above.
+;
+; Before this gate the archive inherited the whole-library 27000 -- a 3x
+; overstatement, and one that fails CLOSED: a consumer running the §5 fit
+; check would be told the archive needs 27 KB resident and refuse to
+; build against a region that comfortably fits the real 9 KB.
+; -----------------------------------------------------------------------------
 .ifndef LIB_NISTCURVES_RESIDENT_BYTES
-  LIB_NISTCURVES_RESIDENT_BYTES = 27000
+  .ifdef LIB_SHA384_ONLY
+    LIB_NISTCURVES_RESIDENT_BYTES = 9000
+  .else
+    LIB_NISTCURVES_RESIDENT_BYTES = 27000
+  .endif
 .endif
 
 
@@ -203,8 +249,20 @@
 ; remains the one mandatory boot step, ct_mul_8x8 remains boot/diag-only
 ; (the issue #71 row generator inlines its own quarter-square). Both
 ; profiles share the 1800 figure.
+; LIB_SHA384_ONLY (issue #88): nothing in the SHA-384 path is
+; overlay-able. There is no boot-only init (the K constants and rotr
+; LUTs are rodata, not generated), no reference-only routine, and every
+; block the archive ships is read on each sha_compress. The honest
+; figure is therefore 0 -- distinct from "not measured", and distinct
+; from the 1800 the archive used to inherit, none of whose constituent
+; blocks (sqtab_init, reu_mul_init, ec_precompute_*, fp_mod_inv_fast)
+; are present in it at all.
 .ifndef LIB_NISTCURVES_COLD_BYTES
-  LIB_NISTCURVES_COLD_BYTES = 1800
+  .ifdef LIB_SHA384_ONLY
+    LIB_NISTCURVES_COLD_BYTES = 0
+  .else
+    LIB_NISTCURVES_COLD_BYTES = 1800
+  .endif
 .endif
 
 
@@ -249,7 +307,23 @@
   LIB_SHARED_PRIMITIVES_CT_MUL_8X8 = $0004
 .endif
 
-.ifdef SHARED_SQTAB_INIT
+; LIB_SHA384_ONLY (issue #88): the `lib-p384-sha384` archive carries no
+; field, point, or multiply code at all -- SHA-384 is self-contained
+; (no REU DMA, no shared mul_*/fp_* scratch, callable without
+; sqtab_init / reu_mul_init). It therefore consumes NONE of the three §8
+; primitives, which is the §8.0 "non-consumer" state for all three bits:
+; both masks are $0000 and there is no provider obligation of any kind.
+;
+; This is a variant gate, not a profile gate, but it behaves like one
+; for mask purposes: it drops bits from BOTH masks, never from ownership
+; alone. Expressing it through the SHARED_* deferral switches would be
+; wrong in exactly the way SPEC §8.0 warns about -- that would zero
+; ownership while leaving consumption set, making a consumer of this
+; archive hunt for a sqtab / reu_mul / ct_mul_8x8 provider that a
+; SHA-only link has no use for.
+.ifdef LIB_SHA384_ONLY
+  _OWN_SQTAB      = 0
+.elseif .defined(SHARED_SQTAB_INIT)
   _OWN_SQTAB      = 0
 .else
   _OWN_SQTAB      = LIB_SHARED_PRIMITIVES_SQTAB
@@ -265,16 +339,18 @@
 ; it. Matches the sibling profile in c64-x25519 PR #73, and makes the
 ; mask consistent with LIB_NISTCURVES_REU_BANKS_USED above, which is
 ; already profile-aware ($04 -- mul banks dropped -- under onchip).
-.ifdef FP_ONCHIP_MUL
+.ifdef LIB_SHA384_ONLY
+  _OWN_REU_MUL    = 0
+.elseif .defined(FP_ONCHIP_MUL)
+  _OWN_REU_MUL    = 0
+.elseif .defined(SHARED_REU_MUL_INIT)
   _OWN_REU_MUL    = 0
 .else
-  .ifdef SHARED_REU_MUL_INIT
-    _OWN_REU_MUL    = 0
-  .else
-    _OWN_REU_MUL    = LIB_SHARED_PRIMITIVES_REU_MUL
-  .endif
+  _OWN_REU_MUL    = LIB_SHARED_PRIMITIVES_REU_MUL
 .endif
-.ifdef SHARED_CT_MUL_8X8
+.ifdef LIB_SHA384_ONLY
+  _OWN_CT_MUL_8X8 = 0
+.elseif .defined(SHARED_CT_MUL_8X8)
   _OWN_CT_MUL_8X8 = 0
 .else
   _OWN_CT_MUL_8X8 = LIB_SHARED_PRIMITIVES_CT_MUL_8X8
@@ -342,14 +418,25 @@
 ; it by dropping the ownership bit, because a sibling's deferral may
 ; depend on that body being here.
 ; -----------------------------------------------------------------------------
-.ifdef FP_ONCHIP_MUL
-  _USE_REU_MUL = 0
+; sqtab and ct_mul_8x8 are consumed by every build that carries field
+; arithmetic at all, so they are gated only by LIB_SHA384_ONLY (issue
+; #88), which removes the field layer entirely.
+.ifdef LIB_SHA384_ONLY
+  _USE_SQTAB      = 0
+  _USE_REU_MUL    = 0
+  _USE_CT_MUL_8X8 = 0
 .else
-  _USE_REU_MUL = LIB_SHARED_PRIMITIVES_REU_MUL
+  _USE_SQTAB      = LIB_SHARED_PRIMITIVES_SQTAB
+  _USE_CT_MUL_8X8 = LIB_SHARED_PRIMITIVES_CT_MUL_8X8
+  .ifdef FP_ONCHIP_MUL
+    _USE_REU_MUL  = 0
+  .else
+    _USE_REU_MUL  = LIB_SHARED_PRIMITIVES_REU_MUL
+  .endif
 .endif
 
 .ifndef LIB_NISTCURVES_SHARED_CONSUMES
-  LIB_NISTCURVES_SHARED_CONSUMES = LIB_SHARED_PRIMITIVES_SQTAB | _USE_REU_MUL | LIB_SHARED_PRIMITIVES_CT_MUL_8X8
+  LIB_NISTCURVES_SHARED_CONSUMES = _USE_SQTAB | _USE_REU_MUL | _USE_CT_MUL_8X8
 .endif
 
 ; Subset invariant (SPEC §8.0, required): a build cannot own a primitive

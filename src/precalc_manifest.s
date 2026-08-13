@@ -64,6 +64,14 @@
 
 .include "precalc_table.inc"
 
+; LIB_SHA384_ONLY (issue #88): the `lib-p384-sha384` archive carries no
+; field or multiply code, so the only precalculated table it actually
+; contains is sha384_k. Enumerating sqtab / reu_mul / lim_lee_comb_*
+; there described tables absent from the archive, and -- since the
+; enumeration is what the SPEC §8.0 cross-adopter audit greps -- would
+; have made a SHA-only link look like a duplicate sqtab provider to any
+; sibling library that genuinely ships one.
+.ifndef LIB_SHA384_ONLY
 LIB_PRECALC_TABLE "sqtab",             1024,   PRECALC_REGION_RAM,    PRECALC_SHARED_YES, "NISTCURVES"
 
 ; FP_ONCHIP_MUL (issue #78): the turbo profile generates multiply rows
@@ -79,4 +87,7 @@ LIB_PRECALC_TABLE "reu_mul",           131072, PRECALC_REGION_REU,    PRECALC_SH
 
 LIB_PRECALC_TABLE "lim_lee_comb_p256", 16384,  PRECALC_REGION_REU,    PRECALC_SHARED_NO,  "NISTCURVES"
 LIB_PRECALC_TABLE "lim_lee_comb_p384", 24576,  PRECALC_REGION_REU,    PRECALC_SHARED_NO,  "NISTCURVES"
+.endif ; LIB_SHA384_ONLY
+
+; The one table a SHA-only build does contain -- unconditional.
 LIB_PRECALC_TABLE "sha384_k",          640,    PRECALC_REGION_RODATA, PRECALC_SHARED_NO,  "NISTCURVES"
