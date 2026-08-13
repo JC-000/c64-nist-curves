@@ -94,29 +94,50 @@
 ;   sha_src, sha_len          (2 B each)       4
 ;   sha_w_ptr, sha_w_ptr2     (2 B each)       4
 ;                                            ---
-;                                             31
+;                                             32
+;
+; Was declared 31 until issue #88. The itemization above has always summed
+; to 32 -- the total line was simply mis-added -- and enumerating the slot
+; addresses confirms 32 distinct bytes: $01, $02-$03, $04-$0b, $1a-$1d,
+; $22-$2d, $3b, $fb-$fe. The direction of that error is the bad one: a
+; consumer sizing its own allocation against 31 could place a variable in
+; the byte the library never admitted to owning and have it silently
+; clobbered mid-operation. Over-claiming ZP wastes a scarce resource;
+; under-claiming corrupts.
 ;
 ; proc_port ($01) is the 6510 CPU I/O port -- hardware-fixed, but the
 ; library writes to it (ROM banking around REU access) and exports it,
 ; so it counts toward the ZP claim from the consumer's collision-check
 ; perspective.
 ; -----------------------------------------------------------------------------
-; -----------------------------------------------------------------------------
-; Deliberately NOT gated on LIB_SHA384_ONLY (issue #88). SHA-384 writes
-; only 8 of these bytes at runtime (sha_src, sha_len, sha_w_ptr,
-; sha_w_ptr2), but the `lib-p384-sha384` archive ships zp_config.o whole
-; and that object `.exportzp`s all 31 -- and SPEC §5 defines this equate
-; as the sum of every exported slot, not the subset a given entry point
-; touches. Over-claiming here is also the safe direction: a consumer
-; reserves 23 bytes of ZP it need not have, which costs space but cannot
-; produce a wrong result. That is the opposite of the REU-bank and §8
-; mask claims gated above, where over-claiming actively breaks a valid
-; composition by demanding providers and tripping disjointness asserts.
-; Narrowing this number would require splitting zp_config.s per variant,
-; which is out of scope here.
+; LIB_SHA384_ONLY (issue #88): 8, not 32. The `lib-p384-sha384` archive
+; carries no field, point, or multiply code; `sha384.o` `.importzp`s
+; exactly four slots and no object in that archive references any other:
+;
+;   sha_src, sha_len          (2 B each)       4
+;   sha_w_ptr, sha_w_ptr2     (2 B each)       4
+;                                            ---
+;                                              8
+;
+; proc_port is NOT among them -- SHA issues no REU DMA, so it never
+; banks ROM. src/zp_config.s narrows its `.exportzp` surface to match
+; under the same switch, so the equate and the archive's actual export
+; set agree and SPEC §5's "sum of all .exportzp slots" definition is
+; satisfied literally rather than approximated.
+;
+; Claiming the full 32 here would not have been a harmless over-estimate.
+; Zero page is the scarcest resource on a 6502 -- on a C64 with BASIC and
+; KERNAL live the genuinely free bytes number in the low tens -- so
+; over-claiming 24 of them can push a consumer's collision check into
+; rejecting an integration that would have fit. Fail-closed, exactly
+; like the RESIDENT_BYTES overstatement tracked in issue #90.
 ; -----------------------------------------------------------------------------
 .ifndef LIB_NISTCURVES_ZP_USAGE_BYTES
-  LIB_NISTCURVES_ZP_USAGE_BYTES = 31
+  .ifdef LIB_SHA384_ONLY
+    LIB_NISTCURVES_ZP_USAGE_BYTES = 8
+  .else
+    LIB_NISTCURVES_ZP_USAGE_BYTES = 32
+  .endif
 .endif
 
 

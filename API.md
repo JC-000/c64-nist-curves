@@ -76,7 +76,7 @@ regenerate it with `make` and plan your memory map from the symbols there.
 | SHA-384 streaming state + buffers | `$9163`-`$9573` | `sha_state` (64, `$9163`) + `sha_w` (640) + `sha_abcdefgh` (64) + `sha_t` (16) + `sha_scratch` (64) + `sha_block_buf` (128) + `sha_block_len` (1) + `sha_total_len` (16) + `sha384_digest` (48) ≈ 1041 B (`data_sha.s`). K[80] round constants (640 B) live in RODATA inside `src/sha384.s`. |
 | Test-harness staging buffers | `$9574`-`$9B66` | `ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf` (1024), `fp_tmp2..4` (`data_test.s`). Standalone PRG only — excluded from every consumer archive. |
 | Quarter-square multiply tables | `$9C00`-`$9FFF` (1 KB) | `sqtab_lo` / `sqtab_hi`. Built once by `sqtab_init`. Moved from `$7800` on 2026-05-17 to clear the linker-managed `mul_dma_*` page-aligned slots as code grew (see CLAUDE.md "Known issues"); base overridable via `LIB_SHARED_SQTAB_BASE` (§8.6.1). |
-| Zero-page | 31 bytes, see `zp_config.s` | `LIB_NISTCURVES_ZP_USAGE_BYTES = 31`; every slot is `.ifndef`-guarded so a consumer pre-definition wins. |
+| Zero-page | 32 bytes, see `zp_config.s` | `LIB_NISTCURVES_ZP_USAGE_BYTES = 32` (8 for the SHA-384 archive, §8.4); every slot is `.ifndef`-guarded so a consumer pre-definition wins. |
 | REU bank 0-1 | `$00_0000`-`$01_FFFF` | 128 KB full 8x8 -> 16 multiply table, built once by `reu_mul_init`. |
 | REU bank 2, offset `$0000`-`$3FFF` | 16 KB | P-256 Lim-Lee comb precompute (256 entries x 64 bytes, X + Y only). Wave 7a h=8. |
 | REU bank 2, offset `$4000`-`$9F9F` | 24 KB | P-384 Lim-Lee comb precompute (256 entries x 96 bytes). Wave 7a h=8. |
@@ -416,7 +416,8 @@ and `jsr ecdsa_verify_384` directly.
   `src/data_*.s` modules) in the consumer's ld65 config and re-linking. The
   code / ZP layout is somewhat more flexible: code is position-independent
   within the PRG and ZP slots can be renamed via `src/zp_config.s`.
-- **Zero-page footprint is 31 bytes** (`LIB_NISTCURVES_ZP_USAGE_BYTES`).
+- **Zero-page footprint is 32 bytes** (`LIB_NISTCURVES_ZP_USAGE_BYTES`;
+  8 for the SHA-384-only archive — see §8.4).
   See `src/zp_config.s` for the
   complete, editable list of slots. The hardware-fixed `proc_port` at `$01`
   is the only slot that cannot be moved.
@@ -541,7 +542,7 @@ is authoritative per §2 — the symbol names are the stable anchors.
 | C64 page $7C (`mul_dma_hi`) | $7C00–$7CFF | Do not use |
 | C64 pages ~$7B–$97 | mul scratch, field / point / ECDSA buffers, Lim-Lee anchors, SHA state | See §2 for the full map |
 | C64 pages $9C–$9F | Quarter-square multiply tables (`sqtab_lo/hi`) | Do not use |
-| C64 zero-page | 31 bytes (`LIB_NISTCURVES_ZP_USAGE_BYTES`); see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
+| C64 zero-page | 32 bytes (`LIB_NISTCURVES_ZP_USAGE_BYTES`; 8 for `lib-p384-sha384`); see `src/zp_config.s` | Edit `src/zp_config.s` to relocate if needed |
 | REU bank 0 / bank 1 | Full 128 KB multiply table | Do not write; initialized by `reu_mul_init` (default profile only — the `FP_ONCHIP_MUL` archives, §8.4.2, never populate or read these banks) |
 | REU bank 2, $0000–$3FFF | P-256 Lim-Lee anchors (16 KB, 256 × 64) | Do not write |
 | REU bank 2, $4000–$9F9F | P-384 Lim-Lee anchors (24 KB, 256 × 96) | Do not write |
@@ -603,6 +604,7 @@ Exclusion summary (per minimal archive):
 
   | Equate | SHA-384 archive | all other archives |
   |---|---|---|
+  | `ZP_USAGE_BYTES` | 8 | 32 |
   | `REU_BANKS_USED` | `$00` | `$07` (`$04` onchip) |
   | `SHARED_PRIMITIVES` | `$0000` | `$0007` (`$0005` onchip) |
   | `SHARED_CONSUMES` | `$0000` | `$0007` (`$0005` onchip) |
@@ -610,11 +612,20 @@ Exclusion summary (per minimal archive):
   | `COLD_BYTES` | 0 | 1800 |
   | precalc rows | `sha384_k` only | five (four onchip) |
 
-  `ZP_USAGE_BYTES` stays `31`: the archive ships `zp_config.o` whole and
-  §5 counts every `.exportzp` slot, even though SHA-384 writes only 8 of
-  those bytes. Over-claiming ZP is the safe direction — the consumer
-  reserves space it need not have — unlike the REU-bank and §8 mask
-  claims, where over-claiming actively breaks a valid composition.
+  The zero-page claim narrows with the rest: `sha384.o` `.importzp`s
+  exactly four slots — `sha_src`, `sha_len`, `sha_w_ptr`, `sha_w_ptr2`,
+  8 bytes contiguous at `$04..$0b` — and no object in the archive
+  references any other, not even `proc_port` (SHA issues no REU DMA, so
+  it never banks ROM). `src/zp_config.s` narrows its `.exportzp` surface
+  to match under the same switch, so the equate and the archive's real
+  export set agree.
+
+  This matters more than the byte count suggests. Zero page is the
+  scarcest resource on a 6502: with BASIC and KERNAL live, genuinely
+  free ZP on a C64 runs to the low tens of bytes. An archive claiming 32
+  against a real need of 8 can push a consumer's collision check into
+  rejecting an integration that would have fit comfortably — the same
+  fail-closed shape as the `RESIDENT_BYTES` overstatement in issue #90.
 
   Both mask values are `$0000` rather than absent: the equates are still
   exported, declaring the §8.0 **non-consumer** state for all three
@@ -913,7 +924,7 @@ ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 
 ```asm
 .import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07
-.import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 31
+.import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 32, SHA archive 8
 .import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
 .import LIB_NISTCURVES_COLD_BYTES           ; default 1800
 .import LIB_NISTCURVES_SHARED_PRIMITIVES    ; standalone default $0007

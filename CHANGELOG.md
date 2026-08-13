@@ -31,6 +31,7 @@ contract).
 
   | Equate | was | now | true content |
   |---|---|---|---|
+  | `ZP_USAGE_BYTES` | 31 | 8 | four `.importzp` slots at `$04..$0b` |
   | `REU_BANKS_USED` | `$07` | `$00` | issues no REU DMA |
   | `SHARED_PRIMITIVES` | `$0007` | `$0000` | ships none of the three §8 bodies |
   | `SHARED_CONSUMES` | `$0007` | `$0000` | consumes none |
@@ -52,15 +53,30 @@ contract).
   would refuse to build against a region that comfortably fits the real
   9 KB.
 
-  `ZP_USAGE_BYTES` deliberately stays `31`. The archive ships
-  `zp_config.o` whole and §5 counts every `.exportzp` slot, even though
-  SHA-384 writes only 8 of those bytes; over-claiming ZP costs a consumer
-  space but cannot produce a wrong result, unlike the REU-bank and mask
-  claims above. Narrowing it would require splitting `zp_config.s` per
-  variant.
+  `ZP_USAGE_BYTES` narrows too, via a `zp_config_sha384.o` built under the
+  same switch: `sha384.o` `.importzp`s exactly four slots (`sha_src`,
+  `sha_len`, `sha_w_ptr`, `sha_w_ptr2` — 8 bytes at `$04..$0b`) and no
+  object in the archive references any other, not even `proc_port`, since
+  SHA issues no REU DMA and never banks ROM. Zero page is the scarcest
+  resource on a 6502 — with BASIC and KERNAL live, genuinely free ZP on a
+  C64 runs to the low tens of bytes — so an archive claiming 32 against a
+  real need of 8 can push a consumer's collision check into rejecting an
+  integration that would have fit.
 
   Third instance of the defect shape fixed for the onchip profile in #78
   and for the §8.2 provider in #81.
+
+- **`ZP_USAGE_BYTES` was under-claimed by one byte on every other archive**
+  (pre-existing, found while narrowing the SHA figure): declared `31`,
+  actually `32`. The itemization in `src/lib_manifest.s` has always summed
+  to 32; only the total line was mis-added. Enumerating the slot addresses
+  confirms 32 distinct bytes — `$01`, `$02-$03`, `$04-$0b`, `$1a-$1d`,
+  `$22-$2d`, `$3b`, `$fb-$fe`. This error ran in the dangerous direction:
+  a consumer sizing its allocation against 31 could place a variable in
+  the byte the library never admitted to owning and have it silently
+  clobbered mid-operation. Over-claiming ZP wastes a scarce resource;
+  under-claiming corrupts. Within SPEC §5's ±5% band either way, but the
+  band is not the point for a collision check.
 
 - **`tools/check_archives.py` gained §5 manifest *value* pins.** Symbol
   presence alone cannot catch an archive shipping a well-formed manifest

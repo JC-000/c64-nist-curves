@@ -144,6 +144,22 @@ PRECALC_NON_SHA_SYMS = _precalc_syms(
 )
 PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
 
+# --- Zero-page claim pins (issue #88) ----------------------------------------
+# The SHA archive exports only the four slots sha384.o actually .importzp's;
+# the other 17 must NOT ship in it. Zero page is the scarcest resource on a
+# 6502 -- on a C64 with BASIC and KERNAL live the genuinely free bytes number
+# in the low tens -- so exporting 31 slots against a real need of 8 can make a
+# consumer's collision check reject an integration that would have fit. Both
+# directions ratchet: the four must be present (sha384.o cannot link without
+# them) and the rest absent.
+ZP_SHA384_SYMS = {"sha_src", "sha_len", "sha_w_ptr", "sha_w_ptr2"}
+ZP_NON_SHA_SYMS = {
+    "proc_port", "zp_tmp1", "zp_tmp2", "zp_ptr1", "zp_ptr2",
+    "fp_src1", "fp_src2", "fp_dst", "fp_misc",
+    "fp_carry", "fp_loop", "fp_mul_i", "fp_mul_j",
+    "ec_scalar_ptr", "poly_i", "poly_j", "poly_carry", "poly_tmp",
+}
+
 # --- §5 manifest VALUE pins (issue #88) --------------------------------------
 # Each archive's §5 equates must describe THAT archive, not the library as a
 # whole. Only values that are contractually load-bearing are pinned here:
@@ -165,15 +181,18 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0000,
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 8,
         "LIB_NISTCURVES_RESIDENT_BYTES": 9000,
         "LIB_NISTCURVES_COLD_BYTES": 0,
     },
     "nistcurves.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 32,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
     "nistcurves-onchip.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 32,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -197,7 +216,7 @@ MUST_EXPORT = {
     "nistcurves-p256-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
     "nistcurves-p384-verify.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
     "nistcurves-p384-curve.a": REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS,
-    "nistcurves-p384-sha384.a": MANIFEST_SYMS | PRECALC_SHA384_K_SYMS,
+    "nistcurves-p384-sha384.a": MANIFEST_SYMS | PRECALC_SHA384_K_SYMS | ZP_SHA384_SYMS,
     "nistcurves-onchip.a": MANIFEST_SYMS,
     "nistcurves-p256-verify-onchip.a": MANIFEST_SYMS,
     "nistcurves-p384-verify-onchip.a": MANIFEST_SYMS,
@@ -208,7 +227,7 @@ MUST_NOT_EXPORT = {
     "nistcurves-p256-verify.a": set(),
     "nistcurves-p384-verify.a": set(),
     "nistcurves-p384-curve.a": set(),
-    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS,
+    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS | ZP_NON_SHA_SYMS,
     "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
     "nistcurves-p256-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
     "nistcurves-p384-verify-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
