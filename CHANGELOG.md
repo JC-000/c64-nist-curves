@@ -12,17 +12,36 @@ contract).
 
 ## [Unreleased]
 
-> Adopts c64-lib-contract **v0.5.0 → v0.7.1** (issue #86). All changes are
-> additive: `build/nist-curves.prg` is byte-identical to v0.8.0
-> (`aad47104…`, 37683 B), every existing consumer `.import` keeps
-> resolving, and `LIB_ABI_VERSION` stays `0`. SPEC §13 (network backend
-> ABI, contract v0.6.0) is deliberately not adopted — this library has no
-> network surface. **Exception:** the issue #90 zero-page dead-slot
-> removal below is NOT additive — three symbol groups leave
-> `zp_config.s`'s `.exportzp` surface, so a consumer that imported
-> `proc_port`/`fp_loop`/any `poly_*` slot directly from this library
-> (rather than defining it locally) would no longer resolve. See that
-> entry for the MINOR-bump implication.
+## [0.9.0] — 2026-08-13
+
+> **Manifest-honesty release.** Four issues (#86, #88, #90, #91), all
+> concerning what the library *tells* consumers about itself rather than what
+> it computes. No cryptographic behaviour changed: 1090/1090 oracle-gated
+> checks pass across all six suites.
+>
+> **Two ABI-surface removals, covered by this one MINOR bump.** 17 exported
+> symbols are gone: `proc_port`, `fp_loop` and the four `poly_*` zero-page
+> slots (#90), plus 11 RFC 6979 self-test-vector symbols (#91). A consumer
+> that imported any of them *from this library* rather than defining it
+> locally must now supply its own. `LIB_ABI_VERSION` stays `0` — it tracks
+> `LIB_VERSION_MAJOR` per SPEC §1/§7, and pre-1.0 the contract allows
+> breaking changes on a MINOR bump — so **the ABI guard will not fire for
+> this change**; read this entry rather than relying on it.
+>
+> **`build/nist-curves.prg` changes: 37683 → 37427 B.** #86, #88 and #90 were
+> each byte-identical; #91's deletion of 384 B of dead rodata is what moves
+> it (the 256 B net drop reflects 128 B reabsorbed as page-alignment
+> padding). This is why the full VICE oracle suites were run for this release
+> rather than relying on byte-identity.
+>
+> **Every §5 manifest equate a consumer reads has changed value** for at
+> least one archive — see the per-archive table in `API.md` §8.4. Consumers
+> running assemble-time fit checks against `RESIDENT_BYTES` / `COLD_BYTES` /
+> `ZP_USAGE_BYTES` / `REU_BANKS_USED` should re-read them; several were
+> previously overstated by 1.5–3×, so checks that failed may now pass.
+>
+> SPEC §13 (network backend ABI, contract v0.6.0) is deliberately not
+> adopted — this library has no network surface.
 
 ### Removed (issue #91)
 
@@ -1339,6 +1358,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.9.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.0
 [0.8.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.8.0
 [0.7.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.7.0
 [0.6.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.6.0
