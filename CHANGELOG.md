@@ -12,6 +12,105 @@ contract).
 
 ## [Unreleased]
 
+> Adopts c64-lib-contract **v0.5.0 → v0.7.1** (issue #86). All changes are
+> additive: `build/nist-curves.prg` is byte-identical to v0.8.0
+> (`aad47104…`, 37683 B), every existing consumer `.import` keeps
+> resolving, and `LIB_ABI_VERSION` stays `0`. SPEC §13 (network backend
+> ABI, contract v0.6.0) is deliberately not adopted — this library has no
+> network surface.
+
+### Added
+
+- **§5/§8.0 consumption mask `LIB_NISTCURVES_SHARED_CONSUMES`
+  (contract v0.5.0, lib-contract #44).** A clear ownership bit was
+  ambiguous: it meant either "deferring consumer — a provider MUST exist
+  elsewhere in the link" or "non-consumer — no provider obligation", two
+  states with opposite obligations for the composed consumer. This
+  library was the demonstrator upstream, since its `SHARED_REU_MUL_INIT`
+  deferral build and its `FP_ONCHIP_MUL` profile build both export
+  `LIB_NISTCURVES_SHARED_PRIMITIVES = $0005`. The new mask separates
+  them:
+
+  | Build configuration | `SHARED_PRIMITIVES` | `SHARED_CONSUMES` |
+  |---|---|---|
+  | default, standalone | `$0007` | `$0007` |
+  | default + `-D SHARED_REU_MUL_INIT` | `$0005` | `$0007` |
+  | `-D FP_ONCHIP_MUL` | `$0005` | `$0005` |
+
+  Gating rule: profile switches (`FP_ONCHIP_MUL`) drop a bit from **both**
+  masks; `SHARED_*` deferral switches drop it from the **ownership mask
+  only**. Two new permanent `.assert`s in `src/lib_manifest.s` pin the
+  SPEC subset invariant (`PRIMITIVES & ~CONSUMES = 0`) and the onchip
+  §8.2 non-consumption. `FP_ONCHIP_MUL` keeps the §8.3 `ct_mul_8x8` bit
+  in both masks even though the issue #71 row generator never calls the
+  body at runtime — SPEC §8.0 counts shipping the canonical body as
+  consumption, because a co-linked sibling's deferral may depend on it.
+  API.md §8.6.1.
+
+- **§1/§5/§8.4 library-prefixed manifest exports (contract v0.7.0,
+  lib-contract #43).** `src/lib_version.s` now exports
+  `LIB_NISTCURVES_VERSION_MAJOR` / `_MINOR` / `_PATCH` /
+  `LIB_NISTCURVES_ABI_VERSION`, and each `LIB_PRECALC_TABLE` invocation
+  passes `"NISTCURVES"` so `src/precalc_manifest.s` also exports
+  `LIB_NISTCURVES_PRECALC_<name>_{SIZE,REGION,SHARED}`. The unprefixed
+  families are identical across every contract adopter, so a consumer
+  linking two sibling libraries and importing both manifests got
+  `ld65: Duplicate external identifier` — measured upstream between
+  `c64-x25519` v0.8.0 and `c64-ChaCha20-Poly1305` v0.6.0 on
+  `LIB_PRECALC_sqtab_*`. The bare forms remain exported **by default**
+  (as aliases of the prefixed ones, so a release bump cannot drift them)
+  and are suppressed build-wide with `-D LIB_NO_BARE_EXPORTS=1`; they are
+  removed at contract v1.0. §1's TU-isolation requirement was already
+  satisfied — `src/lib_version.s` exports only version equates and the §5
+  aggregates already lived in `src/lib_manifest.s`. API.md §8.6/§8.6.1.
+
+- **Archive ratchet coverage for the manifest surface.**
+  `tools/check_archives.py` now pins the prefixed version equates and
+  both §8.0 masks as present in all nine archives, and both the prefixed
+  and bare `*_PRECALC_reu_mul_*` triples as absent from the four
+  `FP_ONCHIP_MUL` archives — the manifest-layer mirror of the existing
+  issue #81 provider pins.
+
+### Fixed
+
+- **`ca65 --asm-define` is not a real flag (contract v0.7.1,
+  lib-contract #50).** ca65 rejects it with `Unknown option:
+  --asm-define`; the flag is `-D name[=value]`. The broken spelling
+  appeared in 12 places a consumer would copy-paste from — API.md §8.5
+  (×6), CLAUDE.md (×2), `src/lib_manifest.s`, `src/mul_8x8.s` (×2),
+  `src/reu_config.s`, `docs/precalc-tables.md`. Historical
+  `docs/RELEASE_NOTES_v0.*.md` keep the old spelling: they are
+  point-in-time records, not instructions.
+
+- **API.md published the boolean `.and` in the §8.0 disjointness assert**
+  (contract v0.4.2, lib-contract #41 — never picked up here). ca65's
+  `.and` evaluates operands for truthiness, so two correctly *disjoint*
+  masks such as `$0005` and `$0002` both test true and the assert fires
+  spuriously; the bitwise operator is `&`. A consumer following the old
+  snippet got an unexplainable double-ownership error on a valid link.
+
+- **`od65` cannot read `.a` archives**, contrary to the cross-reference
+  in `docs/precalc-tables.md` (and to SPEC §8.0's own description —
+  reported upstream). It prints `(no xo65 object file)` and exits `0`, so
+  a script grepping its output silently sees zero symbols and concludes
+  the table is absent. The audit command now dumps
+  `build/precalc_manifest.o`, and greps `_PRECALC_` rather than
+  `LIB_PRECALC_` so it matches the prefixed and bare forms alike.
+  `tools/check_archives.py` was never affected — it resolves each archive
+  to its constituent `.o` files from the Makefile.
+
+### Changed
+
+- `src/precalc_table.inc` re-copied byte-for-byte from the canonical
+  `c64-lib-contract/precalc_table.inc` (upstream `62a5318`); it gained
+  the fifth `lib` argument and `LIB_NO_BARE_EXPORTS` handling. Per SPEC
+  §8.0 this file is never edited locally.
+- The bare `LIB_VERSION_MAJOR` / `_MINOR` / `_PATCH` exports are now
+  tagged `:abs` for consistency with `LIB_ABI_VERSION` and the §5
+  aggregates. They are scalar parameters, not addresses, and their small
+  values would otherwise be tagged `zeropage` and warn at consumer import
+  sites.
+
 ## [0.8.0] — 2026-07-28
 
 > Net §5 manifest movement in this release: `LIB_NISTCURVES_COLD_BYTES`

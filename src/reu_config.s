@@ -7,7 +7,7 @@
 ; library as `.ifndef`-guarded, `.export`-ed integer equates. Downstream
 ; consumers (c64-https, c64-wireguard, ...) override these via
 ;
-;   ca65 --asm-define LIB_NISTCURVES_REU_BANK_COMB=$05 ...
+;   ca65 -D LIB_NISTCURVES_REU_BANK_COMB=$05 ...
 ;
 ; to relocate the library's REU footprint when sharing an REU with sibling
 ; libraries (e.g., c64-x25519). The aggregate manifest equate

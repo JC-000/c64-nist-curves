@@ -5,3 +5,5 @@ __pycache__/
 .DS_Store
 .serena/
 c64-nist-curves-v*.tar.gz
+.ca65-ls/
+.claude/

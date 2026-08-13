@@ -8,7 +8,7 @@
 ; Identity: a*b = floor((a+b)^2/4) - floor((a-b)^2/4)
 ;
 ; SPEC §8.1 placement contract: the consumer supplies the base via
-;   `ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<addr>` so multiple
+;   `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>` so multiple
 ;   sqtab-using libraries linked into the same PRG agree on one base.
 ;   The standalone library build defaults to $9c00 (page-aligned,
 ;   below BASIC ROM at $A000 which the library banks out anyway).
@@ -40,7 +40,7 @@
 .segment "LIB_NISTCURVES_MUL_CODE"
 
 ; --- Quarter-square table base (SPEC §8.1) ---
-; Consumer override via `ca65 --asm-define LIB_SHARED_SQTAB_BASE=$<addr>`.
+; Consumer override via `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>`.
 ; Default $9c00 was chosen on 2026-05-17 (see Known issues note) so the
 ; standalone library build links cleanly without an override.
 .ifndef LIB_SHARED_SQTAB_BASE
