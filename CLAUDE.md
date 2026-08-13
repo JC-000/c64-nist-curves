@@ -163,13 +163,13 @@ archive contract.
 | mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, an exported public helper for the REU multiply-table row-fetch DMA sequence (moved here from main.s by issue #18 fix so standalone-link consumers resolve it) — offered to consumers that want to drive the row-fetch themselves, but **not called anywhere in the library's own code**: `fp_mul`/`fp_sqr`/`fp_mul_384`/`fp_sqr_384` each inline their own three-register-write fetch directly. Classified `COLD` in the §5 footprint accounting for exactly that reason. |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
-| curve256.s | P-256 parameters + RFC 6979 test vectors (little-endian) |
+| curve256.s | P-256 curve parameters (little-endian). A duplicate copy of the RFC 6979 self-test vectors used to live here; issue #91 deleted it — nothing referenced it, and ld65's whole-member pull shipped 288 B of dead data into every P-256 archive. The vectors the test suite uses are unaffected: they live in `tools/test_ecdsa_verify.py`, transcribed from the RFC (an on-chip copy could not serve as an oracle anyway — see the testing-model note below). |
 | points256_core.s | P-256 `ec_point_double` / `ec_point_add` / `ec_point_add_jj` / `ec_scalar_mul_var` / `ec_jacobian_to_affine`. Verify-path code — present in every P-256 archive. |
 | points256_comb.s | P-256 fixed-base Lim-Lee h=8 comb: `ec_precompute_256` + `ec_scalar_mul` + `sm256_reu_*` helpers. Excluded from `lib-p256-verify` (verify uses variable-base only). |
 | inv256.s | P-256 Fermat inversion via addition chain (reference only; 41x slower than binary GCD) |
 | fp384.s | 48-byte field arithmetic (add/sub/mul/sqr) for P-384 |
 | mod384.s | P-384 Solinas reduction, modular ops, binary GCD inverse, P-384 prime |
-| curve384.s | P-384 parameters + test vectors (little-endian) |
+| curve384.s | P-384 curve parameters (little-endian). Duplicate on-chip test vectors deleted by issue #91, same reasoning as `curve256.s` (96 B); the RFC-sourced Python copies are retained. |
 | points384_core.s | P-384 mirror of `points256_core.s` (double/add/add_jj/scalar_mul_var/jacobian_to_affine). |
 | points384_comb.s | P-384 mirror of `points256_comb.s` (`ec_precompute_384` + `ec_scalar_mul_384` + `sm384w_*` helpers). Excluded from `lib-p384-verify`. |
 | ecdsa256.s | P-256 ECDSA verify (`ecdsa_verify_256`) + BE<->LE helper `fp_reverse32`. Non-constant-time (public-input-only) |

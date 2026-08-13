@@ -141,6 +141,22 @@ PRECALC_SQTAB_SYMS = _precalc_syms("sqtab")
 PRECALC_COMB_SYMS = _precalc_syms("lim_lee_comb_p256", "lim_lee_comb_p384")
 PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
 
+# --- RFC 6979 self-test vector pins (issue #91) ------------------------------
+# curve256.s / curve384.s used to carry 384 B of RFC 6979 self-test vectors in
+# the same translation units as the curve parameters, so ld65's whole-member
+# pull shipped them into 7 of 9 consumer archives. Nothing referenced them --
+# zero importers across every built object, and the test suites take their
+# expected values from the oracle and tools/vectors/, never from on-chip
+# constants -- so issue #91 deleted them outright rather than relocating them.
+# Pinned absent from every archive so a future edit cannot reintroduce dead
+# data into the consumer surface the way the originals did.
+TESTVEC_SYMS = {
+    "ecdsa_test_privkey", "ecdsa_test_k", "ecdsa_test_hash",
+    "ecdsa_test_r", "ecdsa_test_s", "ecdsa_test_pubx", "ecdsa_test_puby",
+    "ecdsa_test_2gx", "ecdsa_test_2gy",
+    "ecdsa_test_2gx_384", "ecdsa_test_2gy_384",
+}
+
 # The lib-p384-sha384 archive contains no field, point, or multiply code,
 # so sha384_k is the only precalc table it actually has (issue #88). It
 # previously shipped the default-profile manifest pair and enumerated all
@@ -217,7 +233,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
         "LIB_NISTCURVES_RESIDENT_BYTES": 27000,
-        "LIB_NISTCURVES_COLD_BYTES": 2200,
+        "LIB_NISTCURVES_COLD_BYTES": 1840,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
@@ -225,7 +241,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
         "LIB_NISTCURVES_RESIDENT_BYTES": 27000,
-        "LIB_NISTCURVES_COLD_BYTES": 2000,
+        "LIB_NISTCURVES_COLD_BYTES": 1650,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
@@ -233,7 +249,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
         "LIB_NISTCURVES_RESIDENT_BYTES": 8700,
-        "LIB_NISTCURVES_COLD_BYTES": 720,
+        "LIB_NISTCURVES_COLD_BYTES": 430,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
@@ -241,7 +257,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
         "LIB_NISTCURVES_RESIDENT_BYTES": 8700,
-        "LIB_NISTCURVES_COLD_BYTES": 530,
+        "LIB_NISTCURVES_COLD_BYTES": 240,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
@@ -249,7 +265,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
         "LIB_NISTCURVES_RESIDENT_BYTES": 8300,
-        "LIB_NISTCURVES_COLD_BYTES": 530,
+        "LIB_NISTCURVES_COLD_BYTES": 430,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
@@ -257,7 +273,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
         "LIB_NISTCURVES_RESIDENT_BYTES": 8300,
-        "LIB_NISTCURVES_COLD_BYTES": 340,
+        "LIB_NISTCURVES_COLD_BYTES": 240,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
@@ -265,7 +281,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
         "LIB_NISTCURVES_RESIDENT_BYTES": 17400,
-        "LIB_NISTCURVES_COLD_BYTES": 530,
+        "LIB_NISTCURVES_COLD_BYTES": 430,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     },
@@ -273,7 +289,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
         "LIB_NISTCURVES_RESIDENT_BYTES": 17400,
-        "LIB_NISTCURVES_COLD_BYTES": 340,
+        "LIB_NISTCURVES_COLD_BYTES": 240,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
@@ -308,22 +324,22 @@ MUST_EXPORT = {
                                        | ZP_VERIFY_SYMS | ZP_SHA384_SYMS),
 }
 MUST_NOT_EXPORT = {
-    "nistcurves.a": set(),
+    "nistcurves.a": set() | TESTVEC_SYMS,
     "nistcurves-p256-verify.a": (PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS),
+                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
     "nistcurves-p384-verify.a": (PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS),
-    "nistcurves-p384-curve.a": PRECALC_COMB_SYMS | ZP_COMB_SYMS,
-    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS | ZP_NON_SHA_SYMS,
-    "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS,
+                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
+    "nistcurves-p384-curve.a": PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS,
+    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS | ZP_NON_SHA_SYMS | TESTVEC_SYMS,
+    "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS | TESTVEC_SYMS,
     "nistcurves-p256-verify-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
                                         | PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS),
+                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
     "nistcurves-p384-verify-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
                                         | PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS),
+                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
     "nistcurves-p384-curve-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
-                                       | PRECALC_COMB_SYMS | ZP_COMB_SYMS),
+                                       | PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS),
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------

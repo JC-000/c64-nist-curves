@@ -322,18 +322,23 @@
 ;     no ca65 source `jsr`s it; fp_mul/fp_sqr inline their own three
 ;     register writes, so nothing on the verify path calls it)
 ;     ($0A53 -> reu_mul_init $0A67)                                  20
-;   RFC 6979 self-test vectors in curve256.s (288) / curve384.s (96)
-;     -- rodata read by no verify path (issue #90)                  384
 ;                                                              -------
-;                                                                 2216
+;                                                                 1832
 ;
 ; Was declared 1800 through v0.8.0, from the 1812 the first six blocks
-; sum to. That was already 19% low BEFORE any of the issue #90 variants
-; existed -- outside SPEC §5's ±5% band -- because the derivation missed
-; the last two blocks above. The re-measurement (od65 segment sums
-; cross-validated against `ld65 -m` links, which is why it lands 3 B off
-; this labels.txt address sweep) gives 2219; declared 2200 below,
-; margin ~0.9%.
+; sum to. Through issue #90 this block also carried a seventh entry --
+; 384 B of RFC 6979 self-test vectors in curve256.s (288) / curve384.s
+; (96) -- which pushed the honest total to 2216 and made the declared
+; 1800 19% low, outside SPEC §5's ±5% band. Issue #91 deleted those
+; vectors outright (nothing referenced them: zero importers across every
+; built object, and the test suites take their vectors from the oracle
+; and tools/vectors/, never from on-chip constants), so the seventh
+; entry is gone and the total returns to the first six blocks plus
+; reu_fetch_mul_row's 20.
+;
+; The re-measurement (od65 segment sums cross-validated against
+; `ld65 -m` links, which is why it lands 3 B off this labels.txt address
+; sweep) gives 1835; declared 1840 below, margin ~0.3%.
 ;
 ; (The pre-#81 derivation's first block, "$08AE -> reu_fetch_mul_row
 ; $0B0D = 607", was an address-range sweep that silently included the
@@ -383,55 +388,45 @@
 ; LIB_P256_VERIFY_ONLY / LIB_P384_VERIFY_ONLY / LIB_P384_CURVE_ONLY
 ; (issue #90): none of the three ships ec_precompute_* (no comb),
 ; inv256.o (no fp_mod_inv_fast / fp_inv_exp_p2), or the other curve, so
-; their cold set is sqtab_init + ct_mul_8x8 + that curve's RFC 6979
-; self-test vectors, plus reu_mul_init only in the DMA profile:
+; their cold set is sqtab_init + ct_mul_8x8 + reu_fetch_mul_row, plus
+; reu_mul_init only in the DMA profile:
 ;
 ;   variant                | DMA | onchip
 ;   -----------------------+-----+-------
-;   LIB_P256_VERIFY_ONLY   | 720 |  530
-;   LIB_P384_VERIFY_ONLY   | 530 |  340
-;   LIB_P384_CURVE_ONLY    | 530 |  340
+;   LIB_P256_VERIFY_ONLY   | 430 |  240
+;   LIB_P384_VERIFY_ONLY   | 430 |  240
+;   LIB_P384_CURVE_ONLY    | 430 |  240
 ;
-; Two cross-checks on those numbers: each row's DMA/onchip delta is 190,
-; the reu_mul_init body the onchip archives omit (~186-200 B, matching
-; the full archive's 2200/2000 split); and the P-256/P-384 gap is also
-; 190, tracking the 288 B vs 96 B of RFC 6979 vectors the two curve
-; objects carry. LIB_P384_CURVE_ONLY equals LIB_P384_VERIFY_ONLY because
-; SHA-384 contributes no cold bytes at all (same reasoning as the
+; Cross-check: each row's DMA/onchip delta is 190, the reu_mul_init body
+; the onchip archives omit (~186-200 B, matching the full archive's
+; 1840/1650 split). LIB_P384_CURVE_ONLY equals LIB_P384_VERIFY_ONLY
+; because SHA-384 contributes no cold bytes at all (same reasoning as the
 ; LIB_SHA384_ONLY = 0 note above: its K constants and rotr LUTs are
 ; rodata read on every sha_compress, not boot-only init).
 ;
-; The two P-384 variants measure identically and share an arm;
-; LIB_P256_VERIFY_ONLY does not and needs its own. That grouping is
-; driven by the measured numbers, NOT a general rule -- it deliberately
-; differs from how REU_BANKS_USED above groups the same three variants
-; into one arm, and folding P-256 in for tidiness would misreport it by
-; 190 B (26-36%).
-;
-; These figures describe the archives' CURRENT contents. Issue #91 (filed
-; separately, not fixed here) tracks the RFC 6979 self-test vectors being
-; dead weight in 7 of the 9 archives; if they are split into their own
-; object, every COLD figure here needs re-measuring. Do not pre-emptively
-; design around #91.
+; All three variants now share ONE arm. Through issue #90 they could not:
+; LIB_P256_VERIFY_ONLY measured 720/530 against the P-384 variants'
+; 530/340, and that 190 B gap was exactly the 288 B vs 96 B of RFC 6979
+; self-test vectors the two curve objects carried. Issue #91 deleted
+; those vectors, the gap closed, and the three variants now measure
+; identically (429 DMA / 243 onchip) -- so this grouping matches
+; REU_BANKS_USED's above rather than deliberately differing from it.
+; The convergence is a measured outcome, not a tidy-up: if a future
+; change gives one variant cold bytes the others lack, split the arm
+; again rather than rounding the difference away.
 .ifndef LIB_NISTCURVES_COLD_BYTES
   .ifdef LIB_SHA384_ONLY
     LIB_NISTCURVES_COLD_BYTES = 0
-  .elseif .defined(LIB_P256_VERIFY_ONLY)
+  .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
     .if .defined(FP_ONCHIP_MUL)
-      LIB_NISTCURVES_COLD_BYTES = 530
+      LIB_NISTCURVES_COLD_BYTES = 240
     .else
-      LIB_NISTCURVES_COLD_BYTES = 720
-    .endif
-  .elseif .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
-    .if .defined(FP_ONCHIP_MUL)
-      LIB_NISTCURVES_COLD_BYTES = 340
-    .else
-      LIB_NISTCURVES_COLD_BYTES = 530
+      LIB_NISTCURVES_COLD_BYTES = 430
     .endif
   .elseif .defined(FP_ONCHIP_MUL)
-    LIB_NISTCURVES_COLD_BYTES = 2000
+    LIB_NISTCURVES_COLD_BYTES = 1650
   .else
-    LIB_NISTCURVES_COLD_BYTES = 2200
+    LIB_NISTCURVES_COLD_BYTES = 1840
   .endif
 .endif
 

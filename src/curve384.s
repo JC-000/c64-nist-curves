@@ -52,27 +52,3 @@ ec_gy384:
         .byte $29, $DC, $92, $92, $BF, $98, $9E, $5D
         .byte $6F, $2C, $26, $96, $4A, $DE, $17, $36
 
-; =============================================================================
-; NIST P-384 Test Vector: 2*G (derived from generator doubling)
-; All values in LITTLE-ENDIAN byte order
-; =============================================================================
-
-; 2*G x-coordinate
-.export ecdsa_test_2gx_384
-ecdsa_test_2gx_384:
-        .byte $61, $DF, $95, $52, $C7, $A9, $96, $5B
-        .byte $F8, $64, $0E, $BE, $6E, $E8, $E0, $4F
-        .byte $9E, $6E, $B9, $9F, $D1, $07, $D2, $51
-        .byte $D6, $34, $F4, $A6, $59, $59, $02, $89
-        .byte $F0, $97, $5B, $C5, $45, $00, $26, $69
-        .byte $D9, $D2, $A3, $7B, $05, $99, $D9, $08
-
-; 2*G y-coordinate
-.export ecdsa_test_2gy_384
-ecdsa_test_2gy_384:
-        .byte $80, $0E, $94, $0A, $70, $1E, $50, $61
-        .byte $2D, $E2, $39, $4D, $E9, $43, $FD, $5F
-        .byte $25, $B4, $6A, $25, $5F, $50, $4E, $90
-        .byte $3E, $C4, $6C, $BC, $75, $D8, $75, $B2
-        .byte $74, $BA, $6D, $FD, $DF, $E8, $BF, $B7
-        .byte $ED, $3C, $1B, $5B, $FA, $F1, $80, $8E

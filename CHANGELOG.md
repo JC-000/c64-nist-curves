@@ -24,6 +24,78 @@ contract).
 > (rather than defining it locally) would no longer resolve. See that
 > entry for the MINOR-bump implication.
 
+### Removed (issue #91)
+
+> **The RFC 6979 test vectors are retained and test coverage is unchanged.**
+> What is removed below is a redundant *second* copy of them that was compiled
+> into the shipped library and read by nothing. The vectors the test suite uses
+> live in `tools/test_ecdsa_verify.py`, transcribed from the RFC itself
+> (Appendix A.2.5 for P-256, A.3.1 for P-384), and are untouched — as is the
+> entire `tools/vectors/` NIST corpus and all 8 on-chip curve constants.
+
+- **384 B of duplicated RFC 6979 self-test vectors deleted from `curve256.s`
+  (288 B, 9 symbols) and `curve384.s` (96 B, 2 symbols).** They shared
+  translation units with the curve parameters, so ld65's whole-member pull
+  shipped them into **7 of 9 consumer archives** — the same leak shape as the
+  issue #63 test-trampoline export and the `data_test.s` split.
+
+  The on-chip copy was not merely misplaced, it was **dead everywhere**: zero
+  importers across all 24 built objects, no reference from any `.s` file, and
+  none from the Python tooling. That is by design, not oversight — under the
+  project's oracle-driven testing model, expected values must come from an
+  external source, and test code never hard-codes values from a previous
+  implementation run. Checking the library against constants shipped inside
+  that same library would be circular, so the on-chip copy could not have
+  served as an audit reference even if something had read it. These constants
+  were a fossil of an earlier self-test approach.
+
+  No on-chip power-on self-test exists today. If one is ever added it will need
+  vectors resident again; they are recoverable from git history or the RFC, and
+  should land as an opt-in object excluded from the default archives rather
+  than silently present in seven of nine.
+
+  Deleted outright rather than relocated to a test-only object: relocation
+  would have preserved data nothing reads in either place, and would have
+  added a `src/*.s` file needing to be paired into both the `Makefile`
+  MODULES list and `build_release.sh`'s archive list.
+
+  **ABI-surface change** — 11 exported symbols removed. Fine pre-1.0 under
+  SPEC §7 with a MINOR bump; see the issue #90 note above, which this
+  release shares a bump with.
+
+- **`COLD_BYTES` refreshed across 8 archives** now those bytes are gone:
+
+  | archive | was | now |
+  |---|---:|---:|
+  | `nistcurves.a` | 2200 | **1840** |
+  | `nistcurves-onchip.a` | 2000 | **1650** |
+  | `p256-verify.a` | 720 | **430** |
+  | `p256-verify-onchip.a` | 530 | **240** |
+  | `p384-verify.a` | 530 | **430** |
+  | `p384-verify-onchip.a` | 340 | **240** |
+  | `p384-curve.a` | 530 | **430** |
+  | `p384-curve-onchip.a` | 340 | **240** |
+
+  `RESIDENT_BYTES` is unchanged — the vectors were already classified COLD,
+  not resident.
+
+  The three minimal variants now share a single gate arm. Through issue #90
+  `LIB_P256_VERIFY_ONLY` needed its own (720/530 against the P-384 variants'
+  530/340), and that 190 B gap was *exactly* the 288-vs-96 B of vectors the
+  two curve objects carried. With the vectors gone the gap closes and all
+  three measure identically, so the `COLD_BYTES` grouping now matches
+  `REU_BANKS_USED`'s instead of deliberately differing from it.
+
+- **`build/nist-curves.prg` changes for the first time in this release
+  series**: 37683 → 37427 B. The drop is 256 B rather than the 384 B removed,
+  because two page-aligned segments (`align = $100`) reabsorb 128 B as
+  padding; the object-level reduction is exactly 288 + 96. Every other change
+  in `[Unreleased]` held the PRG byte-identical, so this is the one that
+  required the VICE oracle suites to be run rather than argued away.
+
+- `tools/check_archives.py` pins all 11 symbols absent from every archive, so
+  dead data cannot re-enter the consumer surface the way the originals did.
+
 ### Fixed (issue #88)
 
 - **`nistcurves-p384-sha384.a` advertised resources it does not contain.**
