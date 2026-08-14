@@ -14,6 +14,36 @@ contract).
 
 ### Fixed
 
+- **`LIB_NISTCURVES_P384_BSS` was `type = bss` while every sibling was `rw`
+  (issue #98).** Sitting ahead of four file-emitting segments, it made the
+  shipped PRG **53 bytes shorter than its address span**, so everything above
+  `$83C6` loaded 53 bytes below the address it was linked for.
+
+  It was benign only by coincidence of two properties nothing enforced: all
+  trailing content happened to be zeros, and every affected buffer happened to
+  be written before it was read. One non-zero initialiser above `$83C6`, or one
+  buffer read before first write, would have turned it into whole-image
+  corruption — **silently**, because ld65 warns only when a `bss` segment holds
+  *non-zero* data, and these are zero-filled `.res`.
+
+  `build/nist-curves.prg` grows 37427 → **37480 B**, exactly the 53 bytes that
+  were missing, and the image now matches its address span exactly (measured
+  shortfall 53 → **0**).
+
+- **`make check-archives` now pins the placement class, not just this
+  instance.** It fails if any `type = bss` segment precedes a file-emitting one
+  in the same memory area. Neither ld65 nor a reviewer reliably catches this —
+  the diagnostic is absent for the common zero-filled case — so it is checked
+  mechanically. Negative-tested: reintroducing the `bss` declaration trips it
+  with a named error.
+
+  (The check's own first version was silently vacuous — its regex matched the
+  string `SEGMENTS{}` in a header comment rather than the real block, so it
+  inspected nothing while reporting OK. Caught by the negative test, which is
+  the only reason it works.)
+
+### Fixed
+
 - **Consumer version-guard snippets did not assemble** (c64-lib-contract #73).
   `API.md` §8.6 and `src/lib_version.s` both published guards using `.if` on an
   `.import`ed symbol. `.if` needs an assembly-time constant and an imported
