@@ -535,9 +535,65 @@ def link_test(archive_path, imports):
         return rc == 0, unresolved, out
 
 
+# --- src/c64.cfg placement invariant (issue #98) -----------------------------
+# A `type = bss` segment emits no bytes but still advances the address counter.
+# Placed AHEAD of any file-emitting segment in the same memory area, it makes
+# the image shorter than its address span, so every following byte loads low by
+# that segment's size. ld65 gives no diagnostic when the segment is zero-filled
+# -- and zero-filled `.res` is the normal shape for library scratch, so the
+# silent case is the common one, not the exotic one.
+#
+# That shipped for several releases: LIB_NISTCURVES_P384_BSS was `bss` while
+# every sibling was `rw`, leaving the PRG 53 bytes short with everything above
+# $83C6 loading low. It was benign only because the trailing content happened
+# to be zeros and every affected buffer happened to be written before read --
+# two properties nothing enforced. Fixed in issue #98; pinned here so the class
+# cannot return, since neither ld65 nor a reviewer reliably catches it.
+CFG = REPO / "src" / "c64.cfg"
+
+
+def cfg_bss_before_emitting():
+    """Segments declared `bss` that precede a file-emitting segment."""
+    text = CFG.read_text()
+    m = re.search(r"^SEGMENTS\s*\{(.*?)^\}", text, re.S | re.M)
+    if not m:
+        return None, []
+    seen_bss = []
+    offenders = []
+    for line in m.group(1).splitlines():
+        line = line.split("#", 1)[0].strip()
+        d = re.match(r"([A-Za-z_][\w]*)\s*:(.*)", line)
+        if not d:
+            continue
+        name, attrs = d.group(1), d.group(2)
+        if "load = MAIN" not in attrs:
+            continue
+        if re.search(r"type\s*=\s*bss", attrs):
+            seen_bss.append(name)
+        elif seen_bss:
+            # this segment emits bytes and sits after a bss one
+            offenders.extend((b, name) for b in seen_bss)
+            seen_bss = []
+    return m, offenders
+
+
 def main():
     archives = parse_makefile_archives()
     failures = []
+
+    # (c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting.
+    m, offenders = cfg_bss_before_emitting()
+    print("\n=== src/c64.cfg placement ===")
+    if m is None:
+        failures.append("c64.cfg: could not parse SEGMENTS block")
+        print("  PARSE FAIL: SEGMENTS block not found")
+    elif offenders:
+        for bss, after in offenders:
+            failures.append(f"c64.cfg: {bss} is type=bss ahead of file-emitting {after}")
+            print(f"  CFG FAIL: {bss} is `type = bss` and precedes {after}, which emits bytes")
+            print("            -> image ends up shorter than its span; everything after loads low")
+    else:
+        print("  placement OK (no bss segment precedes a file-emitting one)")
 
     for name in sorted(KNOWN_EXTERNAL):
         allow = KNOWN_EXTERNAL[name]
