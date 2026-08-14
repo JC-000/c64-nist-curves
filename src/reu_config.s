@@ -99,7 +99,23 @@ LIB_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_SHARED_REU_MUL_BANK) | (1 .shl (LIB_
 .export LIB_NISTCURVES_REU_OFFSET_COMB_P256:abs
 .export LIB_NISTCURVES_REU_OFFSET_COMB_P384:abs
 
-; SPEC §8.2 canonical equates.
-.export LIB_SHARED_REU_MUL_BANK:abs
-.export LIB_SHARED_REU_MUL_OFFSET:abs
-.export LIB_SHARED_REU_MUL_BANKS_USED:abs
+; SPEC §8.2 canonical equates are deliberately NOT exported
+; (c64-lib-contract #82). They are consumer-supplied placement values:
+; `.ifndef`-guarded here and overridden with `ca65 -D`, exactly like §8.1's
+; LIB_SHARED_SQTAB_BASE, which no adopter exports either. Exporting them
+; put three unprefixed names into the link namespace, and because every §8.2
+; consumer defines the same three, a consumer linking two REU adopters got
+;
+;   ld65: Error: Duplicate external identifier: 'LIB_SHARED_REU_MUL_BANKS_USED'
+;
+; -- reproduced against c64-x25519 v0.10.1, the pair c64-https actually ships.
+; Nothing imported them: no in-tree importer, no object import, no archive pin.
+;
+; Note the contrast with the §3 equates above, which ARE exported and SHOULD
+; be: those carry this library's LIB_NISTCURVES_ prefix, so they are in our
+; namespace and cannot collide. The §8.2 names are shared by construction.
+;
+; If the contract later rules that §8.2 placement should be published rather
+; than library-local, the form will be prefixed (LIB_NISTCURVES_SHARED_REU_MUL_*)
+; per the #43 family; adding that is additive, whereas keeping the bare names
+; would have to be undone. Dropping is the reversible direction.
