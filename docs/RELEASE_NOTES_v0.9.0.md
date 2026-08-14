@@ -1,8 +1,8 @@
 # c64-nist-curves v0.9.0 — Manifest honesty
 
 **Released:** 2026-08-13
-**Tarball:** `c64-nist-curves-v0.9.0.tar.gz` (199,988 bytes)
-**SHA256:** `5135cbab8a09a10cde5db68a03bcaf741add94b3cc5b86e74935f113efd2c24c`
+**Tarball:** `c64-nist-curves-v0.9.0.tar.gz` (200,795 bytes)
+**SHA256:** `5879726fdd9df51d8720182a34af27ff0065367cde55288f1d92dfb3c36371a6`
 
 P-256 and P-384 elliptic-curve arithmetic for the Commodore 64, with packaged
 ECDSA verification and streaming SHA-384.
