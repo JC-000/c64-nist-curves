@@ -12,8 +12,8 @@
 ;       .error "c64-nist-curves v0.1.0 or newer is required"
 ;   .endif
 ;
-;   .if LIB_NISTCURVES_ABI_VERSION <> 0
-;       .error "c64-nist-curves ABI v0 expected; rebuild consumer"
+;   .if LIB_NISTCURVES_ABI_VERSION <> 1
+;       .error "c64-nist-curves ABI v1 expected; rebuild consumer"
 ;   .endif
 ;
 ; TU isolation (SPEC §1, required as of contract v0.7.0): this file
@@ -29,14 +29,26 @@
 ;   MAJOR — incompatible API changes (symbol removals, calling convention)
 ;   MINOR — additive API changes (new exports, no removals/renames)
 ;   PATCH — bugfix or perf improvement with no API change
-;   ABI   — bumped on any breaking export change; matches MAJOR per
-;           c64-lib-contract SPEC §1. The load-bearing breakage gate
-;           for consumers pinning to a specific ABI generation.
+;   ABI   — bumped on any breaking export change. The load-bearing
+;           breakage gate for consumers pinning to a specific ABI
+;           generation.
 ;
-; The library is currently in the v0.x pre-stable series. MINOR bumps may
-; add public symbols but will not remove or rename existing symbols without
-; a MAJOR bump. Consumers should pin to a specific git tag, not track the
-; mainline branch.
+;           NOTE on the value. SPEC §1/§7 describe this as "matching the
+;           MAJOR component", but that reading cannot hold pre-1.0: §7
+;           also states breaking changes ride MINOR bumps while the
+;           contract is in v0.x, so MAJOR stays 0 across exactly the
+;           breakage this gate exists to catch. Every sibling adopter
+;           (c64-x25519, c64-ChaCha20-Poly1305, c64-polyval) treats it as
+;           an independent generation counter starting at 1, and SPEC §7's
+;           own worked example gates on `!= 1`. This library shipped 0
+;           from v0.3.0 through v0.8.0 — the outlier — which left the gate
+;           silent on the v0.9.0 export removals. Bumped to 1 at v0.9.0.
+;
+; The library is currently in the v0.x pre-stable series. Per SPEC §7,
+; breaking changes ride MINOR bumps while pre-1.0, so a MINOR bump CAN
+; remove or rename exported symbols — v0.9.0 removed 17. Watch
+; LIB_NISTCURVES_ABI_VERSION rather than assuming MINOR is always safe,
+; and pin to a specific git tag rather than tracking the mainline branch.
 ; =============================================================================
 
 ; -----------------------------------------------------------------------------
@@ -49,7 +61,7 @@
 LIB_NISTCURVES_VERSION_MAJOR = 0
 LIB_NISTCURVES_VERSION_MINOR = 9
 LIB_NISTCURVES_VERSION_PATCH = 0
-LIB_NISTCURVES_ABI_VERSION   = 0
+LIB_NISTCURVES_ABI_VERSION   = 1
 
 .export LIB_NISTCURVES_VERSION_MAJOR:abs
 .export LIB_NISTCURVES_VERSION_MINOR:abs
