@@ -12,6 +12,46 @@ contract).
 
 ## [Unreleased]
 
+### Added
+
+- **Build targets now accept consumer-supplied defines** (c64-lib-contract
+  #76 item A.1), via two variables:
+
+  ```sh
+  make lib-p256-verify ZPFLAGS='-D fp_src1=0x50 -D fp_src2=0x54'
+  make lib CA65FLAGS='-D LIB_SHARED_SQTAB_BASE=0x8800'
+  make lib CA65FLAGS='-D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT -D SHARED_CT_MUL_8X8'
+  ```
+
+  SPEC §2 states normatively that every ZP slot is `.ifndef`-guarded so a
+  consumer "can override the slot via `ca65 -D <slot>=$<addr>`", and §6 tells
+  that consumer to obtain the library with `make lib-<variant>`. Those two
+  clauses did not meet: the recipes hard-coded their flag lists, so an override
+  passed to `make` was **silently discarded** — no error, just the default
+  address, surfacing later as a ZP collision.
+
+  Two variables rather than one, because they cannot be the same one.
+  `ZPFLAGS` reaches only the `src/zp_config.s` recipes: every other TU obtains
+  a slot with `.importzp`, and a command-line `-D` of an imported name is a
+  hard error (`src/fp256.s(6): Error: Symbol 'fp_src1' is already defined`), so
+  forwarding a ZP override everywhere fails the build rather than relocating
+  the slot. `zp_config.s` is the sole TU that *defines* the slots, so the
+  override belongs there alone and every importer picks the new address up
+  through the export. Verified end-to-end: a consumer linking the overridden
+  archive resolves `fp_src1` to `$0050`.
+
+  This also delivers #76's item A.2 without new targets — a consumer can build
+  the `APP_OWNED` configuration (`SHARED_PRIMITIVES = $0000`,
+  `SHARED_CONSUMES = $0007`) by passing the deferral switches to an existing
+  target, instead of doing `ar65` member surgery on a shipped archive.
+
+  **Use C-style hex (`0x50`), not ca65's `$50`,** in either variable. A `$`
+  traverses make *and* the recipe shell; measured on GNU make + `/bin/sh`,
+  `$50` → `0`, `$$50` → `0`, and `$$$$50` → the shell's PID, i.e. a
+  plausible-looking address that changes per invocation with no diagnostic from
+  make, the shell, ca65 or ld65. `\$$50` and `0x50` are both correct; `0x50`
+  needs no escaping and is documented as the form to use.
+
 ### Fixed
 
 - **§8.2 placement equates no longer exported** (c64-lib-contract #82).
