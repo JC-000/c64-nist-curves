@@ -3,18 +3,26 @@
 ; =============================================================================
 ; c64-nist-curves library version constants (c64-lib-contract SPEC §1)
 ;
-; Consumers import these for assembly-time compatibility checks:
+; Consumers import these for link-time compatibility checks:
 ;
 ;   .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 ;   .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 ;
-;   .if LIB_NISTCURVES_VERSION_MAJOR <> 0 .or LIB_NISTCURVES_VERSION_MINOR < 1
-;       .error "c64-nist-curves v0.1.0 or newer is required"
-;   .endif
+;   .assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 9), lderror, "c64-nist-curves v0.9 or newer is required"
+;   .assert LIB_NISTCURVES_ABI_VERSION = 1, lderror, "c64-nist-curves ABI v1 expected; rebuild consumer"
 ;
-;   .if LIB_NISTCURVES_ABI_VERSION <> 1
-;       .error "c64-nist-curves ABI v1 expected; rebuild consumer"
-;   .endif
+; Why `.assert`/`lderror` and not `.if`/`.error`: `.if` requires an
+; assembly-time constant, but an `.import`ed symbol has no value until
+; link -- ca65 rejects the `.if` form outright with "Error: Constant
+; expression expected" rather than silently accepting or skipping it
+; (c64-lib-contract issue #73). `.assert ..., lderror, ...` defers the
+; check to ld65, which is the first stage that actually knows the
+; imported constant's value. The trade: the guard now fires at LINK
+; time instead of assemble time -- one step later in the build, but
+; still strictly before any generated code runs, so a consumer that
+; violates the requirement still finds out with the same immediacy
+; a broken build implies, just not until `ld65` runs rather than at
+; `ca65` on the guard's own translation unit.
 ;
 ; TU isolation (SPEC §1, required as of contract v0.7.0): this file
 ; exports the four version equates and NOTHING else -- no §5 aggregate

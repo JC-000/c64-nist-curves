@@ -184,7 +184,7 @@ archive contract.
 | data_p384_limlee.s | P-384 Lim-Lee anchor RAM. Excluded from `lib-p384-verify`. |
 | data_sha.s | SHA-384 stream state (`sha_state`, `sha_w`, `sha_abcdefgh`, `sha_t`, `sha_scratch`, `sha_block_buf`, `sha_block_len`, `sha_total_len`, `sha384_digest`). |
 | data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`, and the `fp_tmp2..4` harness staging slots — no .s code references those; the Python tools poke operands there). Linked into the standalone PRG; excluded from every consumer archive. |
-| c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. |
+| c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. Also carries the SPEC §4 **load-bearing cfg attribute declarations**: inline comments stating which placement attributes the library's correctness or timing depends on, and what breaks without them (`align = $100` on the two table segments; `type = rw`, i.e. never `bss`, on the self-modifying code segments and the REU DMA landing pages; plus the `$9C00..$9FFF` sqtab window that is an equate rather than a segment and so is invisible to ld65). Consumers author their own SEGMENTS{} block, so these are the contract — measured on ld65 V2.18, a dropped `align` and a zero-filled `rw`→`bss` flip both link with **no diagnostic at all**. |
 | exports.inc | Cross-module .import/.export dependency map |
 
 ### Benchmarks
@@ -498,7 +498,7 @@ compression with the SHA-384 IV; on-chip output is `H[0..5]` truncated to
 
 ### Calling contract / re-entrancy
 Library routines are NOT re-entrant. The multiply DMA buffers
-(`mul_dma_lo`/`mul_dma_hi` at $7b00/$7c00 in the current build; see
+(`mul_dma_lo`/`mul_dma_hi` at $7a00/$7b00 in the current build; see
 `build/labels.txt`), the `mul_cached_a`/
 `mul_src2_buf` scratch, and the `fp_src1`/`fp_src2`/`fp_dst`/`fp_misc`
 zero-page slots are all clobbered by every field operation and are
@@ -563,6 +563,23 @@ keep all library calls on a single thread of control.
   body is unchanged — the SMC page-delta math is computed from the
   equates, so any consumer-supplied page-aligned base preserves the CT
   invariant automatically.
+
+  **Now enforced at link time, not merely documented** (SPEC §4 adoption).
+  The §8.1 `.assert`s above check the base is *well-formed*; nothing checked
+  that the image doesn't *grow into* it. It can't be checked by ld65 on its
+  own: `sqtab_lo`/`sqtab_hi` are an absolute equate, not a segment, so the
+  linker does not know the window exists and will place a segment straight
+  over it with **no overlap diagnostic** — exactly the 2026-05-17 failure.
+  `src/c64.cfg` now gives MAIN `define = yes`, and `src/main.s` asserts
+  `__MAIN_LAST__ <= sqtab_lo` with `lderror`, turning that silent corruption
+  into a named link failure. Measured slack at adoption: **409 bytes** —
+  409 B of added BSS still links, 410 B trips it, boundary verified exact.
+  The guard lives in `main.s` because `main.o` is in no consumer archive;
+  putting it in `mul_8x8.s` would force `define = yes` — or an unresolved
+  external — on every consumer. It also cannot rot silently: remove
+  `define = yes` and `main.o` stops linking. Consumers author their own
+  memory map and get no protection from this, so they should add the
+  equivalent assert against their own area's `__*_LAST__`.
 - **Issue #33-class REU register-residue defence (ported from
   c64-x25519 commit 817f525, 2026-05-10)**. The library's per-row REU
   DMA fetch in `fp_mul`/`fp_sqr` (256+384) writes only 3 of 8 REU
