@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-08-14
+
 ### Fixed
 
 - **Re-copied `src/precalc_table.inc` from c64-lib-contract v0.7.4** (upstream
@@ -1400,6 +1402,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.9.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.1
 [0.9.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.0
 [0.8.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.8.0
 [0.7.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.7.0
