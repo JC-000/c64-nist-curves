@@ -1,8 +1,8 @@
 # c64-nist-curves v0.9.1 — precalc macro address-size fix
 
 **Released:** 2026-08-14
-**Tarball:** `c64-nist-curves-v0.9.1.tar.gz` (200,324 bytes)
-**SHA256:** `62ac39fbdd790182265783c5babdc6d69f5bc506004196ea6e469d8fd6c3b388`
+**Tarball:** `c64-nist-curves-v0.9.1.tar.gz` (200,363 bytes)
+**SHA256:** `9eca06f5c76ae903d5a957758284de014c71a43c0f85fc6595f9915612fdd1e7`
 
 PATCH release. Doc/macro only — **no symbol, value, or semantic change**, and
 `build/nist-curves.prg` is byte-identical to v0.9.0 (`78b395b8…`, 37427 B).
