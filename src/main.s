@@ -57,6 +57,18 @@
 ;
 ; Comparing against imported `sqtab_lo` rather than re-deriving the base
 ; means a `-D LIB_SHARED_SQTAB_BASE=...` override is tracked automatically.
+;
+; DO NOT make either .import below conditional, weak, or optional. An
+; `.assert ..., lderror` whose operands cannot be resolved does NOT fail --
+; ld65 downgrades it to `Warning: Cannot evaluate assertion in module
+; 'src/main.s', line N` and links anyway, so the guard would silently stop
+; guarding while still looking present in the source. What actually stops
+; the build today is the unresolved external itself:
+;   ld65: Error: 1 unresolved external(s) found - cannot create output file
+; i.e. this guard is load-bearing only because `__MAIN_LAST__` is a hard
+; import against `define = yes` on MAIN in src/c64.cfg. Remove that cfg
+; attribute and the link fails loudly (verified, exit 1, no output file);
+; make the import optional instead and the collision goes back to silent.
 .import sqtab_lo
 .import __MAIN_LAST__
 .assert __MAIN_LAST__ <= sqtab_lo, lderror, "image overruns sqtab window (LIB_SHARED_SQTAB_BASE): raise the base or shrink the image -- see src/c64.cfg MEMORY{}"

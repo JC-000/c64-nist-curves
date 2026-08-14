@@ -48,6 +48,11 @@ API.md §8.4.2.
 
 ## Build & Test
 
+Test/bench tooling requires Python ≥ 3.10 with the `c64-test-harness`
+package installed (`pip install c64-test-harness` or equivalent);
+whichever `python3` runs the commands below must be that interpreter,
+not just any `python3` on `PATH`.
+
 ```bash
 make                              # build nist-curves.prg + labels.txt + nist-curves.dbg
 python3 tools/test_fp256.py       # P-256 field arithmetic (NIST KAT curve-eq + CSPRNG)
@@ -424,6 +429,7 @@ little-endian layout before driving `ec_scalar_mul`, `ec_scalar_mul_var`,
 
 ### c64-https wiring example (ca65)
 
+<!-- check-docs: external="tls_sha256_out, tls_sig_r, tls_sig_s, tls_peer_qx, tls_peer_qy, tls_abort_handshake" -->
 ```asm
 ; Assume the caller has already:
 ;   - Parsed the peer cert and extracted Qx, Qy (32 B BE each for P-256).
@@ -432,6 +438,7 @@ little-endian layout before driving `ec_scalar_mul`, `ec_scalar_mul_var`,
 
 .import ecdsa_verify_256
 .import tls_sha256_out, tls_sig_r, tls_sig_s, tls_peer_qx, tls_peer_qy
+.import tls_abort_handshake     ; your own handshake-failure handler
 
 .bss
 verify_struct:      .res 160    ; r(32) | s(32) | h(32) | Qx(32) | Qy(32)

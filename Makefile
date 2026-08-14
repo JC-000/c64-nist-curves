@@ -34,7 +34,7 @@ LIB_DIR = $(BUILD_DIR)/lib
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
         lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
         lib-p384-curve-onchip \
-        check-archives
+        check-archives check-docs
 
 all: $(PRG)
 
@@ -448,6 +448,17 @@ $(LIB_DIR)/nistcurves-p384-curve-onchip.a: $(LIB_CORE_P384CURVE_ONCHIP_OBJS) $(L
 # alone. The ratchet fails if reality drifts looser OR tighter than the docs.
 check-archives: lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip lib-p384-curve-onchip
 	python3 tools/check_archives.py
+
+# Assemble the copy-pasteable snippets in the LIVE docs (API.md, README.md,
+# CLAUDE.md) and resolve their imports against the symbols the library really
+# exports. Three defects of this class have shipped and been fixed reactively
+# -- `--asm-define` vs `-D`, `.if` on an imported symbol, an unresolved
+# APP_OWNED external -- each having survived many readings. Only executing a
+# snippet catches it. Opt-in like check-archives; deliberately NOT a
+# prerequisite of `all`, so a doc edit can never change the PRG build.
+# Needs build/*.o for import resolution, hence the $(PRG) prerequisite.
+check-docs: $(PRG)
+	python3 tools/check_doc_snippets.py
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
