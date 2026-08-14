@@ -12,6 +12,39 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Re-copied `src/precalc_table.inc` from c64-lib-contract v0.7.4** (upstream
+  `9da3aca`), which pins the `_REGION` and `_SHARED` exports `: abs`. Both are
+  byte-valued by construction, so ca65 inferred **zeropage** for them while a
+  consumer's `.import` defaults to absolute — making SPEC §8.4's own published
+  cross-check snippet emit, on every composed build:
+
+  ```
+  ld65: Warning: Address size mismatch for 'LIB_NISTCURVES_PRECALC_sqtab_SHARED':
+        Exported ... as 'zeropage', import ... as 'absolute'
+  ```
+
+  Reproduced against the pre-copy tree and confirmed clean after. Diagnostic
+  noise rather than breakage — the link succeeded and both asserts evaluated
+  correctly — but the natural consumer reaction is `.import ... : zeropage`,
+  which pins a manifest constant to an address size that is an artifact of its
+  current value rather than a property of the symbol.
+
+  `_SIZE` remains deliberately unhinted: its address size is value-dependent by
+  design, and that is what lets the 131072-byte `reu_mul` table export as `far`
+  without the "far but exported absolute" warning. Verified both ways after the
+  copy — `sqtab_SIZE` absolute at 1024, `reu_mul_SIZE` far at 131072.
+
+  No symbol, value, or semantic change; every existing `.import` resolves to the
+  same value. `build/nist-curves.prg` byte-identical (`78b395b8…`, 37427 B).
+
+  Contract currency note: SPEC also moved to v0.7.3 (§8.x bit constants MUST NOT
+  be exported) and v0.7.5 (`ABI_VERSION` defined as an independent generation
+  counter starting at 1, resolving the §1/§7 contradiction we filed as
+  lib-contract #66). This library is already conformant with both — it never
+  exported the bit constants, and v0.9.0 shipped `ABI_VERSION = 1`.
+
 ## [0.9.0] — 2026-08-13
 
 > **Manifest-honesty release.** Four issues (#86, #88, #90, #91), all
