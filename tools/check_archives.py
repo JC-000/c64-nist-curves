@@ -141,6 +141,22 @@ PRECALC_SQTAB_SYMS = _precalc_syms("sqtab")
 PRECALC_COMB_SYMS = _precalc_syms("lim_lee_comb_p256", "lim_lee_comb_p384")
 PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
 
+# --- §8.2 placement equates must stay unexported (issue #82) -----------------
+# LIB_SHARED_REU_MUL_BANK / _OFFSET / _BANKS_USED are consumer-supplied
+# placement values: .ifndef-guarded and overridden with `ca65 -D`, exactly like
+# §8.1's LIB_SHARED_SQTAB_BASE. Exporting them puts unprefixed names into the
+# link namespace, and every §8.2 consumer defines the same three -- so a
+# consumer linking two REU adopters gets `Duplicate external identifier`.
+# Reproduced against c64-x25519 v0.10.1, the pair c64-https ships.
+# Pinned absent from every archive; the bare names must not come back. If the
+# contract later publishes them, it will be in the prefixed
+# LIB_NISTCURVES_SHARED_REU_MUL_* form, which this pin does not block.
+REU_PLACEMENT_SYMS = {
+    "LIB_SHARED_REU_MUL_BANK",
+    "LIB_SHARED_REU_MUL_OFFSET",
+    "LIB_SHARED_REU_MUL_BANKS_USED",
+}
+
 # --- RFC 6979 self-test vector pins (issue #91) ------------------------------
 # curve256.s / curve384.s used to carry 384 B of RFC 6979 self-test vectors in
 # the same translation units as the curve parameters, so ld65's whole-member
@@ -324,22 +340,22 @@ MUST_EXPORT = {
                                        | ZP_VERIFY_SYMS | ZP_SHA384_SYMS),
 }
 MUST_NOT_EXPORT = {
-    "nistcurves.a": set() | TESTVEC_SYMS,
+    "nistcurves.a": set() | TESTVEC_SYMS | REU_PLACEMENT_SYMS,
     "nistcurves-p256-verify.a": (PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
+                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
     "nistcurves-p384-verify.a": (PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
-    "nistcurves-p384-curve.a": PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS,
-    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS | ZP_NON_SHA_SYMS | TESTVEC_SYMS,
-    "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS | TESTVEC_SYMS,
+                                 | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
+    "nistcurves-p384-curve.a": PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS,
+    "nistcurves-p384-sha384.a": REU_MUL_PROVIDER_SYMS | PRECALC_NON_SHA_SYMS | ZP_NON_SHA_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS,
+    "nistcurves-onchip.a": REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS,
     "nistcurves-p256-verify-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
                                         | PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
+                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
     "nistcurves-p384-verify-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
                                         | PRECALC_COMB_SYMS | PRECALC_SHA384_K_SYMS
-                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS),
+                                        | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
     "nistcurves-p384-curve-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
-                                       | PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS),
+                                       | PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------

@@ -14,6 +14,36 @@ contract).
 
 ### Fixed
 
+- **§8.2 placement equates no longer exported** (c64-lib-contract #82).
+  `LIB_SHARED_REU_MUL_BANK` / `_OFFSET` / `_BANKS_USED` were `.export`ed
+  unprefixed. Every §8.2 consumer defines the same three names, so a consumer
+  linking two REU adopters got a hard link failure:
+
+  ```
+  ld65: Error: Duplicate external identifier: 'LIB_SHARED_REU_MUL_BANKS_USED'
+  ```
+
+  Reproduced against `c64-x25519` v0.10.1 — the exact pair `c64-https` ships,
+  so this broke a real consumer today.
+
+  They are consumer-supplied placement values: `.ifndef`-guarded and overridden
+  with `ca65 -D`, exactly like §8.1's `LIB_SHARED_SQTAB_BASE`, which no adopter
+  exports. Dropping the exports changes nothing else — no in-tree importer, no
+  object import, no archive pin referenced them.
+
+  Note the contrast with the §3 equates in the same file, which **are** exported
+  and should be: those carry the `LIB_NISTCURVES_` prefix, so they sit in this
+  library's namespace and cannot collide. The §8.2 names are shared by
+  construction.
+
+  Pinned absent from all nine archives so they cannot return. If the contract
+  later rules that §8.2 placement should be published rather than library-local,
+  that form will be prefixed (`LIB_NISTCURVES_SHARED_REU_MUL_*`) per the #43
+  family and is additive — whereas keeping the bare names would have had to be
+  undone. Dropping was the reversible direction.
+
+### Fixed
+
 - **`LIB_NISTCURVES_P384_BSS` was `type = bss` while every sibling was `rw`
   (issue #98).** Sitting ahead of four file-emitting segments, it made the
   shipped PRG **53 bytes shorter than its address span**, so everything above
