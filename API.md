@@ -94,9 +94,15 @@ labels. (`reu_mul_init` moved from the never-archived `main.s` into its own
 object by issue #81, so every default-profile archive now ships it —
 archive consumers link this whole sequence with no extra objects.)
 
-1. **Bank out BASIC ROM** (optional but recommended) so `$A000`-`$BFFF` is RAM:
+1. **Bank out BASIC ROM** (optional but recommended) so `$A000`-`$BFFF` is RAM.
+   `proc_port` ($01, the 6510 CPU I/O port) is hardware-fixed but is not a
+   library-claimed symbol (issue #90) — define it yourself, same as
+   `src/main.s` does, guarded so a pre-existing definition wins:
 
-   ```
+   ```asm
+   .ifndef proc_port
+     proc_port = $01
+   .endif
    lda proc_port
    and #$fe
    sta proc_port
@@ -325,20 +331,33 @@ going through the packaged verifier.
 ### 6.1 Modular multiply: `r = a * b mod p256`
 
 ```asm
-        ; Assume a, b, r are each 32-byte LE buffers in your program.
-        lda #<a
+        .importzp fp_src1, fp_src2, fp_dst
+        .import ec_mulp
+
+.bss
+; buf_a, buf_b, buf_r stand in for wherever your program keeps its
+; 32-byte LE operands/result. Named with a prefix deliberately: a bare
+; `a` cannot be a label in ca65 — it is the accumulator token for
+; implied addressing, so `a: .res 32` fails with "Unexpected trailing
+; garbage characters".
+buf_a: .res 32
+buf_b: .res 32
+buf_r: .res 32
+
+.code
+        lda #<buf_a
         sta fp_src1
-        lda #>a
+        lda #>buf_a
         sta fp_src1+1
-        lda #<b
+        lda #<buf_b
         sta fp_src2
-        lda #>b
+        lda #>buf_b
         sta fp_src2+1
-        lda #<r
+        lda #<buf_r
         sta fp_dst
-        lda #>r
+        lda #>buf_r
         sta fp_dst+1
-        jsr ec_mulp         ; sets modulus to p256, multiplies, copies fp_r0 to r
+        jsr ec_mulp         ; sets modulus to p256, multiplies, copies fp_r0 to buf_r
 ```
 
 Use `ec_mulp_384` with 48-byte buffers for P-384.
@@ -346,7 +365,14 @@ Use `ec_mulp_384` with 48-byte buffers for P-384.
 ### 6.2 Fixed-base scalar multiply: `Q = k * G` on P-256
 
 ```asm
-        ; k is a 32-byte big-endian scalar somewhere in RAM.
+        .importzp ec_scalar_ptr
+        .import ec_scalar_mul, ec_jacobian_to_affine
+        .import ec_affine_x, ec_affine_y
+
+.bss
+k: .res 32   ; a 32-byte big-endian scalar somewhere in RAM
+
+.code
         lda #<k
         sta ec_scalar_ptr
         lda #>k
@@ -366,6 +392,16 @@ require the relevant `ec_precompute_*` to have been called at boot.
 ### 6.3 ECDSA verify with message: P-384 hash-then-verify wrapper
 
 ```asm
+        .importzp sha_src, sha_len
+        .import ecdsa_verify_with_message_384
+
+; message_len is a compile-time constant (your real message length, or
+; computed by your build), NOT a RAM label like message_buf below --
+; #<message_len / #>message_len only produce the right byte count if
+; it's a constant. Taking the address of a label here instead would
+; silently load the wrong sha_len with no assemble-time error.
+message_len = 6
+
         ; Pre-pack r, s, Qx, Qy into a 240 B BE struct. The h slot is
         ; OVERWRITTEN by the wrapper -- callers may leave it zero.
         ; struct layout: r(48) | s(48) | h(48) | Qx(48) | Qy(48).
@@ -395,6 +431,10 @@ message_buf:    .res 1024       ; or wherever the message lives
         jmp @reject
 @valid:
         ; ...
+        rts
+@reject:
+        ; ...
+        rts
 ```
 
 For transcripts spanning multiple buffers (TLS handshake hashing,
@@ -452,7 +492,7 @@ example of the migration patterns we applied to our own source.
 Recommended import mechanism: **git submodule**, pinned to a specific
 release tag.
 
-```
+```sh
 git submodule add https://github.com/JC-000/c64-nist-curves \
     lib/c64-nist-curves
 git -C lib/c64-nist-curves checkout v0.7.0
@@ -461,11 +501,11 @@ git commit -m "Import c64-nist-curves v0.7.0 as submodule"
 
 Bumping to a later release:
 
-```
+```sh
 git -C lib/c64-nist-curves fetch --tags
-git -C lib/c64-nist-curves checkout v0.7.1    # or whichever tag
+git -C lib/c64-nist-curves checkout v0.9.1    # or whichever tag
 git add lib/c64-nist-curves
-git commit -m "Bump c64-nist-curves to v0.7.1"
+git commit -m "Bump c64-nist-curves to v0.9.1"
 ```
 
 Consumers should pin to a specific tag rather than tracking `master`
@@ -920,7 +960,7 @@ and removed at contract v1.0**: they are identical across every library
 adopting the contract, so a consumer that links two sibling libraries and
 imports both manifests gets
 
-```
+```text
 ld65: Error: Duplicate external identifier: 'LIB_VERSION_MAJOR'
 ```
 
@@ -969,7 +1009,7 @@ sibling crypto libraries into the same PRG.
 
 **§3 REU placement** (consumer overrides via `ca65 -D`):
 
-```asm
+```sh
 ca65 -D LIB_NISTCURVES_REU_BANK_MUL=$03 ...        # default $00
 ca65 -D LIB_NISTCURVES_REU_BANK_COMB=$05 ...       # default $02
 ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P256=$0000  # default $0000
@@ -993,11 +1033,11 @@ ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 **§8.1 shared `sqtab`** (cross-library shared primitive — consumer
 provides one base address, all sqtab-consuming sibling libs agree):
 
-```asm
-ca65 -D LIB_SHARED_SQTAB_BASE=$<page-aligned-addr>
+```sh
+ca65 -D LIB_SHARED_SQTAB_BASE=$8800   # any page-aligned address; $9c00 is the default
 ```
 
-Default `$9c00`. Page-aligned + `sqtab_hi = sqtab_lo + $0200` are
+Page-aligned + `sqtab_hi = sqtab_lo + $0200` are
 enforced by `.assert` in `src/mul_8x8.s`. `LIB_NISTCURVES_SHARED_PRIMITIVES`
 bit `$0001` (= `LIB_SHARED_PRIMITIVES_SQTAB`) signals to consumers that
 this library claims ownership of the §8.1 primitive; consumers `.assert
@@ -1054,13 +1094,20 @@ ownership mask *only*. The library pins the invariant itself at
 assemble time in `src/lib_manifest.s`:
 
 ```asm
+.import LIB_NISTCURVES_SHARED_PRIMITIVES, LIB_NISTCURVES_SHARED_CONSUMES
 .assert (LIB_NISTCURVES_SHARED_PRIMITIVES & ~LIB_NISTCURVES_SHARED_CONSUMES) = 0, error, "a build cannot own a primitive it does not consume"
 ```
 
 Consumers pair the existing disjointness check with a coverage check, so
-every consumed primitive has exactly one owner somewhere in the link:
+every consumed primitive has exactly one owner somewhere in the link.
+`LIB_X_SHARED_PRIMITIVES` / `LIB_X_SHARED_CONSUMES` stand for whichever
+sibling library you're co-linking (e.g. `c64-x25519`) — its own manifest
+equates, not this library's:
 
+<!-- check-docs: external="LIB_X_SHARED_PRIMITIVES, LIB_X_SHARED_CONSUMES" -->
 ```asm
+.import LIB_NISTCURVES_SHARED_PRIMITIVES, LIB_NISTCURVES_SHARED_CONSUMES
+.import LIB_X_SHARED_PRIMITIVES, LIB_X_SHARED_CONSUMES
 ; no double ownership (v0.4.0)
 .assert (LIB_NISTCURVES_SHARED_PRIMITIVES & LIB_X_SHARED_PRIMITIVES) = 0, error, "shared-primitive double-ownership"
 ; no consumed primitive without an owner (v0.5.0)
@@ -1071,10 +1118,27 @@ If the consumer application supplies a primitive from its own modules
 (the original intent of the `SHARED_*` switches — every linked library
 defers, the app provides), OR its own contribution into the owner union:
 
+<!-- check-docs: external="LIB_X_SHARED_PRIMITIVES, LIB_X_SHARED_CONSUMES" -->
 ```asm
-APP_OWNED = LIB_SHARED_PRIMITIVES_SQTAB
+.import LIB_NISTCURVES_SHARED_PRIMITIVES, LIB_NISTCURVES_SHARED_CONSUMES
+.import LIB_X_SHARED_PRIMITIVES, LIB_X_SHARED_CONSUMES
+APP_OWNED = $0001   ; LIB_SHARED_PRIMITIVES_SQTAB per c64-lib-contract SPEC §8.0's
+                    ; bit-allocation table ($0001 sqtab | $0002 reu_mul | $0004 ct_mul_8x8)
 .assert ((LIB_NISTCURVES_SHARED_CONSUMES | LIB_X_SHARED_CONSUMES) & ~(LIB_NISTCURVES_SHARED_PRIMITIVES | LIB_X_SHARED_PRIMITIVES | APP_OWNED)) = 0, error, "consumed shared primitive with no owner in the link"
 ```
+
+The bit value is spelled out literally rather than imported as
+`LIB_SHARED_PRIMITIVES_SQTAB`: per c64-lib-contract SPEC v0.7.3, the §8.x
+per-primitive bit constants (`LIB_SHARED_PRIMITIVES_SQTAB` / `_REU_MUL` /
+`_CT_MUL_8X8`) MUST NOT be `.export`ed, precisely because they are
+unprefixed and identically valued across every adopting library —
+exporting them would reintroduce the same duplicate-identifier collision
+in a two-library link that this whole section exists to avoid. This
+library does not export them (conformant since c64-lib-contract issue
+#86), so `.import LIB_SHARED_PRIMITIVES_SQTAB` here would fail to link
+with an unresolved external. If a future SPEC revision assigns different
+bit values, re-check this against the current §8.0 allocation table
+rather than assuming `$0001` is permanent.
 
 One subtlety worth stating explicitly, because it looks like an error:
 the `FP_ONCHIP_MUL` build claims §8.3 `ct_mul_8x8` (`$0004`) in **both**

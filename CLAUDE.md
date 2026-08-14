@@ -22,7 +22,7 @@ Companion docs (read alongside this file):
 - `tools/vectors/README.md` — oracle invariant + KAT refresh procedure.
 
 ## Build
-```
+```sh
 make clean && make           # ca65/ld65 build → build/nist-curves.prg
 make build-acme              # legacy ACME build of *.asm (diff testing only)
 make bench-u64               # alias for tools/bench_ecdsa_u64.py (needs U64_HOST)
@@ -44,7 +44,11 @@ ACME build path used in side-by-side diff testing only — do not edit
 them for new work.
 
 ## Test
-```
+
+Requires Python >= 3.10 with `c64-test-harness` installed on whichever
+`python3` runs these — not necessarily the default `python3` on PATH.
+
+```sh
 python3 tools/test_fp256.py          # P-256 field arithmetic tests (field KAT + random)
 python3 tools/test_points256.py      # P-256 point operation tests (add --full for 10x samples)
 python3 tools/test_fp384.py          # P-384 field arithmetic tests (field KAT + random)
@@ -58,6 +62,9 @@ python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul o
 python3 tools/bench_sha384.py        # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 python3 tools/bench_reu_mult.py      # REU multiply-table cost decomposition (row-fetch DMA vs mul_8x8 vs fp_mul; VICE, ~4 min; not CI-gating)
 make check-archives                  # archive linkability contract ratchet (no VICE; pins API.md §8.4.1)
+make check-docs                      # assemble the copy-pasteable snippets in API.md / README.md /
+                                     #   CLAUDE.md and resolve their imports against real exports
+                                     #   (no VICE; opt-in, never a prerequisite of `all`)
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
                                      #   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
                                      #   C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py
@@ -184,7 +191,7 @@ archive contract.
 | data_p384_limlee.s | P-384 Lim-Lee anchor RAM. Excluded from `lib-p384-verify`. |
 | data_sha.s | SHA-384 stream state (`sha_state`, `sha_w`, `sha_abcdefgh`, `sha_t`, `sha_scratch`, `sha_block_buf`, `sha_block_len`, `sha_total_len`, `sha384_digest`). |
 | data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`, and the `fp_tmp2..4` harness staging slots — no .s code references those; the Python tools poke operands there). Linked into the standalone PRG; excluded from every consumer archive. |
-| c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. Also carries the SPEC §4 **load-bearing cfg attribute declarations**: inline comments stating which placement attributes the library's correctness or timing depends on, and what breaks without them (`align = $100` on the two table segments; `type = rw`, i.e. never `bss`, on the self-modifying code segments and the REU DMA landing pages; plus the `$9C00..$9FFF` sqtab window that is an equate rather than a segment and so is invisible to ld65). Consumers author their own SEGMENTS{} block, so these are the contract — measured on ld65 V2.18, a dropped `align` and a zero-filled `rw`→`bss` flip both link with **no diagnostic at all**. |
+| c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. Note `define = yes` on MAIN is load-bearing, not cosmetic: `src/main.s` imports `__MAIN_LAST__` and asserts with `lderror` that the image ends at or below `sqtab_lo`. Do not make that import conditional — an `lderror` assert whose operands are unresolvable degrades to a `Cannot evaluate assertion` warning, so the guard survives only because a missing external is itself a hard link error. Also carries the SPEC §4 **load-bearing cfg attribute declarations**: inline comments stating which placement attributes the library's correctness or timing depends on, and what breaks without them (`align = $100` on the two table segments; `type = rw`, i.e. never `bss`, on the self-modifying code segments and the REU DMA landing pages; plus the `$9C00..$9FFF` sqtab window that is an equate rather than a segment and so is invisible to ld65). Consumers author their own SEGMENTS{} block, so these are the contract — measured on ld65 V2.18, a dropped `align` and a zero-filled `rw`→`bss` flip both link with **no diagnostic at all**. |
 | exports.inc | Cross-module .import/.export dependency map |
 
 ### Benchmarks
