@@ -876,7 +876,7 @@ the price of losing `ec_scalar_mul` and `ec_scalar_mul_384`.
 
 ### 8.6 Version compatibility checks
 
-The library exports four integer constants for assembly-time version
+The library exports four integer constants for link-time version
 checks, defined in `src/lib_version.s` (the fourth, `LIB_ABI_VERSION`,
 landed in v0.3.0 per c64-lib-contract SPEC §1):
 
@@ -884,19 +884,32 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
 .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
-.if LIB_NISTCURVES_VERSION_MAJOR <> 0 .or LIB_NISTCURVES_VERSION_MINOR < 7
-    .error "c64-nist-curves v0.7.0 or newer is required"
-.endif
-
-.if LIB_NISTCURVES_ABI_VERSION <> 1
-    .error "c64-nist-curves ABI v1 expected; rebuild consumer"
-.endif
+.assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 9), lderror, "c64-nist-curves v0.9 or newer is required"
+.assert LIB_NISTCURVES_ABI_VERSION = 1, lderror, "c64-nist-curves ABI v1 expected; rebuild consumer"
 ```
 
-`LIB_NISTCURVES_ABI_VERSION` bumps in lockstep with
-`LIB_NISTCURVES_VERSION_MAJOR` and is the load-bearing gate for consumers
+This uses `.assert`/`lderror` rather than `.if`/`.error`. `.if` requires
+an assembly-time constant, and an `.import`ed symbol has no value until
+link — the `.if` form does not silently pass or skip, it fails to
+assemble outright with `Error: Constant expression expected`
+(c64-lib-contract issue #73). `.assert ..., lderror, ...` defers
+evaluation to ld65, the first stage that actually knows the imported
+constant's value. The cost: the guard now fires at **link time** rather
+than assemble time — one step later in the build — but it still fires
+before anything runs, so a mismatched consumer is still caught before
+producing a bad PRG, just via a `ld65` error instead of a `ca65` error.
+
+`LIB_NISTCURVES_ABI_VERSION` is the load-bearing gate for consumers
 pinning to a specific ABI generation — it changes only when public
-exports are removed or renamed.
+exports are removed or renamed. Note it is **not** in lockstep with
+`LIB_NISTCURVES_VERSION_MAJOR` pre-1.0: SPEC §7 describes breaking
+changes riding MINOR bumps while the contract is in v0.x, so MAJOR
+stays 0 across exactly the breakage this gate exists to catch. It is
+instead an independent generation counter starting at 1 (this library
+shipped 0 from v0.3.0 through v0.8.0 — an outlier against the other
+contract adopters — and corrected to 1 at v0.9.0; see the versioning
+note in `src/lib_version.s`). Watch `LIB_NISTCURVES_ABI_VERSION`
+directly rather than inferring it from MAJOR.
 
 **Bare vs prefixed forms.** The library-prefixed names above are
 canonical as of c64-lib-contract v0.7.0. The library additionally exports

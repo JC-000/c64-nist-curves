@@ -12,6 +12,77 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Consumer version-guard snippets did not assemble** (c64-lib-contract #73).
+  `API.md` §8.6 and `src/lib_version.s` both published guards using `.if` on an
+  `.import`ed symbol. `.if` needs an assembly-time constant and an imported
+  symbol has no value until link, so ca65 rejects it outright with
+  `Error: Constant expression expected` — the guard never assembled at all
+  rather than silently passing. Replaced with `.assert ..., lderror, ...`,
+  which defers evaluation to ld65, the first stage that knows the value.
+  Verified by extracting the published snippet verbatim, assembling it,
+  linking it against the real `lib_version.o`, and confirming it *fires* when
+  the required version is raised above what the library exports. The cost is
+  that the guard now reports at link rather than assemble time; it still
+  reports before anything runs.
+
+  Also corrected an adjacent stale claim that `LIB_NISTCURVES_ABI_VERSION`
+  "bumps in lockstep with `LIB_NISTCURVES_VERSION_MAJOR`" — it does not and
+  must not pre-1.0 (MAJOR is 0, ABI is 1); it is an independent generation
+  counter per SPEC §7.
+
+### Added
+
+- **SPEC §4 load-bearing cfg attribute declarations** (c64-lib-contract
+  v0.8.0). Consumers author their own `SEGMENTS{}` block, so every placement
+  attribute this library's correctness or timing depends on is now declared
+  inline in `src/c64.cfg` with the consequence of getting it wrong. Measured
+  on ld65 V2.18 rather than assumed:
+
+  | attribute | dropped | ld65 says |
+  |---|---|---|
+  | `align = $100` on the two table segments | tables land at `$xx04` | **nothing at all** |
+  | `type = rw` → `bss` on a zero-filled segment | 512 bytes vanish | **nothing at all** |
+  | `type = rw` → `bss` on non-zero content | image shifts | warns, links anyway |
+
+  Declared: `align = $100` on `SHA384_TABLES` (twelve 256 B rotate LUTs read
+  `abs,x` over the full 8-bit range) and on `TABLES` (`mul_dma_lo/hi`, ~1024
+  indexed reads per `fp_mul`); `type = rw` on `MUL`/`P256`/`P384_CODE`, which
+  are **self-modified at run time** and would produce wrong field results in
+  ROM with no diagnostic; `type = rw` on `TABLES`, whose 512-byte DMA landing
+  pages must stay contiguous and emitted.
+
+  Deliberately *not* declared, having been checked: `type = ro` on the table
+  segments (byte-identical either way), `sha384_k` alignment (it is in
+  `SHA384_RODATA`, links unaligned, and is read through a ZP pointer — the
+  pre-existing comment claiming otherwise was wrong twice), and any
+  constant-time claim for `mul_dma` alignment, since `fp_mul`'s inner loop has
+  a documented secret-dependent zero-byte skip and is not constant-time.
+
+- **The sqtab window collision is now a link error.** `sqtab_lo`/`sqtab_hi` are
+  an absolute equate (`LIB_SHARED_SQTAB_BASE`, SPEC §8.1), not a segment, so
+  ld65 does not know the `$9C00..$9FFF` window exists and will place a segment
+  straight over it with **no overlap diagnostic**. That is exactly the
+  2026-05-17 failure — silent multiply-table corruption, boot hanging at the
+  `$02A7` sentinel. The §8.1 asserts only check the base is well-formed;
+  nothing checked that the image does not grow *into* it.
+
+  `src/c64.cfg` now gives MAIN `define = yes`, and `src/main.s` asserts
+  `__MAIN_LAST__ <= sqtab_lo` with `lderror`. Measured slack: **409 bytes** —
+  409 B of added BSS still links, 410 B trips it, boundary verified exact. The
+  guard lives in `main.s` because `main.o` is in no consumer archive; in
+  `mul_8x8.s` it would force `define = yes` or an unresolved external on every
+  consumer. It cannot rot silently either — remove `define = yes` and `main.o`
+  stops linking.
+
+  Consumers author their own memory map and get no protection from this; the
+  cfg recommends they add the equivalent assert against their own area's
+  `__*_LAST__`.
+
+- Corrected the re-entrancy section's `mul_dma_lo`/`mul_dma_hi` addresses:
+  `$7a00`/`$7b00`, not `$7b00`/`$7c00`.
+
 ## [0.9.1] — 2026-08-14
 
 ### Fixed

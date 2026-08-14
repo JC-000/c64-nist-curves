@@ -6,7 +6,9 @@
 ; Memory layout:
 ;   $0801-$08FF: BASIC stub + boot
 ;   $0900+:      code (mul_8x8, fp256, mod256, curve256, points256)
-;   $7800-$7BFF: sqtab (quarter-square multiply tables)
+;   $9C00-$9FFF: sqtab (quarter-square multiply tables; SPEC §8.1 equate,
+;                LIB_SHARED_SQTAB_BASE -- not a linker segment, see the
+;                collision guard below)
 ; =============================================================================
 
 ; --- ZP imports ---
@@ -29,6 +31,35 @@
 
 ; --- mul_8x8 imports ---
 .import sqtab_init
+
+; --- sqtab / image-extent collision guard (SPEC §4 placement) ---
+; sqtab_lo / sqtab_hi are an absolute equate (LIB_SHARED_SQTAB_BASE), not a
+; segment, so ld65 has no idea the 1 KB at $9C00..$9FFF is spoken for and
+; will place a segment straight over it with no overlap diagnostic. The
+; failure is silent at link time and shows up as a corrupted quarter-square
+; table and a boot that never reaches the $02A7 sentinel -- which is exactly
+; what happened on 2026-05-17 at the previous $7800 base.
+;
+; __MAIN_LAST__ comes from `define = yes` on the MAIN memory area in
+; src/c64.cfg and is the first address past the last byte actually placed
+; (verified: $9A67 against an area that runs to $CFFF, so it tracks placed
+; content, not the area size). `lderror` defers evaluation to link time,
+; when that extent is finally known.
+;
+; This guard lives in main.s deliberately. main.o is the standalone
+; test/bench driver and is NOT part of any consumer archive (API.md §8.2),
+; so importing a cfg-provided symbol here cannot impose `define = yes` --
+; or an unresolved external -- on a consumer linking nistcurves*.a against
+; their own cfg. It guards this library's own PRG, which is the image that
+; has actually collided before. Consumers get the declaration in c64.cfg's
+; MEMORY{} block instead; there is no way to assert against a memory map
+; we do not author.
+;
+; Comparing against imported `sqtab_lo` rather than re-deriving the base
+; means a `-D LIB_SHARED_SQTAB_BASE=...` override is tracked automatically.
+.import sqtab_lo
+.import __MAIN_LAST__
+.assert __MAIN_LAST__ <= sqtab_lo, lderror, "image overruns sqtab window (LIB_SHARED_SQTAB_BASE): raise the base or shrink the image -- see src/c64.cfg MEMORY{}"
 
 ; --- SPEC §8.2 reu_mul provider (src/reu_mul_init.s; moved out of this
 ; --- file by issue #81 so the default-profile archives ship it) ---
