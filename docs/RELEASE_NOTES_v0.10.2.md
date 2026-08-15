@@ -25,9 +25,14 @@ erring **below** the measured sums (9000 < 9001 measured; 240 < 243 measured),
 which is the unsafe direction now that §6.6 defines the consumer contract as
 `declared ≤ budget ⟹ actual ≤ budget`. The sha384 value takes the fleet's
 next-256-boundary convention; the onchip COLD values keep fine granularity
-because the 256-boundary would breach §5's ±5% at that size. Consumer fit
-checks written per §6.6 (`declared ≤ budget`) are unaffected unless the budget
-was within 216 B (sha384) / 10 B (onchip verify) of the old declaration.
+because the 256-boundary would breach §5's ±5% at that size. A §6.6 fit check
+(`declared ≤ budget`) **cannot falsely pass** from these — but it can newly
+refuse: a budget inside the new headroom band (9001–9215 B for
+`p384-sha384`'s region, 243–249 B for the onchip COLD pair's) goes from
+passing to **refused at link**, despite the archive genuinely fitting. That is
+the known false-refusal cost of safe-direction round-up, in the safe
+direction. If you hit it, loosen the budget to the declared value — the equate
+is doing its job.
 
 ## What else is in this release
 
@@ -61,9 +66,11 @@ was within 216 B (sha384) / 10 B (onchip verify) of the old declaration.
 
 ## Upgrading from v0.10.1
 
-No action. Every entry point, export, and buffer layout is unchanged; the two
-footprint equates moved in the direction that cannot break a correctly written
-§6.6 fit check. Pin **v0.10.2**.
+Every entry point, export, and buffer layout is unchanged. One link-visible
+case: a §6.6 fit check whose budget lies inside the new headroom bands
+(9001–9215 B against `p384-sha384`, 243–249 B against the onchip-verify COLD
+pair) will newly refuse — loosen the budget to the declared value. All other
+consumers: no action. Pin **v0.10.2**.
 
 ## Verification
 
