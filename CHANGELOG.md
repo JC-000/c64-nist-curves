@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-08-15
+
 ### Added
 
 - **R2 exported-vs-summed ZP audit in `make check-archives`** (issue #113 —
@@ -1849,6 +1851,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.10.2]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.2
 [0.10.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.1
 [0.10.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.0
 [0.9.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.1
