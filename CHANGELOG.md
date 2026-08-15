@@ -14,13 +14,64 @@ contract).
 
 ### Added
 
+- **`make lib-app-owned`** (SPEC §6.3, required of every §8.x-consuming
+  library). Builds `build/lib/nistcurves-app-owned.a` — the full member set
+  with **all four** deferral switches defined, so a consumer can request
+  §8.0's `APP_OWNED` shape without knowing which switches this library has.
+  The manifest attests it: `SHARED_PRIMITIVES = $0000` (everything deferred),
+  `SHARED_CONSUMES = $0007` (the library still reads all three primitives).
+  `reu_mul_init.o` is excluded rather than substituted — under
+  `SHARED_REU_MUL_INIT` its entire body is gated out, so the object would ship
+  nothing. Verified by linking a consumer that supplies the four primitives.
+
+- **`SHARED_REU_MUL_FETCH`** (SPEC §8.2 fetch deferral, contract v0.9.1).
+  `SHARED_REU_MUL_INIT` gates the init body only; the per-row fetch was
+  exported unconditionally, so a composed link carried two canonical fetches
+  regardless of init deferral. The new switch gates the fetch surface, and
+  per §8.1's import-never-stub rule a deferring build imports rather than
+  stubbing.
+
+  **The two switches now move together, enforced at assemble time.** Defining
+  either alone is rejected with a named `.error`: deferring init while still
+  exporting the canonical fetch makes the build an owner of the fetch that is
+  not an owner of the primitive, which §8.0's three-state table has no row
+  for. Bit `$0002` drops exactly when both are defined.
+
+### Fixed
+
+- **Deferring §8.3 deleted scratch this library's own field arithmetic uses.**
+  `poly_prod_lo` / `poly_prod_hi` were defined *inside* the
+  `SHARED_CT_MUL_8X8` gate, but they are dual-purpose: `ct_mul_8x8`'s 16-bit
+  output when we own the body, **and** ordinary scratch that `fp256.s` /
+  `fp384.s` write on the diagonal-squaring path of every `fp_sqr`, entirely
+  independent of `ct_mul_8x8`. Any `SHARED_CT_MUL_8X8` build therefore left
+  them unresolved.
+
+  Latent since the switch was introduced, and invisible until §6.3's
+  `lib-app-owned` target built a deferring archive for the first time — the
+  switch existed but had never been exercised. Same shape as the
+  `c64-x25519` `mul_src2_buf` overreach contract v0.9.1 corrected: a deferred
+  buffer points a library's own field arithmetic at another library's memory.
+  They now sit outside the gate; the canonical §8.3 body is untouched, so its
+  cross-adopter byte-identity gate is unaffected.
+
+### Changed
+
+- The §6.2 defines-forwarding variables take their contract-normative names:
+  `CA65FLAGS` → **`CONTRACT_DEFINES`**, `ZPFLAGS` → **`CONTRACT_ZP_DEFINES`**.
+  Mechanism and scoping are unchanged — v0.9.0 adopted both from this
+  library's implementation, including the pattern-rule caveat — only the
+  spelling moves. Never released under the old names.
+
+### Added
+
 - **Build targets now accept consumer-supplied defines** (c64-lib-contract
   #76 item A.1), via two variables:
 
   ```sh
-  make lib-p256-verify ZPFLAGS='-D fp_src1=0x50 -D fp_src2=0x54'
-  make lib CA65FLAGS='-D LIB_SHARED_SQTAB_BASE=0x8800'
-  make lib CA65FLAGS='-D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT -D SHARED_CT_MUL_8X8'
+  make lib-p256-verify CONTRACT_ZP_DEFINES='-D fp_src1=0x50 -D fp_src2=0x54'
+  make lib CONTRACT_DEFINES='-D LIB_SHARED_SQTAB_BASE=0x8800'
+  make lib CONTRACT_DEFINES='-D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT -D SHARED_CT_MUL_8X8'
   ```
 
   SPEC §2 states normatively that every ZP slot is `.ifndef`-guarded so a
@@ -31,7 +82,7 @@ contract).
   address, surfacing later as a ZP collision.
 
   Two variables rather than one, because they cannot be the same one.
-  `ZPFLAGS` reaches only the `src/zp_config.s` recipes: every other TU obtains
+  `CONTRACT_ZP_DEFINES` reaches only the `src/zp_config.s` recipes: every other TU obtains
   a slot with `.importzp`, and a command-line `-D` of an imported name is a
   hard error (`src/fp256.s(6): Error: Symbol 'fp_src1' is already defined`), so
   forwarding a ZP override everywhere fails the build rather than relocating

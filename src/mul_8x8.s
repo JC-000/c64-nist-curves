@@ -195,10 +195,27 @@ sq_i:   .res 2, 0              ; 16-bit index counter (0..511)
 ; Clobbers: A, X, Y; ct_diff_raw / ct_sign_mask (local scratch); the four
 ;   SMC patch sites (smc_sum_a_imm, smc_diff_a_imm, smc_lo_addr, smc_hi_addr).
 ; =============================================================================
-.ifndef SHARED_CT_MUL_8X8
+; poly_prod_lo/hi sit OUTSIDE the §8.3 gate deliberately (contract v0.9.1
+; adopter-private-buffer rule). They are dual-purpose: ct_mul_8x8's 16-bit
+; output when this build owns the body, AND ordinary scratch that
+; fp256.s/fp384.s write on the diagonal-squaring path of every fp_sqr,
+; independent of ct_mul_8x8 entirely (src/fp256.s:701-715, src/fp384.s
+; equivalent).
+;
+; Gating them with the body -- which is what this file did until the §6.3
+; lib-app-owned target first built a deferring archive -- deletes storage this
+; library's own field arithmetic writes, leaving `poly_prod_lo/hi` unresolved
+; in any SHARED_CT_MUL_8X8 build. Same shape as the c64-x25519 mul_src2_buf
+; overreach v0.9.1 corrected: a deferred buffer would point our field
+; arithmetic at another library's memory.
+;
+; They are adopter-private storage, not part of the canonical §8.3 body, so
+; the byte-identity gate on that body is unaffected.
 .export poly_prod_lo, poly_prod_hi
 poly_prod_lo:   .byte 0
 poly_prod_hi:   .byte 0
+
+.ifndef SHARED_CT_MUL_8X8
 
 .export mul_8x8, ct_mul_8x8
 ; SMC immediate-bake sites: the caller writes `a` to smc_sum_a_imm+1 and
@@ -256,6 +273,21 @@ ct_sign_mask:   .byte 0
 ; Fetches 512 bytes: 256 lo bytes to mul_dma_lo, 256 hi bytes to mul_dma_hi
 ; Clobbers: A
 ; =============================================================================
+; SPEC §8.2 fetch deferral (contract v0.9.1). SHARED_REU_MUL_INIT gates the
+; init body only; the per-row fetch was exported unconditionally by both REU
+; adopters, so a composed link carried two canonical fetches regardless of init
+; deferral. SHARED_REU_MUL_FETCH gates the fetch surface.
+;
+; Import-never-stub (§8.1, applied by §8.2): a deferring build imports the
+; provider's symbol and never exports a stub under the canonical name.
+;
+; The two switches move together -- see the both-or-neither .assert in
+; src/lib_manifest.s. Deferring init while still exporting the canonical fetch
+; would make this build an owner of the fetch that is not an owner of the
+; primitive, a state §8.0's three-state table has no row for.
+.ifdef SHARED_REU_MUL_FETCH
+.import reu_fetch_mul_row
+.else
 .export reu_fetch_mul_row
 reu_fetch_mul_row:
         lda mul_cached_a
@@ -267,6 +299,7 @@ reu_fetch_mul_row:
         lda #%10110001         ; execute + autoload + FETCH (REU->C64)
         sta reu_command
         rts
+.endif ; SHARED_REU_MUL_FETCH
 
 .ifdef FP_ONCHIP_MUL
 ; =============================================================================

@@ -12,19 +12,19 @@ CA65 = ca65
 # their flag list, so an override passed to make was SILENTLY DISCARDED --
 # no error, just the default address, discovered later as a ZP collision.
 #
-#   make lib-p256-verify CA65FLAGS='-D fp_src1=0x50 -D fp_src2=0x54'
-#   make lib CA65FLAGS='-D LIB_SHARED_SQTAB_BASE=0x8800'
-#   make lib CA65FLAGS='-D LIB_NO_BARE_EXPORTS=1'
+#   make lib-p256-verify CONTRACT_DEFINES='-D fp_src1=0x50 -D fp_src2=0x54'
+#   make lib CONTRACT_DEFINES='-D LIB_SHARED_SQTAB_BASE=0x8800'
+#   make lib CONTRACT_DEFINES='-D LIB_NO_BARE_EXPORTS=1'
 #
 # USE C-STYLE HEX (0x50), NOT ca65's `$50`, in this variable. A `$` here
 # passes through make AND the recipe shell, and every escaping of it is
 # either wrong or fragile -- measured on GNU make + /bin/sh:
 #
-#   CA65FLAGS='-D fp_src1=$50'      -> make eats `$5`      -> fp_src1 = 0
-#   CA65FLAGS='-D fp_src1=$$50'     -> shell eats `$5`     -> fp_src1 = 0
-#   CA65FLAGS='-D fp_src1=$$$$50'   -> shell `$$` = its PID -> fp_src1 = 7456950
-#   CA65FLAGS='-D fp_src1=\$$50'    -> correct             -> fp_src1 = $50
-#   CA65FLAGS='-D fp_src1=0x50'     -> correct             -> fp_src1 = $50
+#   CONTRACT_DEFINES='-D fp_src1=$50'      -> make eats `$5`      -> fp_src1 = 0
+#   CONTRACT_DEFINES='-D fp_src1=$$50'     -> shell eats `$5`     -> fp_src1 = 0
+#   CONTRACT_DEFINES='-D fp_src1=$$$$50'   -> shell `$$` = its PID -> fp_src1 = 7456950
+#   CONTRACT_DEFINES='-D fp_src1=\$$50'    -> correct             -> fp_src1 = $50
+#   CONTRACT_DEFINES='-D fp_src1=0x50'     -> correct             -> fp_src1 = $50
 #
 # The third is the dangerous one: it silently yields a plausible-looking
 # address that varies per invocation, with no error from make, the shell,
@@ -35,10 +35,10 @@ CA65 = ca65
 # displace a variant's defining switch (ca65 takes the first definition of a
 # symbol; the profile/variant gates therefore win, which is what keeps
 # lib-p384-verify a P-384 verify archive whatever else is passed).
-CA65FLAGS ?=
+CONTRACT_DEFINES ?=
 
 # Zero-page slot overrides, forwarded ONLY to the src/zp_config.s recipes.
-# These CANNOT go in CA65FLAGS: every other TU reaches a slot with
+# These CANNOT go in CONTRACT_DEFINES: every other TU reaches a slot with
 # `.importzp`, and a command-line `-D` of an imported name is a hard error --
 #
 #   ca65 ... -D fp_src1=0x50 src/fp256.s
@@ -49,10 +49,10 @@ CA65FLAGS ?=
 # (`.ifndef`-guarded, then `.exportzp`), so the override belongs there alone
 # and every importer picks the new address up through the export.
 #
-#   make lib-p256-verify ZPFLAGS='-D fp_src1=0x50 -D fp_src2=0x54'
+#   make lib-p256-verify CONTRACT_ZP_DEFINES='-D fp_src1=0x50 -D fp_src2=0x54'
 #
-# Same 0x-hex rule as CA65FLAGS above -- do not write ca65's `$50` here.
-ZPFLAGS ?=
+# Same 0x-hex rule as CONTRACT_DEFINES above -- do not write ca65's `$50` here.
+CONTRACT_ZP_DEFINES ?=
 LD65 = ld65
 
 SRC_DIR = src
@@ -85,7 +85,7 @@ LIB_DIR = $(BUILD_DIR)/lib
 
 .PHONY: all clean build-acme bench-u64 dist \
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
-        lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
+        lib-app-owned lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
         lib-p384-curve-onchip \
         check-archives check-docs
 
@@ -102,16 +102,16 @@ $(PRG): $(OBJECTS) $(CFG) | $(BUILD_DIR)
 
 # Pattern rule: assemble each .s to .o
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 # No-comb ECDSA verify variants (issue #61): same sources, -D ECDSA_NO_COMB.
 # u1*G routes through ec_scalar_mul_var seeded at G, dropping the link
 # dependency on points256_comb.o / points384_comb.o. Consumed by the verify
 # archives and the nocomb test PRG below; the default build never uses them.
 $(BUILD_DIR)/ecdsa256_nocomb.o: $(SRC_DIR)/ecdsa256.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/ecdsa384_nocomb.o: $(SRC_DIR)/ecdsa384.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 # Nocomb test PRG (issue #61): the standalone test PRG with the two nocomb
 # verify objects substituted, so the full oracle test suite can exercise the
@@ -142,11 +142,11 @@ $(PRG_NOCOMB): $(NOCOMB_OBJECTS) $(CFG) | $(BUILD_DIR)
 # Boot init (REU mul-table population, comb precompute) is unchanged; the
 # mul table still populates at boot but fp_mul/fp_sqr never DMA from it.
 $(BUILD_DIR)/fp256_onchip.o: $(SRC_DIR)/fp256.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/fp384_onchip.o: $(SRC_DIR)/fp384.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/mul_8x8_onchip.o: $(SRC_DIR)/mul_8x8.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 PRG_ONCHIP = $(BUILD_DIR)/nist-curves-onchip.prg
 ONCHIP_OBJECTS = $(subst $(BUILD_DIR)/precalc_manifest.o,$(BUILD_DIR)/precalc_manifest_onchip.o,$(subst $(BUILD_DIR)/lib_manifest.o,$(BUILD_DIR)/lib_manifest_onchip.o,$(subst $(BUILD_DIR)/fp256.o,$(BUILD_DIR)/fp256_onchip.o,$(subst $(BUILD_DIR)/fp384.o,$(BUILD_DIR)/fp384_onchip.o,$(subst $(BUILD_DIR)/mul_8x8.o,$(BUILD_DIR)/mul_8x8_onchip.o,$(OBJECTS))))))
@@ -256,20 +256,20 @@ LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/lib_manifest.o \
 # this archive with a sibling tripped both the §8.0 disjointness assert and
 # the v0.5.0 coverage assert on a perfectly valid link.
 $(BUILD_DIR)/lib_manifest_sha384.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_sha384.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 # zp_config too: sha384.o .importzp's exactly 4 slots (8 B), so the SHA
 # archive exports those and not the other 17. Zero page is the scarcest
 # resource on the machine -- claiming 31 against a real need of 8 can
 # make a consumer's collision check reject an integration that fits.
-# Default-arm zp_config needs its own rule so ZPFLAGS reaches it; the generic
+# Default-arm zp_config needs its own rule so CONTRACT_ZP_DEFINES reaches it; the generic
 # %.o pattern rule below would build it without them (c64-lib-contract #76 A.1).
 $(BUILD_DIR)/zp_config.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -I $(SRC_DIR) $(CA65FLAGS) $(ZPFLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/zp_config_sha384.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CA65FLAGS) $(ZPFLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
 LIB_CORE_SHA384_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_sha384.o \
@@ -293,37 +293,37 @@ LIB_CORE_SHA384_OBJS = $(BUILD_DIR)/lib_version.o \
 # on it. Same asymmetry as the un-suffixed zp_config.o already shared
 # between nistcurves.a and nistcurves-onchip.a today.
 $(BUILD_DIR)/zp_config_p256verify.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CA65FLAGS) $(ZPFLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_config_p384verify.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CA65FLAGS) $(ZPFLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_config_p384curve.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CA65FLAGS) $(ZPFLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/lib_manifest_p256verify.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p256verify_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384verify.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384verify_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384curve.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384curve_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/precalc_manifest_p256verify.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p256verify_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384verify.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384verify_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384curve.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384curve_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 LIB_CORE_P256VERIFY_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p256verify.o \
@@ -401,6 +401,54 @@ LIB_FULL_OBJS = $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) \
                 $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
                 $(BUILD_DIR)/ecdsa384_msg.o
 
+# --- SPEC §6.3 required target: lib-app-owned ---------------------------------
+# The `lib` member set assembled with ALL of this library's applicable §8.x
+# deferral switches defined, so a consumer can request §8.0's APP_OWNED shape
+# without knowing which switches this library happens to have. Per §8.0's
+# conditional-mask rule the manifest attests the deferral:
+# SHARED_PRIMITIVES drops every deferred bit ($0000) while SHARED_CONSUMES
+# keeps them ($0007) -- the library still reads all three primitives, the app
+# now provides them.
+#
+# Only three TUs gate on the switches, so only those get variant objects:
+#   lib_manifest.s   the §8.0 mask
+#   mul_8x8.s        sqtab_init + ct_mul_8x8 bodies + the §8.2 fetch surface
+#   reu_mul_init.s   the §8.2 init body -- gated out ENTIRELY, so the object
+#                    ships nothing and is excluded from the archive rather
+#                    than added as an empty member
+APP_OWNED_DEFINES = -D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT \
+                    -D SHARED_REU_MUL_FETCH -D SHARED_CT_MUL_8X8
+
+$(BUILD_DIR)/lib_manifest_appowned.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g $(APP_OWNED_DEFINES) -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/mul_8x8_appowned.o: $(SRC_DIR)/mul_8x8.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g $(APP_OWNED_DEFINES) -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+
+# Explicit member list rather than $(subst ...) over LIB_FULL_OBJS: the
+# check-archives ratchet parses these assignments to learn each archive's real
+# member set, and it cannot expand a subst chain -- it would silently read the
+# DEFAULT objects and pass an archive it had never actually inspected. Same
+# reason the onchip lists are written out.
+LIB_CORE_APP_OWNED_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_appowned.o \
+                $(BUILD_DIR)/precalc_manifest.o \
+                $(BUILD_DIR)/zp_config.o
+# reu_mul_init.o is absent, not substituted: under SHARED_REU_MUL_INIT its
+# whole body is gated out, so the object would ship nothing.
+LIB_MUL_APP_OWNED_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
+                $(BUILD_DIR)/mul_8x8_appowned.o \
+                $(BUILD_DIR)/data_shared.o
+
+LIB_APP_OWNED_OBJS = $(LIB_CORE_APP_OWNED_OBJS) $(LIB_MUL_APP_OWNED_OBJS) \
+                $(LIB_P256_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa256.o \
+                $(LIB_P256_COMB_OBJS) \
+                $(LIB_P384_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa384.o \
+                $(LIB_P384_COMB_OBJS) \
+                $(LIB_SHA384_OBJS) \
+                $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
+                $(BUILD_DIR)/ecdsa384_msg.o
+
+
 # --- FP_ONCHIP_MUL turbo-profile archives (issue #69) ------------------------
 # Same archives with the on-chip-multiply field layer substituted: fp_mul /
 # fp_sqr (both curves) compute rows via ct_mul_8x8 instead of REU DMA row
@@ -414,9 +462,9 @@ LIB_FULL_OBJS = $(LIB_CORE_OBJS) $(LIB_MUL_OBJS) \
 # precalc row; the lim_lee_comb_* rows stay -- onchip full/curve archives
 # still use REU bank $02).
 $(BUILD_DIR)/lib_manifest_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CA65FLAGS) -o $@ $<
+	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_onchip.o \
@@ -448,6 +496,7 @@ lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a
 lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a
 lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a
 lib-p384-curve:  $(LIB_DIR)/nistcurves-p384-curve.a
+lib-app-owned:           $(LIB_DIR)/nistcurves-app-owned.a
 lib-onchip:              $(LIB_DIR)/nistcurves-onchip.a
 lib-p256-verify-onchip:  $(LIB_DIR)/nistcurves-p256-verify-onchip.a
 lib-p384-verify-onchip:  $(LIB_DIR)/nistcurves-p384-verify-onchip.a
@@ -458,6 +507,10 @@ $(LIB_DIR):
 
 # ar65 a <archive> <objs>... creates / appends; we rm -f first so each rebuild
 # starts from an empty archive (ar65 has no replace-all flag).
+$(LIB_DIR)/nistcurves-app-owned.a: $(LIB_APP_OWNED_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_APP_OWNED_OBJS)
+
 $(LIB_DIR)/nistcurves.a: $(LIB_FULL_OBJS) | $(LIB_DIR)
 	rm -f $@
 	ar65 a $@ $(LIB_FULL_OBJS)
@@ -504,7 +557,7 @@ $(LIB_DIR)/nistcurves-p384-curve-onchip.a: $(LIB_CORE_P384CURVE_ONCHIP_OBJS) $(L
 # archives deliberately exclude the Lim-Lee comb, so the packaged verifiers
 # ecdsa_verify_256 / ecdsa_verify_384 are NOT linkable from those archives
 # alone. The ratchet fails if reality drifts looser OR tighter than the docs.
-check-archives: lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip lib-p384-curve-onchip
+check-archives: lib lib-app-owned lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip lib-p384-curve-onchip
 	python3 tools/check_archives.py
 
 # Assemble the copy-pasteable snippets in the LIVE docs (API.md, README.md,

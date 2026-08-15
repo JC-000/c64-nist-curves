@@ -509,9 +509,27 @@
 .elseif .defined(FP_ONCHIP_MUL)
   _OWN_REU_MUL    = 0
 .elseif .defined(SHARED_REU_MUL_INIT)
+  ; Contract v0.9.1: bit $0002 drops exactly when BOTH deferral switches are
+  ; defined. SHARED_REU_MUL_INIT alone gates the init body while the canonical
+  ; fetch is still exported -- an owner of the fetch that is not an owner of
+  ; the primitive, a state §8.0's three-state table has no row for. The assert
+  ; below rejects that combination outright rather than letting the mask
+  ; misreport it.
   _OWN_REU_MUL    = 0
 .else
   _OWN_REU_MUL    = LIB_SHARED_PRIMITIVES_REU_MUL
+.endif
+
+; SPEC §8.2 (v0.9.1): the two §8.2 deferral switches MUST move together.
+; Partial deferral is non-conformant, so it fails at assemble time here rather
+; than producing an archive whose §8.0 mask cannot describe it. If split
+; ownership is ever genuinely needed it is a §8.0 fourth-state proposal, not a
+; silent half-deferral.
+.if .defined(SHARED_REU_MUL_INIT) .and (.not .defined(SHARED_REU_MUL_FETCH))
+  .error "SHARED_REU_MUL_INIT requires SHARED_REU_MUL_FETCH (SPEC 8.2 v0.9.1: the two switches move together)"
+.endif
+.if .defined(SHARED_REU_MUL_FETCH) .and (.not .defined(SHARED_REU_MUL_INIT))
+  .error "SHARED_REU_MUL_FETCH requires SHARED_REU_MUL_INIT (SPEC 8.2 v0.9.1: the two switches move together)"
 .endif
 .ifdef LIB_SHA384_ONLY
   _OWN_CT_MUL_8X8 = 0

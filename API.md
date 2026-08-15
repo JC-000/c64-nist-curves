@@ -1047,7 +1047,7 @@ consumer defines, so exporting them collides in any composed link. Override
 them the same way as the sqtab base:
 
 ```sh
-make lib CA65FLAGS='-D LIB_SHARED_REU_MUL_BANK=0x03'
+make lib CONTRACT_DEFINES='-D LIB_SHARED_REU_MUL_BANK=0x03'
 ```
 
 What this library exports instead is the prefixed *output* counterparts, whose
