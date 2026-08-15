@@ -1,8 +1,8 @@
 # c64-nist-curves v0.10.2 — post-wave conformance + ratchet hardening
 
 **Released:** 2026-08-15
-**Tarball:** `c64-nist-curves-v0.10.2.tar.gz` (SIZE_PLACEHOLDER bytes)
-**SHA256:** `SHA256_PLACEHOLDER`
+**Tarball:** `c64-nist-curves-v0.10.2.tar.gz` (233,905 bytes)
+**SHA256:** `6670bc52d62f24b594dfd6245101c04cef09defec47c3d9e4e14ada5f2ebd407`
 
 PATCH release. `build/nist-curves.prg` is **byte-identical** to v0.10.0/v0.10.1
 (`18701274…`, 37480 B); no exported symbol is added, removed, or renamed;
@@ -79,4 +79,10 @@ consumers: no action. Pin **v0.10.2**.
   identity check, the R2 ZP alias audit, the gated surface, cfg placement,
   and per-archive value pins. `make check-docs` PASS.
 - Tarball reproducible across two independent `make dist` runs.
-- Worktree-rebuild byte-identity at the tag: WORKTREE_PLACEHOLDER.
+- Worktree-rebuild byte-identity at the tag: PASS (fresh worktree: PRG
+  `18701274…` identical; check-archives PASS inside it).
+- **Tarball builds standalone**: extracted to a scratch directory, `make`
+  produces the byte-identical PRG — completeness proven by construction, not
+  by listing. (The first artifact build caught the #115 tarball fix having
+  landed in a comment rather than the archive list; the finding check is now
+  re-run after every such fix.)
