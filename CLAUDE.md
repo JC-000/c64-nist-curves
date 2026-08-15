@@ -275,7 +275,10 @@ gets stale otherwise).
   API.md §8.4.2, issues #69/#71, and
   `.research/issue71_shape2_2026_07_20/report.md`.
 - Unrolled binary GCD shift loops for modular inversion
-- VIC-II screen blanking (+20-25% CPU)
+- VIC-II screen blanking (~6.3% NTSC / ~5.5% PAL on the plain text screen the
+  harness runs — the recovered fraction is a property of the caller's display
+  and only reaches 20%+ with sprites or bitmap fetch load; issue #116,
+  measured in c64-x25519#103)
 
 ### Negative findings (do not re-attempt without a new angle)
 - **One-level subtractive Karatsuba at N=32** (Wave 4c, reverted). Three N=16
