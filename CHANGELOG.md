@@ -12,7 +12,31 @@ contract).
 
 ## [Unreleased]
 
-### Fixed
+### Added
+
+- **P-256 comb archives: `make lib-p256-comb` / `make lib-p256-comb-onchip`**
+  (issue #117, requested from the c64-https consumer side as c64-https#119).
+  The comb-accelerated P-256 verify set — verify objects plus the comb-fast
+  `ecdsa256.o`, `points256_comb.o`, and `data_p256_limlee.o`, with no P-384
+  or SHA-384 members. It is the fastest verify configuration the library
+  offers (12.4 s @64 MHz on a C64 Ultimate vs 22.9 s no-comb onchip,
+  consumer-measured), but was previously reachable only by building the full
+  archive and deleting members by hand — non-conformant per SPEC §6.1 (an
+  edited member set is outside every §5/§8.0 manifest claim) and the reason
+  c64-https had to exclude the comb profile from its §6.6 footprint asserts.
+  New variant switch `LIB_P256_COMB_ONLY` gates all three per-variant
+  manifest TUs; measured figures: ZP 17 B (the verify 9 slots +
+  `nistcurves_zp_ptr1` — not `zp_tmp1`/`zp_tmp2`, whose only user is the
+  P-384 comb), RESIDENT 9216 (measured 8991 DMA / 9094 onchip, shared per
+  the ±5% band), COLD 1050 DMA / 870 onchip (verify cold set +
+  `ec_precompute_256`'s 616 B), REU banks `$07` DMA / `$04` onchip (the
+  comb bank stays claimed in both profiles). The `lim_lee_comb_*` precalc
+  row gates split per curve so the archive enumerates its own 16 KB table
+  without advertising the 24 KB P-384 one. `make check-archives` pins the
+  new archives' member sets, §5 values, ZP unions, precalc rows, and
+  comb-fast linkability (negative-tested: a mis-pinned value and a
+  falsely-required export both trip). Default PRG byte-identical
+  (`18701274…`).
 
 - **Docs: vic_blank speedup figure corrected from ~20-25% to ~6.3% NTSC /
   ~5.5% PAL** (issue #116, established by measurement and badline arithmetic

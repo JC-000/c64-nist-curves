@@ -128,6 +128,13 @@ zp_ptr2 = nistcurves_zp_ptr2
 ;   LIB_P384_CURVE_ONLY -- those 9 plus the four sha_* pointers (this
 ;     variant bundles sha384.o + ecdsa_verify_with_message_384): 13 slots,
 ;     23 bytes.
+;   LIB_P256_COMB_ONLY (issue #117) -- the P-256 verify set plus the
+;     Lim-Lee comb objects and the comb-fast ecdsa256.o: those 9 slots
+;     plus nistcurves_zp_ptr1 (the anchor-copy pointer in
+;     ec_precompute_256): 10 slots, 17 bytes. NOT zp_tmp1/zp_tmp2 --
+;     measured via od65 --dump-imports, the only archived user of those
+;     two is the P-384 comb's sm384w_calc_reu_offset, which this
+;     P-256-only variant does not ship.
 ;
 ; None of these depend on FP_ONCHIP_MUL: the profile changes which REU
 ; registers the field layer touches, not which ZP scratch it uses, so one
@@ -152,6 +159,12 @@ zp_ptr2 = nistcurves_zp_ptr2
     .exportzp zp_ptr2
   .endif
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
+.elseif .defined(LIB_P256_COMB_ONLY)
+  .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
+  .exportzp ec_scalar_ptr, nistcurves_zp_ptr1, nistcurves_zp_ptr2
+  .ifndef LIB_NO_BARE_EXPORTS
+    .exportzp zp_ptr1, zp_ptr2
+  .endif
 .else
   .exportzp nistcurves_zp_tmp1, nistcurves_zp_tmp2
   .exportzp nistcurves_zp_ptr1, nistcurves_zp_ptr2

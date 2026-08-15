@@ -11,7 +11,7 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 - Packaged ECDSA verify (`ecdsa_verify_256` / `ecdsa_verify_384`) with big-endian wire-format ABI
 - SHA-384 streaming hash (FIPS 180-4 §6.4) and one-shot
   `ecdsa_verify_with_message_384` hash-then-verify wrapper
-- Full [c64-lib-contract](https://github.com/JC-000/c64-lib-contract) SPEC §1–§6 and §8.0–§8.3 adoption: stable `LIB_NISTCURVES_*` segment names, `.ifndef`-guarded REU bank/ZP equates, four-equate version manifest, shared-primitive ownership mask + precalc-table manifest, and nine `make lib-*` minimal-archive targets (five default-profile + four `-onchip`) so consumers fetch exactly the symbols they need (see API.md §8.2–§8.4)
+- Full [c64-lib-contract](https://github.com/JC-000/c64-lib-contract) SPEC §1–§6 and §8.0–§8.3 adoption: stable `LIB_NISTCURVES_*` segment names, `.ifndef`-guarded REU bank/ZP equates, four-equate version manifest, shared-primitive ownership mask + precalc-table manifest, and eleven `make lib-*` minimal-archive targets (six default-profile + five `-onchip`) so consumers fetch exactly the symbols they need (see API.md §8.2–§8.4)
 - RFC 6979 test vector validation
 - Optimizations ported from [c64-x25519](https://github.com/JC-000/c64-x25519):
   REU DMA multiply tables, self-modifying code, loop unrolling, dedicated squaring
@@ -33,9 +33,10 @@ Optimized NIST P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 ### Running without an REU
 
 The REU requirement applies to the default (DMA-table) profile only. The
-four `FP_ONCHIP_MUL` turbo-profile archives (`make lib-onchip` /
+five `FP_ONCHIP_MUL` turbo-profile archives (`make lib-onchip` /
 `lib-p256-verify-onchip` / `lib-p384-verify-onchip` /
-`lib-p384-curve-onchip`) compute multiply rows on-chip; the
+`lib-p384-curve-onchip` / `lib-p256-comb-onchip`) compute multiply rows
+on-chip; the
 `*-verify-onchip` archives issue **zero REU traffic** and need only
 `sqtab_init` at boot, so they run on an REU-less C64. Trade-off: ~2.5×
 slower than the default profile at stock 1 MHz, but faster above the
@@ -176,7 +177,9 @@ The turbo profile also runs correctly with
 (35/35 oracle suite in an REU-less VICE; the `*-verify-onchip`
 archives' configuration). Build via `make lib-onchip` /
 `make lib-p256-verify-onchip` / `make lib-p384-verify-onchip` /
-`make lib-p384-curve-onchip`, or `make onchip-prg` for the test PRG.
+`make lib-p384-curve-onchip` / `make lib-p256-comb-onchip` (comb-fast
+`u1·G`; REU used for the comb anchor table only — issue #117), or
+`make onchip-prg` for the test PRG.
 See API.md §8.4.2.
 
 Wave 7a doubled the Lim-Lee comb from h=4 to h=8 (256-entry table) on both
@@ -492,7 +495,7 @@ convention is the same.
 
 ## Integration as a library
 
-Downstream C64 programs import `c64-nist-curves` as a git submodule pinned to a release tag, run one of the ten `make lib*` targets (nine variant archives plus the SPEC §6.3 `lib-app-owned` deferral shape), and pass the resulting pre-built `ar65` archive (`build/lib/nistcurves-*.a`) straight to `ld65` — no source patching, no per-file `ca65` staging (c64-lib-contract SPEC §6). See [`API.md` §8 "Consumer integration"](API.md#8-consumer-integration) for the full integration reference, including:
+Downstream C64 programs import `c64-nist-curves` as a git submodule pinned to a release tag, run one of the twelve `make lib*` targets (eleven variant archives plus the SPEC §6.3 `lib-app-owned` deferral shape), and pass the resulting pre-built `ar65` archive (`build/lib/nistcurves-*.a`) straight to `ld65` — no source patching, no per-file `ca65` staging (c64-lib-contract SPEC §6). See [`API.md` §8 "Consumer integration"](API.md#8-consumer-integration) for the full integration reference, including:
 
 - How to add the library as a git submodule and pin to a tag (§8.1)
 - The consumer Makefile fragment that fetches an archive and links it (§8.2), and the archive-variant inventory (§8.4) — five default-profile archives plus four `FP_ONCHIP_MUL` `-onchip` variants

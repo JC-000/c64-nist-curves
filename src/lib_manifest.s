@@ -89,6 +89,20 @@
     .else
       LIB_NISTCURVES_REU_BANKS_USED = $03
     .endif
+  .elseif .defined(LIB_P256_COMB_ONLY)
+    ; Issue #117: the P-256 comb archives ship points256_comb.o, so bank
+    ; $02 (LIB_NISTCURVES_REU_BANK_COMB) is claimed in BOTH profiles --
+    ; the onchip profile drops only the mul-table banks $00/$01 (its
+    ; fp_mul/fp_sqr generate rows on-chip) while ec_precompute_256 /
+    ; ec_scalar_mul still populate and DMA-fetch the anchor table. Same
+    ; values as the default arm below, stated explicitly so the variant's
+    ; REU truth is pinned by check-archives rather than inherited by
+    ; fall-through.
+    .if .defined(FP_ONCHIP_MUL)
+      LIB_NISTCURVES_REU_BANKS_USED = $04
+    .else
+      LIB_NISTCURVES_REU_BANKS_USED = $07
+    .endif
   .elseif .defined(FP_ONCHIP_MUL)
     LIB_NISTCURVES_REU_BANKS_USED = $04
   .else
@@ -186,6 +200,14 @@
     LIB_NISTCURVES_ZP_USAGE_BYTES = 15
   .elseif .defined(LIB_P384_CURVE_ONLY)
     LIB_NISTCURVES_ZP_USAGE_BYTES = 23
+  .elseif .defined(LIB_P256_COMB_ONLY)
+    ; Issue #117: the verify set's 9 slots (15 B) plus nistcurves_zp_ptr1
+    ; (2 B, the ec_precompute_256 anchor-copy pointer) = 10 slots, 17 B.
+    ; zp_tmp1/zp_tmp2 stay out: their only archived user is the P-384
+    ; comb's sm384w_calc_reu_offset. Measured by od65 --dump-imports
+    ; union over the archive's members; profile-independent like every
+    ; other variant.
+    LIB_NISTCURVES_ZP_USAGE_BYTES = 17
   .else
     LIB_NISTCURVES_ZP_USAGE_BYTES = 27
   .endif
@@ -296,6 +318,18 @@
     LIB_NISTCURVES_RESIDENT_BYTES = 8300
   .elseif .defined(LIB_P384_CURVE_ONLY)
     LIB_NISTCURVES_RESIDENT_BYTES = 17400
+  .elseif .defined(LIB_P256_COMB_ONLY)
+    ; Issue #117: od65 segment sums (code+rodata) over the archive
+    ; members, minus the cold blocks itemized in the COLD arm below:
+    ;
+    ;   DMA arm    10036 total - 1045 cold = 8991 resident
+    ;   onchip arm  9953 total -  859 cold = 9094 resident
+    ;
+    ; The 103 B profile delta (1.1%) is inside SPEC §5's ±5% band, so
+    ; the variant shares one figure across both profiles like every
+    ; other variant. §6.6: next 256-byte boundary above the larger
+    ; measurement (9094) = 9216, margin +1.3% onchip / +2.5% DMA.
+    LIB_NISTCURVES_RESIDENT_BYTES = 9216
   .else
     LIB_NISTCURVES_RESIDENT_BYTES = 27000
   .endif
@@ -430,6 +464,25 @@
       LIB_NISTCURVES_COLD_BYTES = 250
     .else
       LIB_NISTCURVES_COLD_BYTES = 430
+    .endif
+  .elseif .defined(LIB_P256_COMB_ONLY)
+    ; Issue #117: the verify-variant cold set plus ec_precompute_256
+    ; (616 B, boot-only: populates the REU bank $02 P-256 anchor table):
+    ;
+    ;   DMA:    sqtab_init+ct_mul_8x8 223 + reu_fetch_mul_row 20
+    ;           + reu_mul_init 186 + ec_precompute_256 616  = 1045
+    ;   onchip: mul_8x8_onchip cold 243 + ec_precompute_256 616 = 859
+    ;
+    ; The 186 B reu_mul_init delta is 18% -- outside ±5% like every other
+    ; variant's DMA/onchip cold split, so COLD stays keyed on variant AND
+    ; profile. §6.6: the 256-boundary convention (1280 / 1024) would be
+    ; +22% / +19%, outside §5's ±5% band at this size, so these keep fine
+    ; granularity: >= measured, minimal headroom (same reasoning as the
+    ; minimal variants' 250 figure).
+    .if .defined(FP_ONCHIP_MUL)
+      LIB_NISTCURVES_COLD_BYTES = 870
+    .else
+      LIB_NISTCURVES_COLD_BYTES = 1050
     .endif
   .elseif .defined(FP_ONCHIP_MUL)
     LIB_NISTCURVES_COLD_BYTES = 1650
