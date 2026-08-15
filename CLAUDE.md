@@ -8,12 +8,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-SPEC §1–§6 (version equates, `.exportzp` ZP, REU symbol contract, segment
-naming, manifest equates, minimal-archive build targets) and §8.0–§8.3
-(shared-primitives ownership mask, precalc-table manifest, shared sqtab /
-reu_mul / ct_mul_8x8). Consumer
-integration is a single `make lib-<variant>` + link; no source patching.
-See `API.md` §8.2–§8.4 for the archive contract.
+— conformant through **SPEC v0.10.3** (verified clause-by-clause; the
+alignment baseline lives in the session memory's lib-contract-alignment-monitor
+note). That covers §1–§7 core (prefixed version equates with gated bare
+aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, REU symbol contract,
+§4 load-bearing cfg attribute declarations, per-archive §5 manifests with
+§6.6 safe-direction footprint values, the §6 build-and-consume chapter:
+`CONTRACT_DEFINES`/`CONTRACT_ZP_DEFINES` forwarding, ten `make lib*` targets
+incl. the required `lib-app-owned`, the §6.5 name surface with bare forms
+export-gated under `-D LIB_NO_BARE_EXPORTS=1`, and the §6.7 sqtab-window link
+guard via `src/sqtab_base.inc`) and §8.0–§8.4 crypto (conditional
+ownership + consumes masks, deferral switches incl. the paired
+`SHARED_REU_MUL_INIT`/`_FETCH`, precalc catch-loop, shared sqtab / reu_mul /
+ct_mul_8x8). §13 (network ABI) is deliberately not adopted — no network
+surface. Consumer integration is a single `make lib-<variant>` + link; no
+source patching. See `API.md` §8.2–§8.4 for the archive contract.
+Three standing gates keep this true: `make check-archives` (contract ratchet
+incl. §1 version identity, §4 placement, §5 value pins, gated surface),
+`make check-docs` (every doc snippet assembles), and PRG byte-identity when
+nothing should move.
 
 Companion docs (read alongside this file):
 - `README.md` — user-facing overview, full benchmark tables, ECDSA ABI walkthrough.
@@ -37,7 +50,7 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   source-level stepping / breakpoints / span lookup. `.dbg` is a separate
   artifact; the .prg is byte-identical with or without `-g` (verified by
   sha256 round-trip).
-Current PRG size: ~36.8 KB (37683 bytes as of v0.7.0's issue #66 verify gate), loaded at $0801.
+Current PRG size: ~36.6 KB (37480 bytes as of v0.10.0's issue #98 P384_BSS fix — 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801.
 
 `src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
 ACME build path used in side-by-side diff testing only — do not edit

@@ -12,6 +12,18 @@ contract).
 
 ## [Unreleased]
 
+### Changed
+
+- **Documentation currency pass at SPEC v0.10.3** (full clause-by-clause
+  alignment audit — no conformance gaps found; the audit itself is the
+  change's evidence). CLAUDE.md's contract-adoption paragraph rewritten from
+  the v0.3-era "§1–§6 and §8.0–§8.3" summary to the current v0.10.3 surface
+  (ZP registry names, §4 declarations, the §6 build-and-consume chapter,
+  §6.6/§6.7, paired §8.2 deferral switches, the three standing gates);
+  CLAUDE.md's PRG size updated 37683 → 37480 with the two movements that got
+  it there; README's consumer-integration line updated nine → ten targets
+  (`lib-app-owned` joined in the v0.9.1-conformance work).
+
 ### Fixed
 
 - **The sqtab window guard no longer depends on a doomed export**
