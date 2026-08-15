@@ -69,9 +69,13 @@
 ; import against `define = yes` on MAIN in src/c64.cfg. Remove that cfg
 ; attribute and the link fails loudly (verified, exit 1, no output file);
 ; make the import optional instead and the collision goes back to silent.
-.import sqtab_lo
+.include "sqtab_base.inc"   ; source-level base (SPEC v0.10.2 §6.7: the
+                            ; guard MUST NOT import the base -- §8.1 forbids
+                            ; exporting it, and our previous form imported
+                            ; sqtab_lo, a gated window export whose removal
+                            ; at the next MAJOR would have broken this guard)
 .import __MAIN_LAST__
-.assert __MAIN_LAST__ <= sqtab_lo, lderror, "image overruns sqtab window (LIB_SHARED_SQTAB_BASE): raise the base or shrink the image -- see src/c64.cfg MEMORY{}"
+.assert __MAIN_LAST__ <= LIB_SHARED_SQTAB_BASE, lderror, "image overruns sqtab window (LIB_SHARED_SQTAB_BASE): raise the base or shrink the image -- see src/c64.cfg MEMORY{}"
 
 ; --- SPEC §8.2 reu_mul provider (src/reu_mul_init.s; moved out of this
 ; --- file by issue #81 so the default-profile archives ship it) ---

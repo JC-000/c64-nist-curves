@@ -2,9 +2,9 @@
 
 ; =============================================================================
 ; precalc_manifest.s - c64-nist-curves precalc-table enumeration
-;                      (c64-lib-contract SPEC §8.0 catch-loop)
+;                      (c64-lib-contract SPEC §8.4 catch-loop)
 ;
-; SPEC §8.0 step-6 requires every adopter to enumerate its precalculated
+; SPEC §8.4 step-6 requires every adopter to enumerate its precalculated
 ; tables (size >= 256 B AND one of: REU-resident / hot-loop-read /
 ; page-aligned) in two forms:
 ;
