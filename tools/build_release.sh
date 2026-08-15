@@ -36,7 +36,7 @@
 #
 # Issue #81 file-list refresh: src/reu_mul_init.s (SPEC §8.2 reu_mul
 # provider moved out of src/main.s so the default-profile archives ship it).
-# v0.5.0 file-list refresh: src/precalc_manifest.s + src/precalc_table.inc src/sqtab_base.inc
+# v0.5.0 file-list refresh: src/precalc_manifest.s + src/precalc_table.inc
 # (present in the tree and in Makefile MODULES but missing from this list —
 # caught by the step-0 preflight diff at v0.5.0 release time; without the
 # fix the source tarball would silently exclude them and not build).
@@ -79,7 +79,7 @@ git archive \
   src/c64.cfg src/exports.inc \
   src/constants.s src/zp_config.s \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
-  src/precalc_manifest.s src/precalc_table.inc \
+  src/precalc_manifest.s src/precalc_table.inc src/sqtab_base.inc \
   src/main.s src/mul_8x8.s src/reu_mul_init.s \
   src/fp256.s src/mod256.s src/curve256.s src/inv256.s \
   src/points256_core.s src/points256_comb.s src/ecdsa256.s \
