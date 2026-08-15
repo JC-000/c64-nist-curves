@@ -491,7 +491,7 @@ convention is the same.
 
 ## Integration as a library
 
-Downstream C64 programs import `c64-nist-curves` as a git submodule pinned to a release tag, run one of the nine `make lib-<variant>` targets, and pass the resulting pre-built `ar65` archive (`build/lib/nistcurves-*.a`) straight to `ld65` — no source patching, no per-file `ca65` staging (c64-lib-contract SPEC §6). See [`API.md` §8 "Consumer integration"](API.md#8-consumer-integration) for the full integration reference, including:
+Downstream C64 programs import `c64-nist-curves` as a git submodule pinned to a release tag, run one of the ten `make lib*` targets (nine variant archives plus the SPEC §6.3 `lib-app-owned` deferral shape), and pass the resulting pre-built `ar65` archive (`build/lib/nistcurves-*.a`) straight to `ld65` — no source patching, no per-file `ca65` staging (c64-lib-contract SPEC §6). See [`API.md` §8 "Consumer integration"](API.md#8-consumer-integration) for the full integration reference, including:
 
 - How to add the library as a git submodule and pin to a tag (§8.1)
 - The consumer Makefile fragment that fetches an archive and links it (§8.2), and the archive-variant inventory (§8.4) — five default-profile archives plus four `FP_ONCHIP_MUL` `-onchip` variants
