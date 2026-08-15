@@ -924,8 +924,8 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
 .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
-.assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 9), lderror, "c64-nist-curves v0.9 or newer is required"
-.assert LIB_NISTCURVES_ABI_VERSION = 1, lderror, "c64-nist-curves ABI v1 expected; rebuild consumer"
+.assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 10), lderror, "c64-nist-curves v0.10 or newer is required"
+.assert LIB_NISTCURVES_ABI_VERSION = 2, lderror, "c64-nist-curves ABI v2 expected; rebuild consumer"
 ```
 
 This uses `.assert`/`lderror` rather than `.if`/`.error`. `.if` requires

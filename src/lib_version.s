@@ -67,9 +67,9 @@
 ; what makes these importable alongside a sibling library's manifest.
 ; -----------------------------------------------------------------------------
 LIB_NISTCURVES_VERSION_MAJOR = 0
-LIB_NISTCURVES_VERSION_MINOR = 9
+LIB_NISTCURVES_VERSION_MINOR = 10
 LIB_NISTCURVES_VERSION_PATCH = 1
-LIB_NISTCURVES_ABI_VERSION   = 1
+LIB_NISTCURVES_ABI_VERSION   = 2
 
 .export LIB_NISTCURVES_VERSION_MAJOR:abs
 .export LIB_NISTCURVES_VERSION_MINOR:abs
