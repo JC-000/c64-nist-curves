@@ -12,6 +12,37 @@ contract).
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-08-15
+
+> **Identity-correction release.** `v0.10.0` ships content that self-reports
+> as 0.10.1: `LIB_NISTCURVES_VERSION_PATCH = 1` carried over from v0.9.1 while
+> the tag name, `VERSION` file, tarball and release title all said 0.10.0 —
+> caught by lib-contract #76's ref verification, which held the wave close on
+> it. A consumer pinning `PATCH = 0` against that tag fails at link, and a tag
+> that misstates itself is exactly what §1 exists to prevent.
+>
+> Per the fleet's tags-are-immutable convention (the v0.3.x precedent),
+> `v0.10.0` is **documented as self-misreporting, not moved**. This tag's
+> content and name agree; consumers pin **v0.10.1**. Zero functional change —
+> the PRG, archives, and every export other than `VERSION`-file alignment are
+> identical to v0.10.0.
+
+### Fixed
+
+- `VERSION` file brought to 0.10.1, matching the equates the previous release
+  already shipped. The root cause was a partial bump (MINOR and ABI edited,
+  PATCH untouched) passed by a partial check (the "lockstep verified" grep
+  never printed the PATCH line).
+
+### Added
+
+- **§1 version-identity check in `make check-archives`**: the `VERSION` file
+  is compared against all three components read from the **built**
+  `lib_version.o`. The comparison is total and mechanical, so a partial bump
+  can no longer pass a partial reading. Negative-tested: a mismatched
+  `VERSION` file fails the ratchet.
+
+
 ## [0.10.0] — 2026-08-15
 
 > **Namespace-wave release** — closes the fleet's §6.5 rename window as its
@@ -1734,6 +1765,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.10.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.1
 [0.10.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.0
 [0.9.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.1
 [0.9.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.0

@@ -640,6 +640,30 @@ GATE_TUS = ["zp_config", "data_shared", "mul_8x8", "lib_version",
             "precalc_manifest"]
 
 
+def version_identity_check(failures):
+    """§1 identity: the VERSION file and the lib_version.o equates MUST agree.
+    v0.10.0 shipped self-misreporting as 0.10.1 -- PATCH carried over from the
+    previous release because the bump edited MINOR/ABI and a human 'lockstep
+    verified' grep never printed the PATCH line. A tag that misstates itself is
+    exactly what §1 exists to prevent, so the comparison is now mechanical and
+    total: all three components, read from the BUILT object, against the
+    VERSION file."""
+    print("\n=== §1 version identity (VERSION file vs built equates) ===")
+    want = (REPO / "VERSION").read_text().strip().split(".")
+    obj = BUILD / "lib_version.o"
+    got = []
+    for part in ("MAJOR", "MINOR", "PATCH"):
+        _, out = sh(["od65", "--dump-exports", str(obj)])
+        m = re.search(r'Name:\s*"LIB_NISTCURVES_VERSION_' + part
+                      + r'"(?:.|\n)*?Value:\s*0x([0-9A-Fa-f]+)', out)
+        got.append(str(int(m.group(1), 16)) if m else "?")
+    if got != want:
+        failures.append(f"version identity: VERSION file {'.'.join(want)} != equates {'.'.join(got)}")
+        print(f"  IDENTITY FAIL: VERSION file says {'.'.join(want)}, built equates say {'.'.join(got)}")
+    else:
+        print(f"  identity OK ({'.'.join(got)})")
+
+
 def gated_surface_check(failures):
     """§6.5 window ratchet: a -D LIB_NO_BARE_EXPORTS=1 build of every
     gate-owning TU must export zero deprecated bare names. This is the whole
@@ -687,6 +711,7 @@ def main():
     else:
         print("  placement OK (no bss segment precedes a file-emitting one)")
 
+    version_identity_check(failures)
     gated_surface_check(failures)
 
     for name in sorted(KNOWN_EXTERNAL):
