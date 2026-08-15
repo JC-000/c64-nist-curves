@@ -6,8 +6,8 @@
 .importzp fp_src1, fp_src2, fp_dst, fp_carry, fp_mul_i, fp_mul_j
 
 ; Imports from data
-.import fp_wide, mul_src2_buf, mul_dma_lo, mul_dma_hi
-.import mul_cached_a, poly_prod_lo, poly_prod_hi
+.import fp_wide, nistcurves_mul_src2_buf, nistcurves_mul_dma_lo, nistcurves_mul_dma_hi
+.import nistcurves_mul_cached_a, poly_prod_lo, poly_prod_hi
 
 ; Imports from constants
 .import reu_reu_hi, reu_reu_bank, reu_command
@@ -138,12 +138,12 @@ fp_rshift1:
 ;   (issue #69). Patches og_src_ld to this curve's staged-src buffer and
 ;   tail-jumps og_common (src/mul_8x8.s). Lives here so mul_8x8.o carries
 ;   no cross-curve buffer import (archive linkability, SPEC §6).
-; Input: X = 31 (last mul_src2_buf index). Clobbers A, X, Y (see og_common).
+; Input: X = 31 (last nistcurves_mul_src2_buf index). Clobbers A, X, Y (see og_common).
 ; =============================================================================
 gen_mul_row:
-        lda #<mul_src2_buf
+        lda #<nistcurves_mul_src2_buf
         sta og_src_ld+1
-        lda #>mul_src2_buf
+        lda #>nistcurves_mul_src2_buf
         sta og_src_ld+2
         jmp og_common
 .endif
@@ -173,7 +173,7 @@ fp_mul:
         ldy #31
 @copy_src2:
         lda (fp_src2),y
-        sta mul_src2_buf,y
+        sta nistcurves_mul_src2_buf,y
         dey
         bpl @copy_src2
 
@@ -185,7 +185,7 @@ fp_mul:
         bne @nonzero_i
         jmp @skip_zero
 @nonzero_i:
-        sta mul_cached_a
+        sta nistcurves_mul_cached_a
 
 .ifdef FP_ONCHIP_MUL
         ldx #31                 ; issue #69: on-chip row gen, no REU DMA
@@ -247,68 +247,68 @@ fp_mul:
         ldx #0
 
 @mul_inner:
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @next_j_first
         clc
 @accum_ld1:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1:
         sta fp_wide,x
 @accum_ld2:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2:
         sta fp_wide+1,x
         bcs @do_prop_a
 @next_j_first:
         inx
 
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @next_j_second
         clc
 @accum_ld1_b:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1_b:
         sta fp_wide,x
 @accum_ld2_b:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2_b:
         sta fp_wide+1,x
         bcs @do_prop_b
 @next_j_second:
         inx
 
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @next_j_third
         clc
 @accum_ld1_c:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1_c:
         sta fp_wide,x
 @accum_ld2_c:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2_c:
         sta fp_wide+1,x
         bcs @do_prop_c
 @next_j_third:
         inx
 
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @next_j
         clc
 @accum_ld1_d:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1_d:
         sta fp_wide,x
 @accum_ld2_d:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2_d:
         sta fp_wide+1,x
         bcs @do_prop_d
@@ -423,13 +423,13 @@ fp_sqr:
         ldy #31
 @copy_src:
         lda (fp_src1),y
-        sta mul_src2_buf,y
+        sta nistcurves_mul_src2_buf,y
         dey
         bpl @copy_src
         lda #0
-        sta mul_src2_buf+32
-        sta mul_src2_buf+33
-        sta mul_src2_buf+34
+        sta nistcurves_mul_src2_buf+32
+        sta nistcurves_mul_src2_buf+33
+        sta nistcurves_mul_src2_buf+34
 
         lda #0
         sta fp_mul_i
@@ -439,7 +439,7 @@ fp_sqr:
         bne @sqr_nonzero_i
         jmp @sqr_skip_i
 @sqr_nonzero_i:
-        sta mul_cached_a
+        sta nistcurves_mul_cached_a
 
 .ifdef FP_ONCHIP_MUL
         ldx #31                 ; issue #69: on-chip row gen, no REU DMA
@@ -509,68 +509,68 @@ fp_sqr:
         sta fp_sqr_pairs
 
 @sqr_inner:
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @sqr_next_j_first
         clc
 @sqr_accum_ld1:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1:
         sta fp_wide,x
 @sqr_accum_ld2:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2:
         sta fp_wide+1,x
         bcs @sqr_do_prop_a
 @sqr_next_j_first:
         inx
 
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @sqr_next_j_second
         clc
 @sqr_accum_ld1_b:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1_b:
         sta fp_wide,x
 @sqr_accum_ld2_b:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2_b:
         sta fp_wide+1,x
         bcs @sqr_do_prop_b
 @sqr_next_j_second:
         inx
 
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @sqr_next_j_third
         clc
 @sqr_accum_ld1_c:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1_c:
         sta fp_wide,x
 @sqr_accum_ld2_c:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2_c:
         sta fp_wide+1,x
         bcs @sqr_do_prop_c
 @sqr_next_j_third:
         inx
 
-        ldy mul_src2_buf,x
+        ldy nistcurves_mul_src2_buf,x
         beq @sqr_next_j
         clc
 @sqr_accum_ld1_d:
         lda fp_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1_d:
         sta fp_wide,x
 @sqr_accum_ld2_d:
         lda fp_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2_d:
         sta fp_wide+1,x
         bcs @sqr_do_prop_d
@@ -682,7 +682,7 @@ fp_sqr:
         lda (fp_src1),y
         beq @diag_skip
 
-        sta mul_cached_a
+        sta nistcurves_mul_cached_a
 .ifdef FP_ONCHIP_MUL
         ldx #31                 ; issue #69: on-chip row gen, no REU DMA
         jsr gen_mul_row
@@ -696,10 +696,10 @@ fp_sqr:
         sta reu_command
 .endif
 
-        ldy mul_cached_a
-        lda mul_dma_lo,y
+        ldy nistcurves_mul_cached_a
+        lda nistcurves_mul_dma_lo,y
         sta poly_prod_lo
-        lda mul_dma_hi,y
+        lda nistcurves_mul_dma_hi,y
         sta poly_prod_hi
 
         lda fp_mul_i

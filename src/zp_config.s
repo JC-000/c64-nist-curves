@@ -32,18 +32,28 @@
 .segment "ZEROPAGE"
 
 ; --- General-purpose pointers / temps ---
-.ifndef zp_tmp1
-  zp_tmp1  = $02                        ; temp byte
+.ifndef nistcurves_zp_tmp1
+  nistcurves_zp_tmp1  = $02                        ; temp byte
 .endif
-.ifndef zp_tmp2
-  zp_tmp2  = $03                        ; temp byte
+.ifndef nistcurves_zp_tmp2
+  nistcurves_zp_tmp2  = $03                        ; temp byte
 .endif
-.ifndef zp_ptr1
-  zp_ptr1  = $fb                        ; 2-byte pointer
+.ifndef nistcurves_zp_ptr1
+  nistcurves_zp_ptr1  = $fb                        ; 2-byte pointer
 .endif
-.ifndef zp_ptr2
-  zp_ptr2  = $fd                        ; 2-byte pointer
+.ifndef nistcurves_zp_ptr2
+  nistcurves_zp_ptr2  = $fd                        ; 2-byte pointer
 .endif
+
+; Deprecated bare aliases of the four general-purpose slots (SPEC §2 ZP
+; registry, §6.5 rename window; lib-contract #83). Same addresses -- the
+; canonical nistcurves_zp_* names above are the definitions. The bare names
+; collide across libraries (x25519 exported the same trio until its v0.11.0),
+; so they are export-gated below and removed at the next MAJOR.
+zp_tmp1 = nistcurves_zp_tmp1
+zp_tmp2 = nistcurves_zp_tmp2
+zp_ptr1 = nistcurves_zp_ptr1
+zp_ptr2 = nistcurves_zp_ptr2
 
 ; --- Field arithmetic working variables (shared by P-256 and P-384) ---
 .ifndef fp_src1
@@ -131,13 +141,23 @@
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
 .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY)
   .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
-  .exportzp ec_scalar_ptr, zp_ptr2
+  .exportzp ec_scalar_ptr, nistcurves_zp_ptr2
+  .ifndef LIB_NO_BARE_EXPORTS
+    .exportzp zp_ptr2
+  .endif
 .elseif .defined(LIB_P384_CURVE_ONLY)
   .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
-  .exportzp ec_scalar_ptr, zp_ptr2
+  .exportzp ec_scalar_ptr, nistcurves_zp_ptr2
+  .ifndef LIB_NO_BARE_EXPORTS
+    .exportzp zp_ptr2
+  .endif
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
 .else
-  .exportzp zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
+  .exportzp nistcurves_zp_tmp1, nistcurves_zp_tmp2
+  .exportzp nistcurves_zp_ptr1, nistcurves_zp_ptr2
+  .ifndef LIB_NO_BARE_EXPORTS
+    .exportzp zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
+  .endif
   .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
   .exportzp ec_scalar_ptr
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2

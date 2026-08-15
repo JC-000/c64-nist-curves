@@ -30,11 +30,25 @@
 ; in mainline will corrupt the cached operand / DMA target state. Serialize
 ; all calls into the library (mask IRQs around field ops or keep crypto on
 ; a single thread of control).
+; §6.5 rename window (contract v0.9.0/v0.9.1): the `mul_` prefix is registered
+; to c64-x25519 in the §2 registry, so these four labels take this library's
+; prefix. Canonical names are the definitions; the bare names are same-address
+; aliases, export-gated (suppressed under -D LIB_NO_BARE_EXPORTS=1) and removed
+; at the next MAJOR. Every in-library reference uses the canonical name, so
+; gated archives stay link-complete.
+.export nistcurves_mul_cached_a
+.ifndef LIB_NO_BARE_EXPORTS
 .export mul_cached_a
-mul_cached_a:
+.endif
+mul_cached_a = nistcurves_mul_cached_a
+nistcurves_mul_cached_a:
         .byte 0                ; cached src1[i] for inlined multiply
+.export nistcurves_mul_src2_buf
+.ifndef LIB_NO_BARE_EXPORTS
 .export mul_src2_buf
-mul_src2_buf:
+.endif
+mul_src2_buf = nistcurves_mul_src2_buf
+nistcurves_mul_src2_buf:
         .res 35, 0            ; absolute copy of src2 for fast indexed access
                                ; (32 bytes + 3 pad zeros so fp_sqr 4x-unroll
                                ; can over-read past j=31 into zeros for fast-skip)
@@ -42,9 +56,17 @@ mul_src2_buf:
 ; --- REU DMA target buffers (page-aligned for LDA abs,Y without penalty) ---
 ; SHARED between P-256 and P-384 code paths - see re-entrancy note above.
 .segment "LIB_NISTCURVES_TABLES"
+.export nistcurves_mul_dma_lo
+.ifndef LIB_NO_BARE_EXPORTS
 .export mul_dma_lo
-mul_dma_lo:
+.endif
+mul_dma_lo = nistcurves_mul_dma_lo
+nistcurves_mul_dma_lo:
         .res 256, 0           ; DMA target: lo bytes of a*b for current a
+.export nistcurves_mul_dma_hi
+.ifndef LIB_NO_BARE_EXPORTS
 .export mul_dma_hi
-mul_dma_hi:
+.endif
+mul_dma_hi = nistcurves_mul_dma_hi
+nistcurves_mul_dma_hi:
         .res 256, 0           ; DMA target: hi bytes of a*b for current a

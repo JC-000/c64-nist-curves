@@ -27,7 +27,7 @@
 ; =============================================================================
 
 ; --- data imports (for reu_fetch_mul_row) ---
-.import mul_cached_a
+.import nistcurves_mul_cached_a
 
 ; --- constants imports (for reu_fetch_mul_row) ---
 .import reu_reu_hi, reu_reu_bank, reu_command
@@ -54,7 +54,16 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 .assert (LIB_SHARED_SQTAB_BASE & $00ff) = 0, error, "sqtab base must be page-aligned (SPEC §8.1)"
 .assert sqtab_hi = sqtab_lo + $0200,        error, "sqtab_hi must follow sqtab_lo by $0200 (SPEC §8.1)"
 
+; §8.1 (v0.9.1): sqtab_lo/sqtab_hi are canonical NAMES, but canonical does not
+; mean exported -- they derive from the consumer-input LIB_SHARED_SQTAB_BASE,
+; and every §8.1 adopter derives the same two, so the bare exports are a
+; #82-class collision in any composed link. Export-gated under the §6.5 window;
+; removed at the next MAJOR. In-library they are same-TU equates (og_common)
+; plus one .import from the never-archived main.s sqtab-window guard, which the
+; standalone build (no gate) still satisfies.
+.ifndef LIB_NO_BARE_EXPORTS
 .export sqtab_lo, sqtab_hi
+.endif
 
 ; =============================================================================
 ; sqtab_init - Build quarter-square lookup table at sqtab_lo / sqtab_hi
@@ -205,7 +214,7 @@ sq_i:   .res 2, 0              ; 16-bit index counter (0..511)
 ; Gating them with the body -- which is what this file did until the §6.3
 ; lib-app-owned target first built a deferring archive -- deletes storage this
 ; library's own field arithmetic writes, leaving `poly_prod_lo/hi` unresolved
-; in any SHARED_CT_MUL_8X8 build. Same shape as the c64-x25519 mul_src2_buf
+; in any SHARED_CT_MUL_8X8 build. Same shape as the c64-x25519 nistcurves_mul_src2_buf
 ; overreach v0.9.1 corrected: a deferred buffer would point our field
 ; arithmetic at another library's memory.
 ;
@@ -269,8 +278,8 @@ ct_sign_mask:   .byte 0
 ; =============================================================================
 ; reu_fetch_mul_row - DMA a multiplication table row from REU to C64
 ;
-; Input: mul_cached_a = multiplier value (0-255)
-; Fetches 512 bytes: 256 lo bytes to mul_dma_lo, 256 hi bytes to mul_dma_hi
+; Input: nistcurves_mul_cached_a = multiplier value (0-255)
+; Fetches 512 bytes: 256 lo bytes to nistcurves_mul_dma_lo, 256 hi bytes to nistcurves_mul_dma_hi
 ; Clobbers: A
 ; =============================================================================
 ; SPEC §8.2 fetch deferral (contract v0.9.1). SHARED_REU_MUL_INIT gates the
@@ -290,7 +299,7 @@ ct_sign_mask:   .byte 0
 .else
 .export reu_fetch_mul_row
 reu_fetch_mul_row:
-        lda mul_cached_a
+        lda nistcurves_mul_cached_a
         asl                    ; A = multiplier * 2, carry = bit 7
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL
@@ -307,13 +316,13 @@ reu_fetch_mul_row:
 ;   stall is wall-clock-anchored and caps turbo scaling)
 ;
 ; Instead of DMA-fetching the full 512 B a-row, compute on-chip -- via
-; ct_mul_8x8 -- exactly the mul_dma_lo/hi entries the fp_mul / fp_sqr
+; ct_mul_8x8 -- exactly the nistcurves_mul_dma_lo/hi entries the fp_mul / fp_sqr
 ; inner loops will read for the current row:
 ;   - one product a*v per byte value v in the staged src buffer [0..X]
 ;     (zero bytes skipped: the inner loops' beq fast-path never reads
 ;     index 0)
-;   - the diagonal entry at index mul_cached_a (a*a; the fp_sqr diagonal
-;     pass reads it, and in fp_sqr mul_cached_a is itself a src byte)
+;   - the diagonal entry at index nistcurves_mul_cached_a (a*a; the fp_sqr diagonal
+;     pass reads it, and in fp_sqr nistcurves_mul_cached_a is itself a src byte)
 ; Entries at all other indices are left stale from previous rows; the
 ; consumers above never read them for the current row.
 ;
@@ -321,33 +330,33 @@ reu_fetch_mul_row:
 ; leaks into this object (archive linkability, SPEC §6 / check-archives):
 ; fp256.s `gen_mul_row` and fp384.s `gen_mul_row_384` are 6-instruction
 ; stubs that SMC-patch the og_src_ld operand to their own staged-src
-; buffer (mul_src2_buf / mul_src2_buf_384) and jmp og_common. The
+; buffer (nistcurves_mul_src2_buf / mul_src2_buf_384) and jmp og_common. The
 ; placeholder operand $FFFF below is ALWAYS overwritten before the loop
 ; runs.
 ;
 ; Input:  X = last source-buffer index (31 for P-256, 47 for P-384)
 ;         og_src_ld+1/+2 = staged-src buffer address (patched by stub)
-;         mul_cached_a = row multiplicand a
+;         nistcurves_mul_cached_a = row multiplicand a
 ; Clobbers: A, X, Y, poly_prod_lo/hi, ct_mul_8x8 scratch + SMC sites.
 ;   All six call sites reload X and Y after the (former) fetch block, so
 ;   the wider clobber set vs the DMA path (A only) is safe.
 ; =============================================================================
-.import mul_dma_lo, mul_dma_hi
+.import nistcurves_mul_dma_lo, nistcurves_mul_dma_hi
 .export og_common, og_src_ld
 og_common:
         stx og_i
-        lda mul_cached_a
+        lda nistcurves_mul_cached_a
         sta smc_sum_a_imm+1     ; bake a once per row (canonical SMC entry,
         sta smc_diff_a_imm+1    ;   still used for the diagonal product)
         sta og_sbc_a+1          ; bake a into the inline quarter-square
         sta og_adc_a+1          ;   (issue #71 shape-2 fast path below)
         tay
         jsr ct_mul_8x8          ; a*a for the fp_sqr diagonal read
-        ldy mul_cached_a
+        ldy nistcurves_mul_cached_a
         lda poly_prod_lo
-        sta mul_dma_lo,y
+        sta nistcurves_mul_dma_lo,y
         lda poly_prod_hi
-        sta mul_dma_hi,y
+        sta nistcurves_mul_dma_hi,y
 og_loop:
         ldx og_i
 og_src_ld:
@@ -393,9 +402,9 @@ og_pg1:
         sbc sqtab_hi,x
 og_store:
         ldy og_v                ; Y = v: row entries are indexed by value
-        sta mul_dma_hi,y
+        sta nistcurves_mul_dma_hi,y
         lda og_plo
-        sta mul_dma_lo,y
+        sta nistcurves_mul_dma_lo,y
 og_skip:
         dec og_i
         bpl og_loop
