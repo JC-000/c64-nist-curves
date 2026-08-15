@@ -12,6 +12,33 @@ contract).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-15
+
+> **Namespace-wave release** — closes the fleet's §6.5 rename window as its
+> last adopter (lib-contract #76 tracker: polyval v0.6.0, chacha v0.8.0,
+> x25519 v0.11.0, nist **this release**), and bundles the full contract
+> catch-up from v0.8.4 through v0.9.1. Eight PRs: #99, #101, #102, #103,
+> #104, #105, #106, #107.
+>
+> **`LIB_ABI_VERSION` bumps 1 → 2.** Three exported symbols were removed
+> unconditionally (#103): `LIB_SHARED_REU_MUL_BANK`, `_OFFSET`,
+> `_BANKS_USED` — the unprefixed §8.2 consumer-input equates that collided
+> with `c64-x25519` in any composed link. Their prefixed *output*
+> counterparts (`LIB_NISTCURVES_SHARED_REU_MUL_*`, #105) replace what a
+> consumer could legitimately want from them. Consumers gating on
+> `LIB_NISTCURVES_ABI_VERSION <> 1` fail loudly, as intended.
+>
+> **`build/nist-curves.prg` changes: 37427 → 37480 B** (#102 restores 53
+> bytes the image was short — everything above `$83C6` now loads at its
+> linked address). Individual entries below that state "byte-identical"
+> describe their own change against its predecessor; #102 is the one
+> byte-moving change, validated by the full 1090-check oracle run.
+>
+> Everything else is additive or gated-additive: bare names deprecated by
+> the rename window remain exported **by default** and are suppressed only
+> under `-D LIB_NO_BARE_EXPORTS=1`. A consumer that changes nothing links
+> exactly as before.
+
 ### Changed
 
 - **§6.5 rename-window follow-up (lib-contract #83 + v0.9.1 window items) —
@@ -1707,6 +1734,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.10.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.0
 [0.9.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.1
 [0.9.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.9.0
 [0.8.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.8.0
