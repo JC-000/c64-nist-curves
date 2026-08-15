@@ -339,6 +339,7 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
     "nistcurves-app-owned.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
     }
@@ -640,6 +641,126 @@ GATE_TUS = ["zp_config", "data_shared", "mul_8x8", "lib_version",
             "precalc_manifest"]
 
 
+# --- R2 exported-vs-summed ZP audit (issue #113, chacha-template method) -----
+# Canonical slot table: name -> (address-agnostic) width in bytes. Width truth
+# was established by usage audit (issue #90: `sta slot+1` / `lda (slot),y`
+# prove 2-byte pointers), not by comments -- the ec_scalar_ptr comment said
+# 1 byte for months while the code used 2.
+ZP_CANONICAL_WIDTHS = {
+    "nistcurves_zp_tmp1": 1, "nistcurves_zp_tmp2": 1,
+    "nistcurves_zp_ptr1": 2, "nistcurves_zp_ptr2": 2,
+    "fp_src1": 2, "fp_src2": 2, "fp_dst": 2, "fp_misc": 2,
+    "fp_carry": 1, "fp_mul_i": 1, "fp_mul_j": 1,
+    "ec_scalar_ptr": 2,
+    "sha_src": 2, "sha_len": 2, "sha_w_ptr": 2, "sha_w_ptr2": 2,
+}
+# Intended §2 bare->canonical alias pairs (the §6.5 gated window). Any OTHER
+# name sharing an address with a canonical slot is a defect: an unintended
+# alias SHRINKS the address union and can hide a real collision -- the case
+# total-only comparison cannot see.
+ZP_INTENDED_ALIASES = {
+    "zp_tmp1": "nistcurves_zp_tmp1", "zp_tmp2": "nistcurves_zp_tmp2",
+    "zp_ptr1": "nistcurves_zp_ptr1", "zp_ptr2": "nistcurves_zp_ptr2",
+}
+ZP_ARM_OBJECTS = {   # zp_config variant object -> archives sharing that arm
+    "zp_config": ["nistcurves.a", "nistcurves-onchip.a", "nistcurves-app-owned.a"],
+    "zp_config_p256verify": ["nistcurves-p256-verify.a", "nistcurves-p256-verify-onchip.a"],
+    "zp_config_p384verify": ["nistcurves-p384-verify.a", "nistcurves-p384-verify-onchip.a"],
+    "zp_config_p384curve": ["nistcurves-p384-curve.a", "nistcurves-p384-curve-onchip.a"],
+    "zp_config_sha384": ["nistcurves-p384-sha384.a"],
+}
+
+
+def od65_zp_exports(obj):
+    """name -> address for zeropage-sized exports of one object.
+    Sentinel: od65 exits 0 on non-objects, so an unreadable input must fail
+    loudly here rather than return an empty (= vacuously passing) set."""
+    rc, out = sh(["od65", "--dump-exports", str(obj)])
+    if "(no xo65 object file)" in out or rc:
+        return None
+    got, name = {}, None
+    for block in re.split("\\n(?=\\s+Index:)", out):
+        n = re.search(r'Name:\s*"([^"]+)"', block)
+        a = re.search(r"Address size:\s*0x01", block)
+        v = re.search(r"Value:\s*0x([0-9A-Fa-f]+)", block)
+        if n and a and v:
+            got[n.group(1)] = int(v.group(1), 16)
+    return got
+
+
+def zp_alias_audit(failures):
+    """Issue #113: per variant arm, (1) union exported slot ADDRESSES with
+    canonical widths and compare against the exported ZP_USAGE_BYTES equate;
+    (2) account for every address shared by two exported names -- it must be
+    exactly an intended bare->canonical pair. Runs the same audit on a
+    LIB_NO_BARE_EXPORTS build of each arm, where every group must collapse
+    to the canonical name alone."""
+    import tempfile
+    print("\n=== R2 ZP audit: exported union vs equate + alias accounting ===")
+    for arm, archives in ZP_ARM_OBJECTS.items():
+        exports = od65_zp_exports(BUILD / (arm + ".o"))
+        if exports is None:
+            failures.append(f"zp-audit: cannot read build/{arm}.o")
+            print(f"  AUDIT FAIL: build/{arm}.o unreadable")
+            continue
+        # (2) alias accounting, by address
+        by_addr = {}
+        for name, addr in exports.items():
+            by_addr.setdefault(addr, set()).add(name)
+        bad = False
+        covered = set()
+        for addr, names in sorted(by_addr.items()):
+            canon = [n for n in names if n in ZP_CANONICAL_WIDTHS]
+            others = names - set(canon)
+            if len(canon) != 1:
+                failures.append(f"zp-audit {arm}: address ${addr:02x} has canonical set {sorted(canon)}")
+                print(f"  AUDIT FAIL {arm}: ${addr:02x} exported by {sorted(names)} -- not exactly one canonical slot")
+                bad = True
+                continue
+            for o in others:
+                if ZP_INTENDED_ALIASES.get(o) != canon[0]:
+                    failures.append(f"zp-audit {arm}: unintended alias {o} -> {canon[0]} at ${addr:02x}")
+                    print(f"  AUDIT FAIL {arm}: '{o}' shares ${addr:02x} with '{canon[0]}' but is not an intended pair")
+                    bad = True
+            covered |= set(range(addr, addr + ZP_CANONICAL_WIDTHS[canon[0]]))
+        # (1) union vs equate, against each archive sharing this arm
+        union = len(covered)
+        for a in archives:
+            want = MANIFEST_VALUES.get(a, {}).get("LIB_NISTCURVES_ZP_USAGE_BYTES")
+            if want is not None and want != union:
+                failures.append(f"zp-audit {arm}: union {union} != {a} equate {want}")
+                print(f"  AUDIT FAIL {arm}: address-union {union} B != {a}'s ZP_USAGE_BYTES {want}")
+                bad = True
+        # gated build: aliases must vanish, union must not change
+        with tempfile.TemporaryDirectory() as td:
+            gobj = Path(td) / "g.o"
+            defines = {"zp_config": [], "zp_config_p256verify": ["-D", "LIB_P256_VERIFY_ONLY"],
+                       "zp_config_p384verify": ["-D", "LIB_P384_VERIFY_ONLY"],
+                       "zp_config_p384curve": ["-D", "LIB_P384_CURVE_ONLY"],
+                       "zp_config_sha384": ["-D", "LIB_SHA384_ONLY"]}[arm]
+            rc, _ = sh(["ca65", "--cpu", "6502", "-D", "LIB_NO_BARE_EXPORTS=1", *defines,
+                        "-I", "src", "-o", str(gobj), "src/zp_config.s"])
+            g = od65_zp_exports(gobj) if not rc else None
+            if g is None:
+                failures.append(f"zp-audit {arm}: gated assemble failed")
+                bad = True
+            else:
+                leftover = [n for n in g if n in ZP_INTENDED_ALIASES]
+                gunion = set()
+                for n, addr in g.items():
+                    if n in ZP_CANONICAL_WIDTHS:
+                        gunion |= set(range(addr, addr + ZP_CANONICAL_WIDTHS[n]))
+                if leftover:
+                    failures.append(f"zp-audit {arm}: gated build still exports bare {leftover}")
+                    bad = True
+                if len(gunion) != union:
+                    failures.append(f"zp-audit {arm}: gated union {len(gunion)} != default union {union}")
+                    bad = True
+        if not bad:
+            names = len(exports)
+            print(f"  {arm:24s} union={union:2d} B  names={names:2d} ({names - len(covered and by_addr)} aliases)  equate match: {', '.join(archives)}")
+
+
 def version_identity_check(failures):
     """§1 identity: the VERSION file and the lib_version.o equates MUST agree.
     v0.10.0 shipped self-misreporting as 0.10.1 -- PATCH carried over from the
@@ -712,6 +833,7 @@ def main():
         print("  placement OK (no bss segment precedes a file-emitting one)")
 
     version_identity_check(failures)
+    zp_alias_audit(failures)
     gated_surface_check(failures)
 
     for name in sorted(KNOWN_EXTERNAL):
