@@ -12,6 +12,23 @@ contract).
 
 ## [Unreleased]
 
+### Added
+
+- **R2 exported-vs-summed ZP audit in `make check-archives`** (issue #113 —
+  the fleet's last outstanding R2 action, with teeth here because #107 gave
+  every general-purpose slot two exported names at one address by design).
+  Per variant arm of `zp_config.s`, the ratchet now: unions the exported slot
+  **addresses** (widths from the usage-audited canonical table, not comments)
+  and compares against that arm's exported `ZP_USAGE_BYTES`; and accounts for
+  **every address shared by two exported names** — each must be exactly an
+  intended bare→canonical §6.5 pair, since an unintended alias *shrinks* the
+  union and can hide a real collision, the case total-only comparison cannot
+  see. The gated (`-D LIB_NO_BARE_EXPORTS=1`) build of each arm is audited
+  too: aliases must vanish, the union must not move. Negative-tested against
+  all three drift modes (understated equate; exported slot without a width;
+  unintended alias) — each fails with a named cause. The app-owned archive's
+  `ZP_USAGE_BYTES` gains a value pin (27, the default arm it ships).
+
 ### Changed
 
 - **Documentation currency pass at SPEC v0.10.3** (full clause-by-clause
