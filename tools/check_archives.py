@@ -69,6 +69,21 @@ KNOWN_EXTERNAL = {
     # The onchip mul_8x8 object exports the shared og_common row generator;
     # each curve object carries its own entry stub, so no cross-curve
     # buffer import exists to allowlist.
+    # SPEC §6.3 lib-app-owned: every §8.x primitive is deferred, so the four
+    # canonical symbols are unresolved BY DESIGN -- the consumer's own modules
+    # provide them. That is the whole point of the configuration, and it is why
+    # this archive is the one place a documented gap is correct rather than a
+    # regression. §8.1's import-never-stub rule forbids satisfying them with a
+    # local stub.
+    # SPEC §6.3 lib-app-owned: every §8.x primitive is deferred to the consumer.
+    # The gap is EMPTY, which is the interesting result: no archived object
+    # imports the four canonical symbols, because the only in-archive caller of
+    # ct_mul_8x8 was reu_mul_init.o (excluded under SHARED_REU_MUL_INIT), the
+    # fetch has no callers at all, and sqtab_init / reu_mul_tables_init are
+    # called only from the never-archived main.s. So this archive defers four
+    # primitives without acquiring a single unresolved external -- the consumer
+    # supplies them for its own boot sequence, not to satisfy our link.
+    "nistcurves-app-owned.a": set(),
     "nistcurves-onchip.a": set(),
     "nistcurves-p256-verify-onchip.a": set(),
     "nistcurves-p384-verify-onchip.a": set(),
@@ -322,6 +337,10 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
     },
+    "nistcurves-app-owned.a": {
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
+    }
 }
 
 # Per-archive precalc row sets, straight from what each archive contains:
@@ -351,6 +370,7 @@ MUST_EXPORT = {
     "nistcurves-p384-verify-onchip.a": MANIFEST_SYMS | PRECALC_VERIFY | ZP_VERIFY_SYMS,
     "nistcurves-p384-curve-onchip.a": (MANIFEST_SYMS | PRECALC_CURVE
                                        | ZP_VERIFY_SYMS | ZP_SHA384_SYMS),
+    "nistcurves-app-owned.a": MANIFEST_SYMS | REU_OUTPUT_SYMS
 }
 MUST_NOT_EXPORT = {
     "nistcurves.a": set() | TESTVEC_SYMS | REU_PLACEMENT_SYMS,
@@ -369,6 +389,7 @@ MUST_NOT_EXPORT = {
                                         | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
     "nistcurves-p384-curve-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
                                        | PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
+    "nistcurves-app-owned.a": REU_MUL_PROVIDER_SYMS | REU_PLACEMENT_SYMS | TESTVEC_SYMS
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
