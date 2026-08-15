@@ -12,6 +12,20 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docs: vic_blank speedup figure corrected from ~20-25% to ~6.3% NTSC /
+  ~5.5% PAL** (issue #116, established by measurement and badline arithmetic
+  in c64-x25519#103). The old figure came from misreading the ~40-43 cycle
+  VIC-II steal as per *rasterline* when it is per *badline* (one per
+  character row — every 8th rasterline on a text screen). The recovered
+  fraction is a property of the caller's display: 25 badlines × ~43 cy /
+  17030 cy per NTSC frame ≈ 6.3% (PAL /19656 ≈ 5.5%) on the plain text
+  screen the harness runs; 20%+ requires sprites or bitmap fetch load.
+  Corrected in `src/main.s`, `CLAUDE.md`, the historical 0.1.0 changelog
+  entry (annotated, not rewritten), and the legacy `src/main.asm` comment.
+  Comment/doc-only — PRG byte-identical (`18701274…`).
+
 ## [0.10.2] — 2026-08-15
 
 ### Added
@@ -1800,7 +1814,9 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 - Carry-propagation INC fusion in fp_mul / fp_sqr accumulator spill (Wave 4b)
 - Solinas fast reduction with self-modifying dispatch
 - Binary GCD inversion with unrolled shift loops
-- VIC-II blanking for +20–25% CPU headroom during compute-bound operations
+- VIC-II blanking for CPU headroom during compute-bound operations
+  *(originally recorded as "+20–25%"; corrected 2026-08-15 to ~6.3% NTSC /
+  ~5.5% PAL on the harness's plain text screen — see issue #116)*
 - Ultimate 64 Elite turbo-mode benchmarking via DMA trampoline at 16 / 48 MHz
 - Oracle-driven test suite: NIST CAVP KAS-ECC-CDH anchors, `cryptography`
   Python library oracle, unseeded CSPRNG random inputs, correctness-gated

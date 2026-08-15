@@ -248,10 +248,15 @@ bench_ticks:    .res 3, 0
 
 ; =============================================================================
 ; VIC-II screen blanking for maximum CPU throughput
-; Blanking eliminates ~40 stolen cycles/rasterline from VIC-II DMA
+; Blanking eliminates the ~40-43 cycles the VIC-II steals per badline (one
+; per character row, i.e. every 8th rasterline on a text screen), plus any
+; sprite fetch stalls. On the plain text screen this harness runs, that is
+; ~6.3% NTSC / ~5.5% PAL (25 badlines x ~43 cy / 17030 cy per NTSC frame);
+; the recovered fraction is a property of the caller's display — 20%+ needs
+; sprites or bitmap fetch load. Measured in c64-x25519#103; issue #116 here.
 ; =============================================================================
 
-; vic_blank - Disable VIC-II display (DEN=0) for ~20-25% CPU speedup
+; vic_blank - Disable VIC-II display (DEN=0); ~6% CPU speedup on a text screen
 .export vic_blank
 vic_blank:
         lda vic_ctrl1
