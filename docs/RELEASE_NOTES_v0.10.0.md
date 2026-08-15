@@ -1,8 +1,8 @@
 # c64-nist-curves v0.10.0 — Namespace wave
 
 **Released:** 2026-08-15
-**Tarball:** `c64-nist-curves-v0.10.0.tar.gz` (228,092 bytes)
-**SHA256:** `e7cc7725cbf5184ac47e1a01ce7d5623029d706509ea4a020205fa3c95c167ff`
+**Tarball:** `c64-nist-curves-v0.10.0.tar.gz` (228,188 bytes)
+**SHA256:** `6cdfdbd410424ebbb0f7b147950baffd4a6fb66b538ecc1ebb8df17ea580200c`
 
 P-256 and P-384 elliptic-curve arithmetic for the Commodore 64, with packaged
 ECDSA verification and streaming SHA-384.
@@ -141,7 +141,7 @@ Validated with the full oracle suite: **1090/1090, zero failures**, across
 - Tarball reproducibility: two independent `make dist` runs byte-identical.
 - **Worktree-rebuild byte-identity** (fleet standard): a clean
   `git worktree` checkout of the tag rebuilds the PRG byte-identical —
-  verified at `e3de4c0` (fresh `git worktree` at the tag: PRG `18701274…` identical, check-archives and check-docs both PASS in the worktree).
+  verified at `82e4e5e` (post-squash re-tag) (fresh `git worktree` at the tag: PRG `18701274…` identical, check-archives and check-docs both PASS in the worktree).
 
 ## Links
 
