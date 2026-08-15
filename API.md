@@ -615,11 +615,13 @@ intermediate `.o` shuffling.
 |------------------------------|--------------------------------------|------------------------------------------------------------------------------------------|
 | `make lib`                   | `nistcurves.a`                       | Whole library minus the standalone test PRG driver. Default for whole-library consumers. |
 | `make lib-p256-verify`       | `nistcurves-p256-verify.a`           | P-256 ECDSA verify only (variable-base scalar mul). Excludes Lim-Lee fixed-base comb.    |
+| `make lib-p256-comb`         | `nistcurves-p256-comb.a`             | P-256 ECDSA verify with the comb-fast `u1·G` (issue #117): the verify set plus the Lim-Lee fixed-base comb, no P-384 / SHA-384. |
 | `make lib-p384-verify`       | `nistcurves-p384-verify.a`           | P-384 ECDSA verify only. Excludes Lim-Lee comb and the SHA-driving wrapper.              |
 | `make lib-p384-sha384`       | `nistcurves-p384-sha384.a`           | SHA-384 streaming hash only. Self-contained: no REU, no multiply tables.                 |
 | `make lib-p384-curve`        | `nistcurves-p384-curve.a`            | P-384 ECDSA verify + SHA-384 + `ecdsa_verify_with_message_384` one-shot wrapper.         |
 | `make lib-onchip`            | `nistcurves-onchip.a`                | Full library, **turbo profile** (§8.4.2): on-chip multiply, no REU mul-table DMA.        |
 | `make lib-p256-verify-onchip`| `nistcurves-p256-verify-onchip.a`    | P-256 verify, turbo profile. No REU DMA at all (no mul table, no comb).                  |
+| `make lib-p256-comb-onchip`  | `nistcurves-p256-comb-onchip.a`      | P-256 comb verify, turbo profile: on-chip multiply, REU used for the comb anchor table only (bank 2). Fastest verify configuration at turbo (issue #117). |
 | `make lib-p384-verify-onchip`| `nistcurves-p384-verify-onchip.a`    | P-384 verify, turbo profile. No REU DMA at all.                                          |
 | `make lib-p384-curve-onchip` | `nistcurves-p384-curve-onchip.a`     | P-384 verify + SHA-384 + one-shot wrapper, turbo profile.                                |
 
@@ -633,6 +635,15 @@ Exclusion summary (per minimal archive):
   all SHA-384, the test-driver staging buffers (`ecdsa_inputs_*`,
   `sha384_msg_buf`, `fp_tmp2..4`). Its `LIB_NISTCURVES_P256_BSS`
   extent is 1312 B as of issue #54 (was 1573 B in v0.3.0).
+- `lib-p256-comb` / `lib-p256-comb-onchip` (issue #117) are the
+  `lib-p256-verify[-onchip]` member set with the comb-fast `ecdsa256.o`
+  in place of `ecdsa256_nocomb.o`, plus `points256_comb` +
+  `data_p256_limlee`. Still excluded: `main`, `inv256` +
+  `data_p256_invref`, all P-384, all SHA-384, the test-driver staging
+  buffers. Boot obligation grows by `ec_precompute_256` (~25 s at
+  1 MHz, §8.5) and REU bank 2 gains the 16 KB P-256 anchor table —
+  in **both** profiles (the onchip arm still DMA-fetches comb anchors;
+  it is the multiply table it does without).
 - `lib-p384-verify` excludes: `main`, all P-256, `points384_comb` +
   `data_p384_limlee`, `ecdsa384_msg` (one-shot wrapper — consumers
   driving streaming SHA themselves link this in via `lib-p384-curve`
@@ -642,11 +653,11 @@ Exclusion summary (per minimal archive):
   `lib_manifest_sha384.o` / `precalc_manifest_sha384.o`. No `mul_8x8`,
   no REU, no `constants.o` — SHA-384 has no shared scratch with the
   field / point / ECDSA code paths. Because it carries no field layer at
-  all, its §5 manifest is built with `-D LIB_SHA384_ONLY`, one of five
+  all, its §5 manifest is built with `-D LIB_SHA384_ONLY`, one of six
   variant gates that together make each archive's §5 manifest describe
-  that archive rather than the whole library (issue #90 closes this for
-  the four gates other than SHA-384; issue #88 was the first, narrower
-  fix, SHA-384 only):
+  that archive rather than the whole library (issue #88 was the first,
+  narrower fix, SHA-384 only; issue #90 extended it to the three
+  verify/curve gates; issue #117 added `LIB_P256_COMB_ONLY`):
 
   | Archive | `-D` switch(es) | `ZP_USAGE_BYTES` | `REU_BANKS_USED` | `SHARED_PRIMITIVES` | `SHARED_CONSUMES` | `RESIDENT_BYTES` | `COLD_BYTES` | precalc rows |
   |---|---|---:|---|---|---|---:|---:|---|
@@ -659,8 +670,20 @@ Exclusion summary (per minimal archive):
   | `nistcurves-p384-curve.a` | `LIB_P384_CURVE_ONLY` | 23 | `$03` | `$0007` | `$0007` | 17400 | 430 | sqtab, reu_mul, sha384_k (3) |
   | `nistcurves-p384-curve-onchip.a` | `LIB_P384_CURVE_ONLY` + `FP_ONCHIP_MUL` | 23 | `$00` | `$0005` | `$0005` | 17400 | 240 | sqtab, sha384_k (2) |
   | `nistcurves-p384-sha384.a` | `LIB_SHA384_ONLY` | 8 | `$00` | `$0000` | `$0000` | 9000 | 0 | sha384_k (1) |
+  | `nistcurves-p256-comb.a` | `LIB_P256_COMB_ONLY` | 17 | `$07` | `$0007` | `$0007` | 9216 | 1050 | sqtab, reu_mul, lim_lee_comb_p256 (3) |
+  | `nistcurves-p256-comb-onchip.a` | `LIB_P256_COMB_ONLY` + `FP_ONCHIP_MUL` | 17 | `$04` | `$0005` | `$0005` | 9216 | 870 | sqtab, lim_lee_comb_p256 (2) |
 
-  Before issue #90, six of these nine rows were wrong: the three
+  The two `nistcurves-p256-comb*` rows (issue #117) are the verify set
+  plus the comb: ZP adds `nistcurves_zp_ptr1` (the `ec_precompute_256`
+  anchor-copy pointer — not `zp_tmp1`/`zp_tmp2`, whose only archived
+  user is the P-384 comb) for 17 B; REU keeps the comb bank `$02` in
+  BOTH profiles because `ec_precompute_256` populates and the comb
+  evaluate loop DMA-fetches the anchor table regardless of how multiply
+  rows are produced; the precalc enumeration carries `lim_lee_comb_p256`
+  but **not** the 24 KB `lim_lee_comb_p384` table the archive lacks
+  (the row gates split per curve for exactly this archive).
+
+  Before issue #90, six of the (then) nine rows were wrong: the three
   non-onchip verify/curve archives claimed `REU_BANKS_USED = $07`
   (inherited from the default-profile manifest) despite never shipping
   the Lim-Lee comb objects that are bank 2's only consumer — true value
@@ -747,7 +770,7 @@ sources (`src/ecdsa256.s` / `src/ecdsa384.s`), differing only in how
 
 | Variant | `u1·G` path | Shipped in |
 |---|---|---|
-| comb (default) | h=8 Lim-Lee fixed-base comb (`ec_scalar_mul[_384]`) | `nistcurves.a` (full), `nistcurves-onchip.a`, standalone PRG |
+| comb (default) | h=8 Lim-Lee fixed-base comb (`ec_scalar_mul[_384]`) | `nistcurves.a` (full), `nistcurves-onchip.a`, `nistcurves-p256-comb.a`, `nistcurves-p256-comb-onchip.a` (issue #117), standalone PRG |
 | `-D ECDSA_NO_COMB` | variable-base ladder seeded at `G` (`ec_scalar_mul_var[_384]`) | `nistcurves-p256-verify.a`, `nistcurves-p384-verify.a`, `nistcurves-p384-curve.a`, and their `*-onchip` counterparts (`nistcurves-p256-verify-onchip.a`, `nistcurves-p384-verify-onchip.a`, `nistcurves-p384-curve-onchip.a`) |
 
 The no-comb variant exists so the trimmed verify archives need no
@@ -766,13 +789,17 @@ infinity edge (both paths return the all-zero Jacobian encoding).
   roughly two variable-base scalar multiplies instead of one-plus-comb
   — up to ~2× slower per verify. Right choice for RAM/boot-constrained
   or occasional-verify consumers.
-- **Full archive (comb).** Comb-accelerated `u1·G`; pay the boot pass
+- **Comb archives.** Comb-accelerated `u1·G`; pay the boot pass
   + REU residency. Right choice for verify-throughput consumers.
   Note: adding the comb objects to a verify archive's link line does
   **not** restore comb speed — the archive's `ecdsa*_nocomb.o` has the
-  variable-base path baked in. Comb-speed packaged verify means
-  linking `nistcurves.a` (or composing your own object set from
-  `build/ecdsa256.o` + comb objects).
+  variable-base path baked in. Comb-speed packaged P-256 verify means
+  linking `nistcurves-p256-comb.a` / `nistcurves-p256-comb-onchip.a`
+  (issue #117 — the minimal comb-fast set, no P-384/SHA members) or
+  `nistcurves.a` / `nistcurves-onchip.a` (whole library). For P-384
+  there is no minimal comb archive yet; comb-speed P-384 verify means
+  the full archive (or composing your own object set from
+  `build/ecdsa384.o` + comb objects).
 - **Either variant, driving primitives directly.** The building blocks
   (`ec_scalar_mul_var`, `ec_point_add[_jj]`, `ec_jacobian_to_affine`,
   `fp_mod_inv`, `fp_mod_mul`, …) remain exported from all curve
@@ -840,10 +867,10 @@ issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
 **Contract deltas vs the default profile:**
 
 - **REU banks (§5):** `LIB_NISTCURVES_REU_BANKS_USED = $04` (comb bank
-  only) for `nistcurves-onchip.a` — the only onchip archive that still
-  ships `points256_comb.o`/`points384_comb.o`. The three onchip
-  verify/curve archives (`*-verify-onchip.a`, `nistcurves-p384-curve-
-  onchip.a`) correctly report `$00`: none of them ship the comb objects,
+  only) for the comb-carrying onchip archives — `nistcurves-onchip.a`
+  (both combs) and `nistcurves-p256-comb-onchip.a` (P-256 comb, issue
+  #117). The three onchip verify/curve archives (`*-verify-onchip.a`,
+  `nistcurves-p384-curve-onchip.a`) correctly report `$00`: none of them ship the comb objects,
   so bank 2 is never referenced, and the onchip profile already drops
   banks 0/1. Before issue #90 all four onchip archives inherited the
   same `$04` from one shared manifest object, over-claiming REU for the
@@ -1019,7 +1046,7 @@ ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 **§5 manifest equates** (consumer imports for cfg-side fit checks):
 
 ```asm
-.import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07 ($00-$04 for the minimal archives, §8.4)
+.import LIB_NISTCURVES_REU_BANKS_USED       ; bitmask, default $07 ($00-$07 depending on archive, §8.4)
 .import LIB_NISTCURVES_ZP_USAGE_BYTES       ; default 27, 8-23 for the minimal archives (§8.4)
 .import LIB_NISTCURVES_RESIDENT_BYTES       ; default 27000
 .import LIB_NISTCURVES_COLD_BYTES           ; default 1840 (1650 under FP_ONCHIP_MUL; §8.4)

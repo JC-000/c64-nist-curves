@@ -100,23 +100,32 @@
   _HAS_REU_MUL = 1
 .endif
 
-; lim_lee_comb_{p256,p384}: only the two full archives ship
-; points256_comb.o / points384_comb.o. LIB_SHA384_ONLY and all three
-; minimal verify/curve variants take the ECDSA_NO_COMB verifiers, which
-; route u1*G through the variable-base ladder, and never link the comb
-; objects (issue #90). This row set is variant-only: the onchip full
-; archives still populate and read REU bank $02.
+; lim_lee_comb_{p256,p384}: the full archives ship both comb objects;
+; the LIB_P256_COMB_ONLY archives (issue #117) ship points256_comb.o
+; only, so the two rows gate separately -- one combined flag would have
+; the P-256 comb archive advertising the 24 KB P-384 table it does not
+; carry, the exact issue #90 bug class the flags exist to prevent.
+; LIB_SHA384_ONLY and the three minimal verify/curve variants take the
+; ECDSA_NO_COMB verifiers, which route u1*G through the variable-base
+; ladder, and never link either comb object (issue #90). Both row sets
+; are variant-only: the onchip full/comb archives still populate and
+; read REU bank $02.
 .if .defined(LIB_SHA384_ONLY) .or .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
-  _HAS_LIMLEE_COMB = 0
+  _HAS_LIMLEE_P256 = 0
+  _HAS_LIMLEE_P384 = 0
+.elseif .defined(LIB_P256_COMB_ONLY)
+  _HAS_LIMLEE_P256 = 1
+  _HAS_LIMLEE_P384 = 0
 .else
-  _HAS_LIMLEE_COMB = 1
+  _HAS_LIMLEE_P256 = 1
+  _HAS_LIMLEE_P384 = 1
 .endif
 
 ; sha384_k: builds that ship sha384.o -- the two full archives,
 ; LIB_SHA384_ONLY itself, and LIB_P384_CURVE_ONLY (which bundles SHA-384
 ; plus the packaged ecdsa_verify_with_message_384 wrapper). The two
-; *_VERIFY_ONLY variants do not.
-.if .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY)
+; *_VERIFY_ONLY variants and the P-256 comb variant (issue #117) do not.
+.if .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P256_COMB_ONLY)
   _HAS_SHA384_K = 0
 .else
   _HAS_SHA384_K = 1
@@ -128,8 +137,10 @@ LIB_PRECALC_TABLE "sqtab",             1024,   PRECALC_REGION_RAM,    PRECALC_SH
 .if _HAS_REU_MUL
 LIB_PRECALC_TABLE "reu_mul",           131072, PRECALC_REGION_REU,    PRECALC_SHARED_YES, "NISTCURVES"
 .endif
-.if _HAS_LIMLEE_COMB
+.if _HAS_LIMLEE_P256
 LIB_PRECALC_TABLE "lim_lee_comb_p256", 16384,  PRECALC_REGION_REU,    PRECALC_SHARED_NO,  "NISTCURVES"
+.endif
+.if _HAS_LIMLEE_P384
 LIB_PRECALC_TABLE "lim_lee_comb_p384", 24576,  PRECALC_REGION_REU,    PRECALC_SHARED_NO,  "NISTCURVES"
 .endif
 .if _HAS_SHA384_K

@@ -88,6 +88,10 @@ KNOWN_EXTERNAL = {
     "nistcurves-p256-verify-onchip.a": set(),
     "nistcurves-p384-verify-onchip.a": set(),
     "nistcurves-p384-curve-onchip.a": set(),
+    # P-256 comb archives (issue #117): the comb-calling ecdsa256.o plus
+    # points256_comb.o / data_p256_limlee.o, link-complete in both profiles.
+    "nistcurves-p256-comb.a": set(),
+    "nistcurves-p256-comb-onchip.a": set(),
 }
 
 # --- SPEC §8.2 provider pins (issue #81) -------------------------------------
@@ -153,7 +157,11 @@ PRECALC_REU_MUL_SYMS = _precalc_syms("reu_mul")
 # LIB_SHA384_ONLY and sha384_k was emitted unconditionally, so the six
 # minimal-variant archives each enumerated 2-3 tables they do not contain.
 PRECALC_SQTAB_SYMS = _precalc_syms("sqtab")
-PRECALC_COMB_SYMS = _precalc_syms("lim_lee_comb_p256", "lim_lee_comb_p384")
+# Split per curve (issue #117): the P-256 comb archives carry the p256 row
+# and must NOT advertise the 24 KB p384 table they lack.
+PRECALC_COMB_P256_SYMS = _precalc_syms("lim_lee_comb_p256")
+PRECALC_COMB_P384_SYMS = _precalc_syms("lim_lee_comb_p384")
+PRECALC_COMB_SYMS = PRECALC_COMB_P256_SYMS | PRECALC_COMB_P384_SYMS
 PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
 
 # --- §8.2 placement equates must stay unexported (issue #82) -----------------
@@ -225,11 +233,14 @@ ZP_VERIFY_SYMS = {
     "fp_carry", "fp_mul_i", "fp_mul_j",
     "ec_scalar_ptr", "zp_ptr2", "nistcurves_zp_ptr2",
 }
-# Used only by points256_comb.o / points384_comb.o (zp_ptr1 for the anchor
-# copy in ec_precompute_*, zp_tmp1/zp_tmp2 in sm384w_calc_reu_offset), so
-# these ship in the two full archives and nowhere else.
-ZP_COMB_SYMS = {"zp_tmp1", "zp_tmp2", "zp_ptr1",
-                "nistcurves_zp_tmp1", "nistcurves_zp_tmp2", "nistcurves_zp_ptr1"}
+# Used only by points256_comb.o / points384_comb.o. Split per curve (issue
+# #117): zp_ptr1 is the anchor-copy pointer both ec_precompute_* bodies use,
+# but zp_tmp1/zp_tmp2 belong to sm384w_calc_reu_offset alone -- the P-256
+# comb archives import zp_ptr1 and must not export the two temps.
+ZP_COMB_P256_SYMS = {"zp_ptr1", "nistcurves_zp_ptr1"}
+ZP_COMB_P384_ONLY_SYMS = {"zp_tmp1", "zp_tmp2",
+                          "nistcurves_zp_tmp1", "nistcurves_zp_tmp2"}
+ZP_COMB_SYMS = ZP_COMB_P256_SYMS | ZP_COMB_P384_ONLY_SYMS
 ZP_SHA384_SYMS = {"sha_src", "sha_len", "sha_w_ptr", "sha_w_ptr2"}
 # Default profile: 16 slots, 27 B.
 ZP_DEFAULT_SYMS = ZP_VERIFY_SYMS | ZP_COMB_SYMS | ZP_SHA384_SYMS
@@ -342,7 +353,28 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
-    }
+    },
+    # P-256 comb archives (issue #117). REU banks: the comb bank $02 is
+    # claimed in BOTH profiles (ec_precompute_256 populates it, the comb
+    # evaluate loop DMA-fetches from it); onchip drops only the mul-table
+    # banks. RESIDENT is variant-shared (measured 8991 DMA / 9094 onchip,
+    # 1.1% apart); COLD splits per profile (the 186 B reu_mul_init delta).
+    "nistcurves-p256-comb.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 17,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 9216,
+        "LIB_NISTCURVES_COLD_BYTES": 1050,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
+    },
+    "nistcurves-p256-comb-onchip.a": {
+        "LIB_NISTCURVES_ZP_USAGE_BYTES": 17,
+        "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 9216,
+        "LIB_NISTCURVES_COLD_BYTES": 870,
+        "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
+        "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    },
 }
 
 # Per-archive precalc row sets, straight from what each archive contains:
@@ -372,7 +404,15 @@ MUST_EXPORT = {
     "nistcurves-p384-verify-onchip.a": MANIFEST_SYMS | PRECALC_VERIFY | ZP_VERIFY_SYMS,
     "nistcurves-p384-curve-onchip.a": (MANIFEST_SYMS | PRECALC_CURVE
                                        | ZP_VERIFY_SYMS | ZP_SHA384_SYMS),
-    "nistcurves-app-owned.a": MANIFEST_SYMS | REU_OUTPUT_SYMS
+    "nistcurves-app-owned.a": MANIFEST_SYMS | REU_OUTPUT_SYMS,
+    "nistcurves-p256-comb.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
+                               | PRECALC_SQTAB_SYMS | PRECALC_REU_MUL_SYMS
+                               | PRECALC_COMB_P256_SYMS
+                               | ZP_VERIFY_SYMS | ZP_COMB_P256_SYMS
+                               | REU_OUTPUT_SYMS),
+    "nistcurves-p256-comb-onchip.a": (MANIFEST_SYMS | PRECALC_SQTAB_SYMS
+                                      | PRECALC_COMB_P256_SYMS
+                                      | ZP_VERIFY_SYMS | ZP_COMB_P256_SYMS),
 }
 MUST_NOT_EXPORT = {
     "nistcurves.a": set() | TESTVEC_SYMS | REU_PLACEMENT_SYMS,
@@ -391,7 +431,14 @@ MUST_NOT_EXPORT = {
                                         | ZP_COMB_SYMS | ZP_SHA384_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
     "nistcurves-p384-curve-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
                                        | PRECALC_COMB_SYMS | ZP_COMB_SYMS | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
-    "nistcurves-app-owned.a": REU_MUL_PROVIDER_SYMS | REU_PLACEMENT_SYMS | TESTVEC_SYMS
+    "nistcurves-app-owned.a": REU_MUL_PROVIDER_SYMS | REU_PLACEMENT_SYMS | TESTVEC_SYMS,
+    "nistcurves-p256-comb.a": (PRECALC_COMB_P384_SYMS | PRECALC_SHA384_K_SYMS
+                               | ZP_COMB_P384_ONLY_SYMS | ZP_SHA384_SYMS
+                               | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
+    "nistcurves-p256-comb-onchip.a": (REU_MUL_PROVIDER_SYMS | PRECALC_REU_MUL_SYMS
+                                      | PRECALC_COMB_P384_SYMS | PRECALC_SHA384_K_SYMS
+                                      | ZP_COMB_P384_ONLY_SYMS | ZP_SHA384_SYMS
+                                      | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
 }
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
@@ -462,6 +509,25 @@ SMOKE = {
         ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
         ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
          ["ecdsa_verify_with_message_384"], True),
+    ],
+    # P-256 comb archives (issue #117): the comb-fast packaged verifier and
+    # the fixed-base machinery it needs must both link -- this is the whole
+    # point of the target. The DMA arm also carries the §8.2 boot provider.
+    "nistcurves-p256-comb.a": [
+        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"], True),
+        ("fixed-base comb machinery",
+         ["ec_scalar_mul", "ec_precompute_256"], True),
+        ("variable-base building blocks",
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
+        ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
+    ],
+    "nistcurves-p256-comb-onchip.a": [
+        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"], True),
+        ("fixed-base comb machinery",
+         ["ec_scalar_mul", "ec_precompute_256"], True),
+        ("variable-base building blocks",
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
     ],
 }
 
@@ -667,6 +733,7 @@ ZP_ARM_OBJECTS = {   # zp_config variant object -> archives sharing that arm
     "zp_config_p256verify": ["nistcurves-p256-verify.a", "nistcurves-p256-verify-onchip.a"],
     "zp_config_p384verify": ["nistcurves-p384-verify.a", "nistcurves-p384-verify-onchip.a"],
     "zp_config_p384curve": ["nistcurves-p384-curve.a", "nistcurves-p384-curve-onchip.a"],
+    "zp_config_p256comb": ["nistcurves-p256-comb.a", "nistcurves-p256-comb-onchip.a"],
     "zp_config_sha384": ["nistcurves-p384-sha384.a"],
 }
 
@@ -737,6 +804,7 @@ def zp_alias_audit(failures):
             defines = {"zp_config": [], "zp_config_p256verify": ["-D", "LIB_P256_VERIFY_ONLY"],
                        "zp_config_p384verify": ["-D", "LIB_P384_VERIFY_ONLY"],
                        "zp_config_p384curve": ["-D", "LIB_P384_CURVE_ONLY"],
+                       "zp_config_p256comb": ["-D", "LIB_P256_COMB_ONLY"],
                        "zp_config_sha384": ["-D", "LIB_SHA384_ONLY"]}[arm]
             rc, _ = sh(["ca65", "--cpu", "6502", "-D", "LIB_NO_BARE_EXPORTS=1", *defines,
                         "-I", "src", "-o", str(gobj), "src/zp_config.s"])

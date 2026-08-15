@@ -86,7 +86,7 @@ LIB_DIR = $(BUILD_DIR)/lib
 .PHONY: all clean build-acme bench-u64 dist \
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
         lib-app-owned lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
-        lib-p384-curve-onchip \
+        lib-p384-curve-onchip lib-p256-comb lib-p256-comb-onchip \
         check-archives check-docs
 
 all: $(PRG)
@@ -298,6 +298,8 @@ $(BUILD_DIR)/zp_config_p384verify.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_config_p384curve.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
+$(BUILD_DIR)/zp_config_p256comb.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/lib_manifest_p256verify.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
@@ -311,6 +313,10 @@ $(BUILD_DIR)/lib_manifest_p384curve.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384curve_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/lib_manifest_p256comb.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/lib_manifest_p256comb_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/precalc_manifest_p256verify.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
@@ -324,6 +330,10 @@ $(BUILD_DIR)/precalc_manifest_p384curve.o: $(SRC_DIR)/precalc_manifest.s | $(BUI
 	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384curve_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_p256comb.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/precalc_manifest_p256comb_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 LIB_CORE_P256VERIFY_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p256verify.o \
@@ -342,6 +352,15 @@ LIB_CORE_P384VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p384verify_onchip.o \
                 $(BUILD_DIR)/precalc_manifest_p384verify_onchip.o \
                 $(BUILD_DIR)/zp_config_p384verify.o
+
+LIB_CORE_P256COMB_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p256comb.o \
+                $(BUILD_DIR)/precalc_manifest_p256comb.o \
+                $(BUILD_DIR)/zp_config_p256comb.o
+LIB_CORE_P256COMB_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
+                $(BUILD_DIR)/lib_manifest_p256comb_onchip.o \
+                $(BUILD_DIR)/precalc_manifest_p256comb_onchip.o \
+                $(BUILD_DIR)/zp_config_p256comb.o
 
 LIB_CORE_P384CURVE_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p384curve.o \
@@ -381,11 +400,28 @@ LIB_P384_VERIFY_OBJS = $(LIB_P384_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa384_nocomb
 # SHA-384 object set: self-contained.
 LIB_SHA384_OBJS      = $(BUILD_DIR)/sha384.o $(BUILD_DIR)/data_sha.o
 
-# Lim-Lee fixed-base comb objects (only the full / curve archives need them).
+# Lim-Lee fixed-base comb objects (the full archives and, for P-256, the
+# issue #117 comb archives).
 LIB_P256_COMB_OBJS = $(BUILD_DIR)/points256_comb.o \
                     $(BUILD_DIR)/data_p256_limlee.o
 LIB_P384_COMB_OBJS = $(BUILD_DIR)/points384_comb.o \
                     $(BUILD_DIR)/data_p384_limlee.o
+
+# --- P-256 comb archives (issue #117) -----------------------------------------
+# The comb-accelerated P-256 verify set without the P-384 and SHA-384
+# members: the fastest verify configuration the library offers (Lim-Lee
+# fixed-base u1*G via the comb-calling ecdsa256.o), previously reachable
+# only by building the full archive and deleting members by hand -- which
+# SPEC §6.1 makes non-conformant (an edited member set is outside every
+# §5/§8.0 manifest claim) and which forced c64-https to exclude the comb
+# profile from its §6.6 asserts. Written out explicitly (not $(subst)) so
+# the check-archives ratchet can parse the real member set.
+LIB_P256_COMB_ARCHIVE_OBJS = $(LIB_P256_VERIFY_BASE_OBJS) \
+                $(BUILD_DIR)/ecdsa256.o $(LIB_P256_COMB_OBJS)
+LIB_P256_COMB_ONCHIP_ARCHIVE_OBJS = $(BUILD_DIR)/fp256_onchip.o \
+                $(BUILD_DIR)/mod256.o $(BUILD_DIR)/curve256.o \
+                $(BUILD_DIR)/points256_core.o $(BUILD_DIR)/data_p256.o \
+                $(BUILD_DIR)/ecdsa256.o $(LIB_P256_COMB_OBJS)
 
 # The full archive bundles every shipping object. The test-driver translation
 # units (main.o + data_test.o) are deliberately excluded -- consumers provide
@@ -492,6 +528,8 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
                 $(BUILD_DIR)/ecdsa384_msg.o
 
 lib:             $(LIB_DIR)/nistcurves.a
+lib-p256-comb:   $(LIB_DIR)/nistcurves-p256-comb.a
+lib-p256-comb-onchip: $(LIB_DIR)/nistcurves-p256-comb-onchip.a
 lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a
 lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a
 lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a
@@ -514,6 +552,14 @@ $(LIB_DIR)/nistcurves-app-owned.a: $(LIB_APP_OWNED_OBJS) | $(LIB_DIR)
 $(LIB_DIR)/nistcurves.a: $(LIB_FULL_OBJS) | $(LIB_DIR)
 	rm -f $@
 	ar65 a $@ $(LIB_FULL_OBJS)
+
+$(LIB_DIR)/nistcurves-p256-comb.a: $(LIB_CORE_P256COMB_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_COMB_ARCHIVE_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_P256COMB_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_COMB_ARCHIVE_OBJS)
+
+$(LIB_DIR)/nistcurves-p256-comb-onchip.a: $(LIB_CORE_P256COMB_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_COMB_ONCHIP_ARCHIVE_OBJS) | $(LIB_DIR)
+	rm -f $@
+	ar65 a $@ $(LIB_CORE_P256COMB_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) $(LIB_P256_COMB_ONCHIP_ARCHIVE_OBJS)
 
 $(LIB_DIR)/nistcurves-p256-verify.a: $(LIB_CORE_P256VERIFY_OBJS) $(LIB_MUL_OBJS) $(LIB_P256_VERIFY_OBJS) | $(LIB_DIR)
 	rm -f $@
@@ -557,7 +603,7 @@ $(LIB_DIR)/nistcurves-p384-curve-onchip.a: $(LIB_CORE_P384CURVE_ONCHIP_OBJS) $(L
 # archives deliberately exclude the Lim-Lee comb, so the packaged verifiers
 # ecdsa_verify_256 / ecdsa_verify_384 are NOT linkable from those archives
 # alone. The ratchet fails if reality drifts looser OR tighter than the docs.
-check-archives: lib lib-app-owned lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip lib-p384-curve-onchip
+check-archives: lib lib-app-owned lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip lib-p384-curve-onchip lib-p256-comb lib-p256-comb-onchip
 	python3 tools/check_archives.py
 
 # Assemble the copy-pasteable snippets in the LIVE docs (API.md, README.md,
