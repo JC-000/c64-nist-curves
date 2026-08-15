@@ -170,7 +170,18 @@ sm256_nibble_val: .byte 0         ; current nibble value
 ;
 ; Called once at init. Uses 224 ec_point_doubles (7*32 for anchors A2..A8),
 ; plus 762 mixed ec_point_adds (sum over j=1..255 of popcount(j)-1), plus
-; 255 jacobian_to_affine conversions (T[1..255]). Boot cost ~25 Mcyc.
+; 255 jacobian_to_affine conversions (T[1..255], one binary-GCD inversion
+; each).
+;
+; Boot cost (issue #121 -- measured via the KERNAL jiffy clock under VICE,
+; NTSC, VIC blanked; the "~25 Mcyc" this comment carried from Wave 7a to
+; v0.11.0 was ~40x low even for the default profile):
+;   default (REU DMA multiply) : ~1038 Mcyc = ~17 min at 1 MHz. Does NOT
+;     scale cleanly with host clock -- the REU row fetches inside fp_mul/
+;     fp_sqr are wall-clock-anchored at turbo (issue #83).
+;   FP_ONCHIP_MUL              : ~2061 Mcyc = ~34 min at 1 MHz, but pure
+;     CPU work, so it scales with clock: ~45 s at 48 MHz / ~34 s at
+;     64 MHz (consumer-measured on U64E, c64-https boot_check).
 ; =============================================================================
 ec_precompute_256:
         jsr ec_set_modp

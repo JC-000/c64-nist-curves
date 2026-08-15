@@ -123,14 +123,15 @@ archive consumers link this whole sequence with no extra objects.)
 4. **`jsr ec_precompute_256`** — builds the 16 KB Lim-Lee anchor / comb table in
    REU bank 2 at offset `$0000` (256 entries * 64 bytes, h=8). Required before
    `ec_scalar_mul`. Only needed if you will call P-256 scalar multiply; field
-   arithmetic and point double / add do not depend on it. Boot cost on a real
-   C64 is on the order of ~25 seconds (224 doubles + 762 mixed adds + 255 J->A
-   conversions).
+   arithmetic and point double / add do not depend on it. Boot cost at 1 MHz
+   is **~17 minutes** (measured ~1038 Mcyc, default profile — issue #121; the
+   "~25 seconds" this step quoted through v0.11.0 was ~40× low). See §8.5 for
+   the per-profile table and turbo scaling.
 
 5. **`jsr ec_precompute_384`** — analogous P-384 precompute at REU bank 2
    offset `$4000` (24 KB, 256 entries * 96 bytes, h=8). Required before
-   `ec_scalar_mul_384`. Boot cost is on the order of ~80 seconds (336 doubles
-   + 762 mixed adds + 255 J->A conversions on 48-byte operands).
+   `ec_scalar_mul_384`. Boot cost at 1 MHz is **~34 minutes** (measured
+   ~2108 Mcyc, default profile — issue #121). See §8.5.
 
 If your host program only uses one curve, you may omit that curve's
 `ec_precompute_*` call. In the default profile, `sqtab_init` and
@@ -280,8 +281,8 @@ curve archive); the `_comb` modules carry the Lim-Lee fixed-base comb
 | `ec_scalar_mul_384` | points384_comb | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
 | `ec_jacobian_to_affine` | points256_core | `ec_p3` | `ec_affine_x`, `ec_affine_y` | Sets `fp_misc` to p256 internally. |
 | `ec_jacobian_to_affine_384` | points384_core | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y` | P-384 analogue. |
-| `ec_precompute_256` | points256_comb | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~25 s on real C64). |
-| `ec_precompute_384` | points384_comb | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~80 s on real C64). |
+| `ec_precompute_256` | points256_comb | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~17 min at 1 MHz, default profile — §8.5, issue #121). |
+| `ec_precompute_384` | points384_comb | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~34 min at 1 MHz, default profile — §8.5). |
 
 ### 5.4 Hash functions (`sha384.s`)
 
@@ -640,8 +641,10 @@ Exclusion summary (per minimal archive):
   in place of `ecdsa256_nocomb.o`, plus `points256_comb` +
   `data_p256_limlee`. Still excluded: `main`, `inv256` +
   `data_p256_invref`, all P-384, all SHA-384, the test-driver staging
-  buffers. Boot obligation grows by `ec_precompute_256` (~25 s at
-  1 MHz, §8.5) and REU bank 2 gains the 16 KB P-256 anchor table —
+  buffers. Boot obligation grows by `ec_precompute_256` (**~17 min at
+  1 MHz** default profile / ~34 min onchip; scales with clock only in
+  the onchip profile — §8.5, issue #121) and REU bank 2 gains the 16 KB
+  P-256 anchor table —
   in **both** profiles (the onchip arm still DMA-fetches comb anchors;
   it is the multiply table it does without).
 - `lib-p384-verify` excludes: `main`, all P-256, `points384_comb` +
@@ -782,7 +785,8 @@ infinity edge (both paths return the all-zero Jacobian encoding).
 **Choosing a variant:**
 
 - **Verify archives (no-comb).** No comb objects, no
-  `ec_precompute_256/384` boot pass (~25 s / ~80 s at 1 MHz, §8.5), no
+  `ec_precompute_256/384` boot pass (~17 min / ~34 min at 1 MHz in the
+  default profile — §8.5, issue #121), no
   REU bank-2 anchor residency (P-256 16 KB at `$0000..$3FFF`; P-384
   24 KB at `$4000..$9F9F`). **Trade-off:** `u1·G` runs a full
   variable-base double-and-add instead of the comb, so a verify costs
@@ -920,15 +924,31 @@ Follow the call sequence documented in §3 — any deviation (skipping
 `sqtab_init`, calling `ec_scalar_mul` before `ec_precompute_256`, etc.)
 will produce silent wrong answers or infinite loops.
 
-Boot cost on a stock C64, in warp mode:
+Boot cost at 1 MHz (measured via the KERNAL jiffy clock under VICE,
+NTSC, VIC blanked — issue #121; the table this section carried through
+v0.11.0 quoted `ec_precompute_*` figures that were ~40× low, VICE
+warp-mode *wall* seconds having been passed off as real-C64 time):
 
-| Step | Cost |
-|---|---|
-| `sqtab_init` | <1 s |
-| `reu_mul_init` | ~7 s (~4 s of prior baseline + ~2.8 s from the constant-time `mul_8x8` port, issue #14) |
-| `ec_precompute_256` | ~25 s |
-| `ec_precompute_384` | ~80 s |
-| **Total (both curves)** | **~113 s** |
+| Step | default (REU DMA) | `FP_ONCHIP_MUL` |
+|---|---|---|
+| `sqtab_init` | <1 s | <1 s |
+| `reu_mul_init` | ~7 s (~4 s prior baseline + ~2.8 s from the constant-time `mul_8x8` port, issue #14) | — (not built) |
+| `ec_precompute_256` | **~1038 Mcyc ≈ 17 min** | **~2061 Mcyc ≈ 34 min** |
+| `ec_precompute_384` | **~2108 Mcyc ≈ 34 min** | **~4782 Mcyc ≈ 78 min** |
+
+Turbo scaling differs by profile: the **onchip** precompute is pure CPU
+work and scales with the host clock (P-256: ~45 s at 48 MHz / ~34 s at
+64 MHz, consumer-measured on U64E), while the **default-profile**
+precompute is dominated by wall-clock-anchored REU row fetches at turbo
+(issue #83) and does not divide by the clock multiplier.
+
+**Consumer sizing note (issue #121):** at stock 1 MHz the comb fill
+costs on the order of several ECDSA verifies, so the comb archives pay
+off only for sessions doing repeated verifies (or hosts that keep REU
+bank 2 populated across runs); a single-verify session at 1 MHz is
+better served by the `*-verify` archives' variable-base path. This is
+the number that decides comb-vs-no-comb shippability — it was wrong by
+the amortisation-flipping margin until this correction.
 
 The `reu_mul_init` row applies to the default (DMA-table) profile only:
 `FP_ONCHIP_MUL` turbo-profile consumers (§8.4.2) skip it — their boot
