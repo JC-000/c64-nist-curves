@@ -1,8 +1,8 @@
 # c64-nist-curves v0.11.2 — knob-staleness guard; conformant through SPEC v0.10.6
 
 **Released:** 2026-08-15
-**Tarball:** `c64-nist-curves-v0.11.2.tar.gz` (SIZE_PLACEHOLDER bytes)
-**SHA256:** `SHA256_PLACEHOLDER`
+**Tarball:** `c64-nist-curves-v0.11.2.tar.gz` (245,076 bytes)
+**SHA256:** `c701069e045ad7684403f46c3e968ce4ab7e74d6a42f0ca657c3b1ad3531f9fd`
 
 PATCH release. `build/nist-curves.prg` is **byte-identical** to v0.10.0
 through v0.11.1 (`18701274…`, 37480 B); no exported symbol changes;
@@ -58,5 +58,8 @@ observable difference is the intended rebuild-on-knob-change above.
 - `make check-archives` PASS (12 archives; §1 identity at 0.11.2; new
   defines-staleness leg). `make check-docs` PASS.
 - Tarball reproducible across two independent `make dist` runs.
-- Worktree-rebuild byte-identity at the tag: WORKTREE_PLACEHOLDER
-- Tarball builds standalone: TARBALL_BUILD_PLACEHOLDER
+- Worktree-rebuild byte-identity at the tag: PASS (fresh worktree at
+  v0.11.2: PRG `18701274…` identical).
+- Tarball builds standalone: PASS (extracted to a scratch directory,
+  `make` produces the byte-identical PRG and check-archives passes over
+  all twelve archives — including the new staleness leg — inside it).
