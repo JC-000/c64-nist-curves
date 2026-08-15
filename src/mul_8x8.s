@@ -214,7 +214,7 @@ sq_i:   .res 2, 0              ; 16-bit index counter (0..511)
 ; Gating them with the body -- which is what this file did until the §6.3
 ; lib-app-owned target first built a deferring archive -- deletes storage this
 ; library's own field arithmetic writes, leaving `poly_prod_lo/hi` unresolved
-; in any SHARED_CT_MUL_8X8 build. Same shape as the c64-x25519 nistcurves_mul_src2_buf
+; in any SHARED_CT_MUL_8X8 build. Same shape as the c64-x25519 mul_src2_buf
 ; overreach v0.9.1 corrected: a deferred buffer would point our field
 ; arithmetic at another library's memory.
 ;

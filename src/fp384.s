@@ -817,6 +817,14 @@ fp384_sqr_extra:  .res 1
 ; Absolute copy buffer for 48-byte src2 during multiply/square.
 ; Includes three bytes of zero padding so the squaring 4x-unroll can safely
 ; read indices 48..50 when the residual length isn't a multiple of 4
+; Deliberately NOT renamed under the §6.5 window (lib-contract #83 review,
+; PR #107): the §2 registry governs the EXPORTED name surface, and this label
+; is internal -- defined here, referenced only within this TU (the onchip
+; gen_mul_row_384 stub hands og_common its ADDRESS, so no symbol crosses the
+; link), exported by no object (verified across all ten archives in the
+; check-archives run). x25519's registered `mul_` prefix is
+; therefore not infringed. If this label is ever .export'ed it takes the
+; nistcurves_ prefix at that moment.
 mul_src2_buf_384:
         .res 51
 
