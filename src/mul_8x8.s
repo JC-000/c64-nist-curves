@@ -41,9 +41,7 @@
 ; Consumer override via `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>`.
 ; Default $9c00 was chosen on 2026-05-17 (see Known issues note) so the
 ; standalone library build links cleanly without an override.
-.ifndef LIB_SHARED_SQTAB_BASE
-        LIB_SHARED_SQTAB_BASE = $9c00
-.endif
+.include "sqtab_base.inc"   ; single shared default (SPEC v0.10.2 §6.7 rule)
 
 sqtab_lo        = LIB_SHARED_SQTAB_BASE             ; 512 B: lo bytes of floor(n^2/4)
 sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n^2/4)

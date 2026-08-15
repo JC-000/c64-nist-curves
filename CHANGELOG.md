@@ -14,6 +14,34 @@ contract).
 
 ### Fixed
 
+- **The sqtab window guard no longer depends on a doomed export**
+  (SPEC v0.10.2's corrected §6.7). The guard in `src/main.s` compared
+  `__MAIN_LAST__` against an **imported** `sqtab_lo` — a gated window export
+  scheduled for removal at the next MAJOR, at which point the guard itself
+  would have stopped linking. Per the corrected clause it now obtains the base
+  **source-level**: a new single shared include (`src/sqtab_base.inc`) holds
+  the one `.ifndef`-guarded default, included by both the placing TU
+  (`mul_8x8.s`) and the guard TU, so two copies of the default can never
+  silently disagree about which window the table occupies.
+
+  Re-proven under v0.10.2's three conditions: boundary exact (409 links,
+  410 trips); **fires under `FP_ONCHIP_MUL` too** — the other configuration
+  that places the table (the clause's new constraint 3, added precisely
+  because a profile-gated guard can pass a firing test while verifying
+  nothing); and one `-D LIB_SHARED_SQTAB_BASE=…` relocates table and guard
+  together (a base below the image top trips the link immediately).
+  PRG byte-identical.
+
+### Changed
+
+- Live doc references to the "§8.0 catch-loop" updated to **§8.4**
+  (SPEC v0.10.3: the heading now exists; the clause was promoted in place, so
+  every existing §8.4 citation became correct retroactively). The canonical
+  `precalc_table.inc` is deliberately untouched, per upstream: its historical
+  spelling is recorded and byte-identity across adopters wins.
+
+### Fixed
+
 - **Two §5 footprint values violated SPEC v0.10.0 §6.6's safe-direction MUST**
   (each value ≥ the measured sum for its archive). Both were round-to-tens
   artifacts erring in the unsafe direction — flagged by this library's own
