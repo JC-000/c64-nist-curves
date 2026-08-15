@@ -36,7 +36,7 @@
 #
 # Issue #81 file-list refresh: src/reu_mul_init.s (SPEC §8.2 reu_mul
 # provider moved out of src/main.s so the default-profile archives ship it).
-# v0.5.0 file-list refresh: src/precalc_manifest.s + src/precalc_table.inc
+# v0.5.0 file-list refresh: src/precalc_manifest.s + src/precalc_table.inc src/sqtab_base.inc
 # (present in the tree and in Makefile MODULES but missing from this list —
 # caught by the step-0 preflight diff at v0.5.0 release time; without the
 # fix the source tarball would silently exclude them and not build).
