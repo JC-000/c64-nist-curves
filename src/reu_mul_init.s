@@ -29,7 +29,7 @@
 ;   256 lo bytes at REU offset a*512
 ;   256 hi bytes at REU offset a*512+256
 ;
-; Uses mul_dma_lo/mul_dma_hi as staging buffers.
+; Uses nistcurves_mul_dma_lo/nistcurves_mul_dma_hi as staging buffers.
 ; Uses mul_8x8 (requires sqtab to be initialized first).
 ; Clobbers: A, X, Y
 ;
@@ -64,7 +64,7 @@
 .import smc_sum_a_imm, smc_diff_a_imm
 
 ; --- data imports ---
-.import mul_dma_lo, mul_dma_hi
+.import nistcurves_mul_dma_lo, nistcurves_mul_dma_hi
 
 .segment "LIB_NISTCURVES_MUL_CODE"
 
@@ -96,17 +96,17 @@ reu_mul_init:
 
         ldx reu_init_b
         lda poly_prod_lo
-        sta mul_dma_lo,x
+        sta nistcurves_mul_dma_lo,x
         lda poly_prod_hi
-        sta mul_dma_hi,x
+        sta nistcurves_mul_dma_hi,x
 
         inc reu_init_b
         bne @inner             ; loop b = 0..255
 
         ; Stash lo table (256 bytes) to REU at offset a*512
-        lda #<mul_dma_lo
+        lda #<nistcurves_mul_dma_lo
         sta reu_c64_lo
-        lda #>mul_dma_lo
+        lda #>nistcurves_mul_dma_lo
         sta reu_c64_hi
         lda #0
         sta reu_reu_lo         ; REU offset low = 0
@@ -126,9 +126,9 @@ reu_mul_init:
         sta reu_command
 
         ; Stash hi table (256 bytes) to REU at offset a*512+256
-        lda #<mul_dma_hi
+        lda #<nistcurves_mul_dma_hi
         sta reu_c64_lo
-        lda #>mul_dma_hi
+        lda #>nistcurves_mul_dma_hi
         sta reu_c64_hi
         lda #0
         sta reu_reu_lo
@@ -155,9 +155,9 @@ reu_mul_init:
         jmp @outer
 @init_done:
         ; Pre-configure constant REU registers for fetch routine
-        lda #<mul_dma_lo
+        lda #<nistcurves_mul_dma_lo
         sta reu_c64_lo
-        lda #>mul_dma_lo
+        lda #>nistcurves_mul_dma_lo
         sta reu_c64_hi
         lda #0
         sta reu_reu_lo

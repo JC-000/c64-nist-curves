@@ -91,7 +91,8 @@ git archive \
   src/data_p384.s src/data_p384_limlee.s \
   src/data_sha.s src/data_test.s \
   Makefile tools/build_release.sh \
-  tools/check_archives.py tools/bench_reu_mult.py \
+  tools/check_archives.py tools/check_doc_snippets.py \
+  tools/bench_reu_mult.py \
   README.md API.md CHANGELOG.md CLAUDE.md VERSION \
   "$NOTES" \
   | gzip -n -9 > "$OUT"

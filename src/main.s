@@ -12,7 +12,7 @@
 ; =============================================================================
 
 ; --- ZP imports ---
-.importzp zp_ptr1, fp_misc
+.importzp nistcurves_zp_ptr1, fp_misc
 
 ; proc_port ($01, 6510 CPU I/O port) is hardware-fixed and used only by
 ; this test/bench driver for ROM banking around REU access (never by the
@@ -172,11 +172,11 @@ clrscr:
 ; =============================================================================
 .export print_string
 print_string:
-        sta zp_ptr1
-        sty zp_ptr1+1
+        sta nistcurves_zp_ptr1
+        sty nistcurves_zp_ptr1+1
         ldy #0
 @loop:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         beq @done
         jsr chrout
         iny

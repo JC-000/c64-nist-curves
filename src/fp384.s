@@ -18,8 +18,8 @@
 .importzp fp_src1, fp_src2, fp_dst, fp_carry, fp_mul_i, fp_mul_j
 
 ; --- Imports: data ---
-.import fp384_wide, mul_cached_a, poly_prod_lo, poly_prod_hi
-.import mul_dma_lo, mul_dma_hi
+.import fp384_wide, nistcurves_mul_cached_a, poly_prod_lo, poly_prod_hi
+.import nistcurves_mul_dma_lo, nistcurves_mul_dma_hi
 
 ; --- Imports: constants ---
 .import reu_reu_hi, reu_reu_bank, reu_command
@@ -221,14 +221,14 @@ fp_mul_384:
         bne @nonzero_i
         jmp @skip_zero
 @nonzero_i:
-        sta mul_cached_a
+        sta nistcurves_mul_cached_a
 
 .ifdef FP_ONCHIP_MUL
         ldx #47                 ; issue #69: on-chip row gen, no REU DMA
         jsr gen_mul_row_384
 .else
         ; DMA the multiplication row for src1[i] from REU (inlined)
-        ; A already contains mul_cached_a
+        ; A already contains nistcurves_mul_cached_a
         asl                    ; A = multiplier * 2, carry = bit 7
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL
@@ -295,12 +295,12 @@ fp_mul_384:
         clc
 @accum_ld1:
         lda fp384_wide,x       ; patched base = fp384_wide + i
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1:
         sta fp384_wide,x
 @accum_ld2:
         lda fp384_wide+1,x     ; patched base = fp384_wide + i + 1
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2:
         sta fp384_wide+1,x
         bcs @do_prop_a
@@ -313,12 +313,12 @@ fp_mul_384:
         clc
 @accum_ld1_b:
         lda fp384_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1_b:
         sta fp384_wide,x
 @accum_ld2_b:
         lda fp384_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2_b:
         sta fp384_wide+1,x
         bcs @do_prop_b
@@ -331,12 +331,12 @@ fp_mul_384:
         clc
 @accum_ld1_c:
         lda fp384_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1_c:
         sta fp384_wide,x
 @accum_ld2_c:
         lda fp384_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2_c:
         sta fp384_wide+1,x
         bcs @do_prop_c
@@ -349,12 +349,12 @@ fp_mul_384:
         clc
 @accum_ld1_d:
         lda fp384_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @accum_st1_d:
         sta fp384_wide,x
 @accum_ld2_d:
         lda fp384_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @accum_st2_d:
         sta fp384_wide+1,x
         bcs @do_prop_d
@@ -499,7 +499,7 @@ fp_sqr_384:
         bne @sqr_nonzero_i
         jmp @sqr_skip_i
 @sqr_nonzero_i:
-        sta mul_cached_a
+        sta nistcurves_mul_cached_a
 
 .ifdef FP_ONCHIP_MUL
         ldx #47                 ; issue #69: on-chip row gen, no REU DMA
@@ -581,12 +581,12 @@ fp_sqr_384:
         clc
 @sqr_accum_ld1:
         lda fp384_wide,x       ; patched base = fp384_wide + i
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1:
         sta fp384_wide,x
 @sqr_accum_ld2:
         lda fp384_wide+1,x     ; patched base = fp384_wide + i + 1
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2:
         sta fp384_wide+1,x
         bcs @sqr_do_prop_a
@@ -599,12 +599,12 @@ fp_sqr_384:
         clc
 @sqr_accum_ld1_b:
         lda fp384_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1_b:
         sta fp384_wide,x
 @sqr_accum_ld2_b:
         lda fp384_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2_b:
         sta fp384_wide+1,x
         bcs @sqr_do_prop_b
@@ -617,12 +617,12 @@ fp_sqr_384:
         clc
 @sqr_accum_ld1_c:
         lda fp384_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1_c:
         sta fp384_wide,x
 @sqr_accum_ld2_c:
         lda fp384_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2_c:
         sta fp384_wide+1,x
         bcs @sqr_do_prop_c
@@ -635,12 +635,12 @@ fp_sqr_384:
         clc
 @sqr_accum_ld1_d:
         lda fp384_wide,x
-        adc mul_dma_lo,y
+        adc nistcurves_mul_dma_lo,y
 @sqr_accum_st1_d:
         sta fp384_wide,x
 @sqr_accum_ld2_d:
         lda fp384_wide+1,x
-        adc mul_dma_hi,y
+        adc nistcurves_mul_dma_hi,y
 @sqr_accum_st2_d:
         sta fp384_wide+1,x
         bcs @sqr_do_prop_d
@@ -755,7 +755,7 @@ fp_sqr_384:
         lda (fp_src1),y
         beq @diag_skip
 
-        sta mul_cached_a
+        sta nistcurves_mul_cached_a
 .ifdef FP_ONCHIP_MUL
         ldx #47                 ; issue #69: on-chip row gen, no REU DMA
         jsr gen_mul_row_384
@@ -771,10 +771,10 @@ fp_sqr_384:
         sta reu_command
 .endif
 
-        ldy mul_cached_a
-        lda mul_dma_lo,y
+        ldy nistcurves_mul_cached_a
+        lda nistcurves_mul_dma_lo,y
         sta poly_prod_lo
-        lda mul_dma_hi,y
+        lda nistcurves_mul_dma_hi,y
         sta poly_prod_hi
 
         ; Add to fp384_wide[2*i]
@@ -817,6 +817,14 @@ fp384_sqr_extra:  .res 1
 ; Absolute copy buffer for 48-byte src2 during multiply/square.
 ; Includes three bytes of zero padding so the squaring 4x-unroll can safely
 ; read indices 48..50 when the residual length isn't a multiple of 4
+; Deliberately NOT renamed under the §6.5 window (lib-contract #83 review,
+; PR #107): the §2 registry governs the EXPORTED name surface, and this label
+; is internal -- defined here, referenced only within this TU (the onchip
+; gen_mul_row_384 stub hands og_common its ADDRESS, so no symbol crosses the
+; link), exported by no object (verified across all ten archives in the
+; check-archives run). x25519's registered `mul_` prefix is
+; therefore not infringed. If this label is ever .export'ed it takes the
+; nistcurves_ prefix at that moment.
 mul_src2_buf_384:
         .res 51
 

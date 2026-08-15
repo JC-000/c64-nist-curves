@@ -223,12 +223,13 @@ PRECALC_NON_SHA_SYMS = PRECALC_SQTAB_SYMS | PRECALC_REU_MUL_SYMS | PRECALC_COMB_
 ZP_VERIFY_SYMS = {
     "fp_src1", "fp_src2", "fp_dst", "fp_misc",
     "fp_carry", "fp_mul_i", "fp_mul_j",
-    "ec_scalar_ptr", "zp_ptr2",
+    "ec_scalar_ptr", "zp_ptr2", "nistcurves_zp_ptr2",
 }
 # Used only by points256_comb.o / points384_comb.o (zp_ptr1 for the anchor
 # copy in ec_precompute_*, zp_tmp1/zp_tmp2 in sm384w_calc_reu_offset), so
 # these ship in the two full archives and nowhere else.
-ZP_COMB_SYMS = {"zp_tmp1", "zp_tmp2", "zp_ptr1"}
+ZP_COMB_SYMS = {"zp_tmp1", "zp_tmp2", "zp_ptr1",
+                "nistcurves_zp_tmp1", "nistcurves_zp_tmp2", "nistcurves_zp_ptr1"}
 ZP_SHA384_SYMS = {"sha_src", "sha_len", "sha_w_ptr", "sha_w_ptr2"}
 # Default profile: 16 slots, 27 B.
 ZP_DEFAULT_SYMS = ZP_VERIFY_SYMS | ZP_COMB_SYMS | ZP_SHA384_SYMS
@@ -627,6 +628,47 @@ def cfg_bss_before_emitting():
     return m, offenders
 
 
+BARE_GATED = {
+    # every deprecated bare name the LIB_NO_BARE_EXPORTS gate must suppress
+    "zp_tmp1", "zp_tmp2", "zp_ptr1", "zp_ptr2",
+    "mul_dma_lo", "mul_dma_hi", "mul_cached_a", "mul_src2_buf",
+    "sqtab_lo", "sqtab_hi",
+    "LIB_VERSION_MAJOR", "LIB_VERSION_MINOR", "LIB_VERSION_PATCH",
+    "LIB_ABI_VERSION",
+}
+GATE_TUS = ["zp_config", "data_shared", "mul_8x8", "lib_version",
+            "precalc_manifest"]
+
+
+def gated_surface_check(failures):
+    """§6.5 window ratchet: a -D LIB_NO_BARE_EXPORTS=1 build of every
+    gate-owning TU must export zero deprecated bare names. This is the whole
+    point of the rename window -- one ungated .export quietly re-opens the
+    #82/#83 collision class for composed consumers, and nothing else checks
+    the gated configuration (the default build legitimately exports both
+    spellings)."""
+    import tempfile
+    print("\n=== LIB_NO_BARE_EXPORTS gated surface ===")
+    bad = []
+    with tempfile.TemporaryDirectory() as td:
+        for tu in GATE_TUS:
+            obj = Path(td) / (tu + ".o")
+            rc, out = sh(["ca65", "--cpu", "6502", "-D", "LIB_NO_BARE_EXPORTS=1",
+                          "-I", "src", "-o", str(obj), f"src/{tu}.s"])
+            if rc:
+                failures.append(f"gated surface: {tu}.s does not assemble under the gate")
+                print(f"  GATE FAIL: {tu}.s does not assemble: {out.splitlines()[0] if out else ''}")
+                continue
+            leaked = od65_names(obj, "--dump-exports") & BARE_GATED
+            if leaked:
+                bad.append((tu, sorted(leaked)))
+    for tu, names in bad:
+        failures.append(f"gated surface: {tu}.o exports bare {names}")
+        print(f"  GATE FAIL: {tu}.o exports bare names under the gate: {names}")
+    if not bad:
+        print(f"  gated surface OK ({len(GATE_TUS)} TUs, 0 bare names)")
+
+
 def main():
     archives = parse_makefile_archives()
     failures = []
@@ -644,6 +686,8 @@ def main():
             print("            -> image ends up shorter than its span; everything after loads low")
     else:
         print("  placement OK (no bss segment precedes a file-emitting one)")
+
+    gated_surface_check(failures)
 
     for name in sorted(KNOWN_EXTERNAL):
         allow = KNOWN_EXTERNAL[name]

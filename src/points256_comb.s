@@ -20,7 +20,7 @@
 .export ec_precompute_256, ec_scalar_mul
 
 ; --- ZP imports ---
-.importzp ec_scalar_ptr, zp_ptr1
+.importzp ec_scalar_ptr, nistcurves_zp_ptr1
 
 ; --- Core point ops (from points256_core.s) ---
 .import ec_point_double, ec_point_add, ec_jacobian_to_affine
@@ -43,7 +43,7 @@
 .import ec_anchor1_y, ec_anchor2_y, ec_anchor3_y, ec_anchor4_y
 .import ec_anchor5_y, ec_anchor6_y, ec_anchor7_y, ec_anchor8_y
 .import cm_k
-.import mul_dma_lo
+.import nistcurves_mul_dma_lo
 
 ; --- constants imports ---
 .import reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi
@@ -133,9 +133,9 @@ sm256_calc_offset_64:
 
 ; --- Restore mul-table REU registers after point DMA ---
 sm256_reu_restore:
-        lda #<mul_dma_lo
+        lda #<nistcurves_mul_dma_lo
         sta reu_c64_lo
-        lda #>mul_dma_lo
+        lda #>nistcurves_mul_dma_lo
         sta reu_c64_hi
         lda #0
         sta reu_reu_lo
@@ -462,27 +462,27 @@ ec_precompute_256:
         asl
         tax
         lda @cmp_anchor_tbl,x
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         lda @cmp_anchor_tbl+1,x
-        sta zp_ptr1+1
-        ; Copy 32 X bytes from (zp_ptr1) to ec_p1
+        sta nistcurves_zp_ptr1+1
+        ; Copy 32 X bytes from (nistcurves_zp_ptr1) to ec_p1
         ldy #31
 @cmp_lap1_x:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec_p1,y
         dey
         bpl @cmp_lap1_x
         ; Advance pointer by 32 to Y coordinate
-        lda zp_ptr1
+        lda nistcurves_zp_ptr1
         clc
         adc #32
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         bcc :+
-        inc zp_ptr1+1
+        inc nistcurves_zp_ptr1+1
 :
         ldy #31
 @cmp_lap1_y:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec_p1+32,y
         dey
         bpl @cmp_lap1_y
@@ -501,25 +501,25 @@ ec_precompute_256:
         asl
         tax
         lda @cmp_anchor_tbl,x
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         lda @cmp_anchor_tbl+1,x
-        sta zp_ptr1+1
+        sta nistcurves_zp_ptr1+1
         ldy #31
 @cmp_lap2_x:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec_p2,y
         dey
         bpl @cmp_lap2_x
-        lda zp_ptr1
+        lda nistcurves_zp_ptr1
         clc
         adc #32
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         bcc :+
-        inc zp_ptr1+1
+        inc nistcurves_zp_ptr1+1
 :
         ldy #31
 @cmp_lap2_y:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec_p2+32,y
         dey
         bpl @cmp_lap2_y

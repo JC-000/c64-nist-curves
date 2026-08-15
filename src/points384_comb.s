@@ -20,7 +20,7 @@
 .export ec_precompute_384, ec_scalar_mul_384
 
 ; --- ZP imports ---
-.importzp ec_scalar_ptr, zp_ptr1, zp_tmp1, zp_tmp2
+.importzp ec_scalar_ptr, nistcurves_zp_ptr1, nistcurves_zp_tmp1, nistcurves_zp_tmp2
 
 ; --- Core point ops (from points384_core.s) ---
 .import ec_point_double_384, ec_point_add_384, ec_jacobian_to_affine_384
@@ -42,7 +42,7 @@
 .import ec_anchor1_384_y, ec_anchor2_384_y, ec_anchor3_384_y, ec_anchor4_384_y
 .import ec_anchor5_384_y, ec_anchor6_384_y, ec_anchor7_384_y, ec_anchor8_384_y
 .import cm_k_384
-.import mul_dma_lo
+.import nistcurves_mul_dma_lo
 
 ; --- constants imports ---
 .import reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi
@@ -384,27 +384,27 @@ ec_precompute_384:
         asl
         tax
         lda @cmp384_anchor_tbl,x
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         lda @cmp384_anchor_tbl+1,x
-        sta zp_ptr1+1
-        ; Copy 48 X bytes from (zp_ptr1) to ec384_p1.
+        sta nistcurves_zp_ptr1+1
+        ; Copy 48 X bytes from (nistcurves_zp_ptr1) to ec384_p1.
         ldy #47
 @cmp384_lap1_x:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec384_p1,y
         dey
         bpl @cmp384_lap1_x
         ; Advance pointer by 48 to Y coordinate.
-        lda zp_ptr1
+        lda nistcurves_zp_ptr1
         clc
         adc #48
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         bcc :+
-        inc zp_ptr1+1
+        inc nistcurves_zp_ptr1+1
 :
         ldy #47
 @cmp384_lap1_y:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec384_p1+48,y
         dey
         bpl @cmp384_lap1_y
@@ -423,25 +423,25 @@ ec_precompute_384:
         asl
         tax
         lda @cmp384_anchor_tbl,x
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         lda @cmp384_anchor_tbl+1,x
-        sta zp_ptr1+1
+        sta nistcurves_zp_ptr1+1
         ldy #47
 @cmp384_lap2_x:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec384_p2,y
         dey
         bpl @cmp384_lap2_x
-        lda zp_ptr1
+        lda nistcurves_zp_ptr1
         clc
         adc #48
-        sta zp_ptr1
+        sta nistcurves_zp_ptr1
         bcc :+
-        inc zp_ptr1+1
+        inc nistcurves_zp_ptr1+1
 :
         ldy #47
 @cmp384_lap2_y:
-        lda (zp_ptr1),y
+        lda (nistcurves_zp_ptr1),y
         sta ec384_p2+48,y
         dey
         bpl @cmp384_lap2_y
@@ -731,28 +731,28 @@ sm384w_calc_reu_offset:
         asl
         asl
         asl
-        sta zp_tmp1              ; low byte of i*32 (top 3 bits of i lost here)
+        sta nistcurves_zp_tmp1              ; low byte of i*32 (top 3 bits of i lost here)
         lda ec384_precomp_i
         lsr
         lsr
         lsr                      ; high byte of i*32
-        sta zp_tmp2
+        sta nistcurves_zp_tmp2
 
         ; i*64 = (i*32)*2
-        lda zp_tmp1
+        lda nistcurves_zp_tmp1
         asl
         sta reu_reu_lo
-        lda zp_tmp2
+        lda nistcurves_zp_tmp2
         rol
         sta reu_reu_hi
 
         ; + i*32 -> i*96
         lda reu_reu_lo
         clc
-        adc zp_tmp1
+        adc nistcurves_zp_tmp1
         sta reu_reu_lo
         lda reu_reu_hi
-        adc zp_tmp2
+        adc nistcurves_zp_tmp2
         ; + P-384 comb-anchor base offset (high byte)
         clc
         adc #>LIB_NISTCURVES_REU_OFFSET_COMB_P384
@@ -766,9 +766,9 @@ sm384w_calc_reu_offset:
 ; sm384w_restore_reu: Restore REU registers for multiply table access
 ; -----------------------------------------------------------------------------
 sm384w_restore_reu:
-        lda #<mul_dma_lo
+        lda #<nistcurves_mul_dma_lo
         sta reu_c64_lo
-        lda #>mul_dma_lo
+        lda #>nistcurves_mul_dma_lo
         sta reu_c64_hi
         lda #0
         sta reu_reu_lo

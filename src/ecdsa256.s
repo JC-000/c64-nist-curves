@@ -40,7 +40,7 @@
 .export ecdsa_verify_256
 .export fp_reverse32
 
-.importzp fp_src1, fp_src2, fp_dst, fp_misc, zp_ptr2, ec_scalar_ptr
+.importzp fp_src1, fp_src2, fp_dst, fp_misc, nistcurves_zp_ptr2, ec_scalar_ptr
 .importzp fp_carry
 
 .import fp_copy, fp_zero, fp_cmp, fp_add, fp_sub, fp_is_zero
@@ -73,8 +73,8 @@
 .import ecdsa_u1g_jac
 .import fp_rev_buf
 
-; Use zp_ptr2 ($fd-$fe by default) as the struct base pointer.
-ecdsa_in_ptr = zp_ptr2
+; Use nistcurves_zp_ptr2 ($fd-$fe by default) as the struct base pointer.
+ecdsa_in_ptr = nistcurves_zp_ptr2
 
 ; ===========================================================================
 ; fp_reverse32 -- 32-byte byte-reverse via a scratch staging buffer.

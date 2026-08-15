@@ -12,6 +12,54 @@ contract).
 
 ## [Unreleased]
 
+### Changed
+
+- **§6.5 rename-window follow-up (lib-contract #83 + v0.9.1 window items) —
+  the last adopter half of the fleet's namespace wave.** Three families take
+  canonical library-prefixed names; every bare form remains exported **by
+  default** as a same-address alias and is suppressed under
+  `-D LIB_NO_BARE_EXPORTS=1`, for removal at the next MAJOR:
+
+  | family | canonical | why |
+  |---|---|---|
+  | general ZP scratch | `nistcurves_zp_{tmp1,tmp2,ptr1,ptr2}` | §2 registry; the trio collided with x25519's exports until its v0.11.0, and chacha `.importzp`s the bare names — silent cross-library aliasing |
+  | multiply buffers | `nistcurves_mul_{dma_lo,dma_hi,cached_a,src2_buf}` | `mul_` is registered to c64-x25519 in the §2 registry |
+  | sqtab table labels | *(unchanged names)* — bare **export** gated | v0.9.1: canonical does not mean exported; they derive from consumer input and every §8.1 adopter derives the same two |
+
+  Every in-library reference moved to the canonical names, so a gated archive
+  stays link-complete. **Measured: a `-D LIB_NO_BARE_EXPORTS=1` build of
+  `nistcurves.a` exports zero bare/deprecated names** — matching x25519
+  v0.11.0's surface, which closes the #82/#83 collision families for the
+  `c64-https` pair at the gate.
+
+  `build/nist-curves.prg` is **byte-identical** (`18701274…`): the change is
+  pure symbol surface; aliases sit at the same addresses.
+
+- **Deprecated-spelling ZP overrides now hard-error, deliberately.** A
+  consumer's legacy `-D zp_tmp1=0x40` — which assembled at every earlier tag —
+  now fails with `Symbol 'zp_tmp1' is already defined`, because the bare name
+  is a fixed alias of the canonical slot rather than the `.ifndef`-guarded
+  definition. The canonical spelling (`-D nistcurves_zp_tmp1=0x40`) works and
+  is the migration. This diverges from c64-ChaCha20-Poly1305's window shape,
+  where the deprecated spelling still moves the canonical slot; both are
+  window-conformant, and this library takes the loud one on purpose — the
+  quartet was never a documented override knob here (unlike `fp_*`, which is
+  documented and unchanged), so the only consumers who can hit it are ones
+  guessing at undocumented names, and a hard error beats silently splitting a
+  slot across two addresses. Recorded per the PR #107 review; the
+  both-behaviors question is tracked upstream as a §6.5/A.4 note.
+
+- `mul_src2_buf_384` keeps its unprefixed name, recorded at its definition
+  site: the §2 registry governs the *exported* surface, and it is internal —
+  referenced only within `fp384.s`, exported by no object across all ten
+  archives. If it is ever exported it takes the prefix at that moment.
+
+- `make check-archives` gains a **gated-surface ratchet**: every gate-owning
+  TU is assembled under `-D LIB_NO_BARE_EXPORTS=1` and must export zero
+  deprecated bare names. Nothing else checks the gated configuration — the
+  default build legitimately exports both spellings — and one ungated
+  `.export` quietly re-opens the collision class. Negative-tested.
+
 ### Added
 
 - **`make lib-app-owned`** (SPEC §6.3, required of every §8.x-consuming
