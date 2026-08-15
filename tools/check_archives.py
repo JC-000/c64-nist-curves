@@ -151,6 +151,19 @@ PRECALC_SHA384_K_SYMS = _precalc_syms("sha384_k")
 # Pinned absent from every archive; the bare names must not come back. If the
 # contract later publishes them, it will be in the prefixed
 # LIB_NISTCURVES_SHARED_REU_MUL_* form, which this pin does not block.
+# --- §8.2 prefixed OUTPUT counterparts (contract v0.8.5) ---------------------
+# The other half of the v0.8.5 ruling: each §8.2-consuming library MUST export
+# library-prefixed outputs whose values are the values its code reads, so a
+# consumer can assert co-linked libraries agree on placement. Pinned present in
+# every archive that consumes §8.2 -- i.e. every default-profile archive with
+# field arithmetic. Absent from the onchip archives (no REU multiply table) and
+# the sha384 archive (no REU at all), which is checked below.
+REU_OUTPUT_SYMS = {
+    "LIB_NISTCURVES_SHARED_REU_MUL_BANK",
+    "LIB_NISTCURVES_SHARED_REU_MUL_OFFSET",
+    "LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED",
+}
+
 REU_PLACEMENT_SYMS = {
     "LIB_SHARED_REU_MUL_BANK",
     "LIB_SHARED_REU_MUL_OFFSET",
@@ -322,16 +335,16 @@ PRECALC_CURVE = PRECALC_SQTAB_SYMS | PRECALC_SHA384_K_SYMS
 
 MUST_EXPORT = {
     "nistcurves.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
-                     | PRECALC_FULL | PRECALC_REU_MUL_SYMS | ZP_DEFAULT_SYMS),
+                     | PRECALC_FULL | PRECALC_REU_MUL_SYMS | ZP_DEFAULT_SYMS | REU_OUTPUT_SYMS),
     "nistcurves-p256-verify.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
                                  | PRECALC_VERIFY | PRECALC_REU_MUL_SYMS
-                                 | ZP_VERIFY_SYMS),
+                                 | ZP_VERIFY_SYMS | REU_OUTPUT_SYMS),
     "nistcurves-p384-verify.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
                                  | PRECALC_VERIFY | PRECALC_REU_MUL_SYMS
-                                 | ZP_VERIFY_SYMS),
+                                 | ZP_VERIFY_SYMS | REU_OUTPUT_SYMS),
     "nistcurves-p384-curve.a": (REU_MUL_PROVIDER_SYMS | MANIFEST_SYMS
                                 | PRECALC_CURVE | PRECALC_REU_MUL_SYMS
-                                | ZP_VERIFY_SYMS | ZP_SHA384_SYMS),
+                                | ZP_VERIFY_SYMS | ZP_SHA384_SYMS | REU_OUTPUT_SYMS),
     "nistcurves-p384-sha384.a": MANIFEST_SYMS | PRECALC_SHA384_K_SYMS | ZP_SHA384_SYMS,
     "nistcurves-onchip.a": MANIFEST_SYMS | PRECALC_FULL | ZP_DEFAULT_SYMS,
     "nistcurves-p256-verify-onchip.a": MANIFEST_SYMS | PRECALC_VERIFY | ZP_VERIFY_SYMS,
