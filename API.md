@@ -1240,6 +1240,27 @@ can `.import` a `_SIZE` equate and `.assert` on it only for tables
 `LIB_NISTCURVES_PRECALC_reu_mul_SIZE` (131072) raises `Range error`; use
 the `od65` dump for that one. The producer-side `.export` is unaffected.
 
+**§6.6 consumer footprint assert** (SPEC v0.10.0). The §5 figures are
+per-archive (§6.4) and safe-direction (each ≥ the measured sum for that
+archive), so a consumer can gate its build on them: `declared ≤ budget`
+implies `actual ≤ budget`, and a library bump that outgrows the budget fails
+the link with a named cause instead of an opaque segment overflow.
+
+<!-- check-docs: external="__CRYPTO_HOT_SIZE__" -->
+```asm
+; consumer side -- one per linked archive, in the consumer's own build.
+; __CRYPTO_HOT_SIZE__ is the consumer's own region size, published by
+; `define = yes` on that area in the consumer's cfg.
+.import LIB_NISTCURVES_RESIDENT_BYTES, LIB_NISTCURVES_COLD_BYTES
+.import __CRYPTO_HOT_SIZE__
+.assert LIB_NISTCURVES_RESIDENT_BYTES + LIB_NISTCURVES_COLD_BYTES <= __CRYPTO_HOT_SIZE__, lderror, "c64-nist-curves does not fit the CRYPTO_HOT region"
+```
+
+Consumers with split budgets assert `RESIDENT` and `COLD` separately against
+the regions that hold them -- `COLD` is reclaimable-after-init and may
+legitimately live in a different budget, which is why the pair is published
+as two equates rather than one sum.
+
 The doc-level twin (with the per-table classification rationale) is
 `docs/precalc-tables.md`; the two forms must stay in lock-step.
 
