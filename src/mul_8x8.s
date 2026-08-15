@@ -202,27 +202,35 @@ sq_i:   .res 2, 0              ; 16-bit index counter (0..511)
 ; Clobbers: A, X, Y; ct_diff_raw / ct_sign_mask (local scratch); the four
 ;   SMC patch sites (smc_sum_a_imm, smc_diff_a_imm, smc_lo_addr, smc_hi_addr).
 ; =============================================================================
-; poly_prod_lo/hi sit OUTSIDE the §8.3 gate deliberately (contract v0.9.1
-; adopter-private-buffer rule). They are dual-purpose: ct_mul_8x8's 16-bit
-; output when this build owns the body, AND ordinary scratch that
-; fp256.s/fp384.s write on the diagonal-squaring path of every fp_sqr,
-; independent of ct_mul_8x8 entirely (src/fp256.s:701-715, src/fp384.s
-; equivalent).
+; poly_prod_lo/hi travel WITH the §8.3 gate (issue #123; this reverses the
+; earlier "outside the gate" placement). They are the canonical body's
+; 16-bit product output -- part of the caller-facing provider surface along
+; with the two smc_*_a_imm bake sites -- and a deferring build's runtime
+; callers (og_common's diagonal-product read under FP_ONCHIP_MUL) must read
+; the cells the PROVIDER's body writes, not a private pair the deferred-out
+; body would never touch. Both fleet providers export the pair today
+; (c64-x25519 src/mul_8x8.s, c64-ChaCha20-Poly1305 poly1305_lib.s), and
+; x25519's deferring arm already imports it; a SPEC PR enumerating the §8.3
+; provider surface explicitly is in flight upstream.
 ;
-; Gating them with the body -- which is what this file did until the §6.3
-; lib-app-owned target first built a deferring archive -- deletes storage this
-; library's own field arithmetic writes, leaving `poly_prod_lo/hi` unresolved
-; in any SHARED_CT_MUL_8X8 build. Same shape as the c64-x25519 mul_src2_buf
-; overreach v0.9.1 corrected: a deferred buffer would point our field
-; arithmetic at another library's memory.
+; fp256.s/fp384.s also use the pair as plain diagonal-squaring scratch
+; (write-then-read within one fp_sqr call, independent of ct_mul_8x8).
+; Under deferral those references resolve to the provider's cells, which is
+; harmless on this single-threaded, non-re-entrant library (the earlier
+; comment's fear -- "a deferred buffer points our field arithmetic at
+; another library's memory" -- is the v0.9.1 mul_src2_buf rule, which
+; protects private STAGING buffers; the product cells are the body's
+; OUTPUT interface, where sharing is the whole point).
 ;
-; They are adopter-private storage, not part of the canonical §8.3 body, so
-; the byte-identity gate on that body is unaffected.
+; Consequence for the §6.3 APP_OWNED archives: poly_prod_lo/hi become
+; documented unresolved externals there (the app's provider exports them,
+; as every real provider already does) -- pinned in tools/check_archives.py
+; KNOWN_EXTERNAL.
+.ifndef SHARED_CT_MUL_8X8
+
 .export poly_prod_lo, poly_prod_hi
 poly_prod_lo:   .byte 0
 poly_prod_hi:   .byte 0
-
-.ifndef SHARED_CT_MUL_8X8
 
 .export mul_8x8, ct_mul_8x8
 ; SMC immediate-bake sites: the caller writes `a` to smc_sum_a_imm+1 and
@@ -271,6 +279,20 @@ ct_mul_8x8 = mul_8x8            ; §8.3 canonical name; mul_8x8 kept as alias
 
 ct_diff_raw:    .byte 0
 ct_sign_mask:   .byte 0
+.else
+; §8.3 deferring build (issue #123): og_common below still calls the
+; canonical body at runtime under FP_ONCHIP_MUL -- the diagonal product per
+; generated row -- so the deferred provider surface is imported instead of
+; defined. Import only what this TU references: without FP_ONCHIP_MUL the
+; og_common block is absent and a deferring DMA-profile object needs none
+; of these (fp256/fp384 carry their own poly_prod imports). Cross-TU SMC
+; patching of an imported label is fleet-established (c64-x25519
+; fe25519.s does exactly this against its own mul TU).
+.ifdef FP_ONCHIP_MUL
+.import ct_mul_8x8
+.import smc_sum_a_imm, smc_diff_a_imm
+.import poly_prod_lo, poly_prod_hi
+.endif  ; FP_ONCHIP_MUL
 .endif  ; .ifndef SHARED_CT_MUL_8X8
 
 ; =============================================================================

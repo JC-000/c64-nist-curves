@@ -658,6 +658,16 @@ keep all library calls on a single thread of control.
   bakes `a` once per outer-a iteration and varies b in Y across the inner
   loop. `mul_8x8` is kept as a back-compat alias of `ct_mul_8x8`; the body
   is gated by `.ifndef SHARED_CT_MUL_8X8` (mirrors §8.1 `SHARED_SQTAB_INIT`).
+  Since issue #123 the gate's else-arm **imports** the five-symbol §8.3
+  provider surface (`ct_mul_8x8`, `smc_sum_a_imm`/`smc_diff_a_imm`,
+  `poly_prod_lo/hi`) when `FP_ONCHIP_MUL` is defined — `og_common` calls the
+  canonical body at runtime for the per-row diagonal product, so APP_OWNED ×
+  onchip was unreachable (§6.3) until the imports existed. The product cells
+  travel WITH the body (reversing the earlier outside-the-gate placement):
+  a deferring runtime caller must read the cells the provider's body writes.
+  App-owned archive consequently documents `poly_prod_lo/hi` as unresolved
+  externals; check-archives pins the surface both directions and assembles
+  APP_OWNED × both profiles as a standing reachability leg.
   Boot-only / zero CT exposure is unchanged; PRG stays 37302 B; all 471
   P-256 field tests pass. The shape-strict (no carve-out) decision and
   rationale are in c64-lib-contract issue #14. **Update (2026-07-15,

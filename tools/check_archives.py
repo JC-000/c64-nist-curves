@@ -76,14 +76,16 @@ KNOWN_EXTERNAL = {
     # regression. §8.1's import-never-stub rule forbids satisfying them with a
     # local stub.
     # SPEC §6.3 lib-app-owned: every §8.x primitive is deferred to the consumer.
-    # The gap is EMPTY, which is the interesting result: no archived object
-    # imports the four canonical symbols, because the only in-archive caller of
-    # ct_mul_8x8 was reu_mul_init.o (excluded under SHARED_REU_MUL_INIT), the
-    # fetch has no callers at all, and sqtab_init / reu_mul_tables_init are
-    # called only from the never-archived main.s. So this archive defers four
-    # primitives without acquiring a single unresolved external -- the consumer
-    # supplies them for its own boot sequence, not to satisfy our link.
-    "nistcurves-app-owned.a": set(),
+    # No archived object imports the four canonical ENTRY symbols: the only
+    # in-archive caller of ct_mul_8x8 was reu_mul_init.o (excluded under
+    # SHARED_REU_MUL_INIT), the fetch has no callers at all, and sqtab_init /
+    # reu_mul_tables_init are called only from the never-archived main.s.
+    # poly_prod_lo/hi ARE unresolved since issue #123 moved the §8.3 product
+    # cells inside the deferral gate (they are the canonical body's output
+    # interface -- the provider that owns the body owns the cells it writes,
+    # and both fleet providers export them): fp256.o/fp384.o read them as
+    # diagonal-squaring scratch, and the app's §8.3 provider supplies them.
+    "nistcurves-app-owned.a": {"poly_prod_lo", "poly_prod_hi"},
     "nistcurves-onchip.a": set(),
     "nistcurves-p256-verify-onchip.a": set(),
     "nistcurves-p384-verify-onchip.a": set(),
@@ -103,6 +105,16 @@ KNOWN_EXTERNAL = {
 # reads the REU multiply table; verify-onchip archives are advertised as
 # containing zero REU DMA code, API.md §8.4.2). Both directions ratchet.
 REU_MUL_PROVIDER_SYMS = {"reu_mul_init", "reu_mul_tables_init"}
+
+# --- SPEC §8.3 provider surface (issue #123) ---------------------------------
+# The canonical body's caller-facing surface: entry, the two SMC bake sites a
+# caller patches `a` into, and the 16-bit product cells the body writes. A
+# §8.3-owning archive must export all five (og_common and any deferring
+# sibling resolve against them); a deferring build must NOT re-export any --
+# a re-export collides with the real provider at link. Enumerated explicitly
+# upstream by the in-flight §8.3-surface SPEC PR.
+CT_MUL_PROVIDER_SYMS = {"ct_mul_8x8", "smc_sum_a_imm", "smc_diff_a_imm",
+                        "poly_prod_lo", "poly_prod_hi"}
 
 # --- SPEC §1/§5/§8.4 manifest-surface pins (issue #86) -----------------------
 # Every archive carries lib_version.o + lib_manifest.o + precalc_manifest.o
@@ -440,6 +452,16 @@ MUST_NOT_EXPORT = {
                                       | ZP_COMB_P384_ONLY_SYMS | ZP_SHA384_SYMS
                                       | TESTVEC_SYMS | REU_PLACEMENT_SYMS),
 }
+
+# §8.3 provider-surface pins (issue #123): every §8.3-OWNING archive exports
+# the five-symbol surface; the deferring app-owned archive must export none of
+# it (a re-export collides with the app's provider at link). The sha384
+# archive carries no field layer and is exempt from both directions.
+for _a in MUST_EXPORT:
+    if _a not in ("nistcurves-p384-sha384.a", "nistcurves-app-owned.a"):
+        MUST_EXPORT[_a] = MUST_EXPORT[_a] | CT_MUL_PROVIDER_SYMS
+MUST_NOT_EXPORT["nistcurves-app-owned.a"] = (
+    MUST_NOT_EXPORT["nistcurves-app-owned.a"] | CT_MUL_PROVIDER_SYMS)
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
 # expect_link True  -> documented as linkable, must link clean.
@@ -882,6 +904,46 @@ def gated_surface_check(failures):
         print(f"  gated surface OK ({len(GATE_TUS)} TUs, 0 bare names)")
 
 
+APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",
+                         "-D", "SHARED_REU_MUL_FETCH", "-D", "SHARED_CT_MUL_8X8"]
+
+
+def app_owned_reachability_check(failures):
+    """§6.3 reachability of APP_OWNED x profile (issue #123): the full
+    deferral define set must ASSEMBLE against both profile arms of
+    mul_8x8.s -- the onchip arm shipped for two releases with same-TU
+    references (og_common -> ct_mul_8x8 / smc_* / poly_prod) that the gate
+    removed without importing, so APP_OWNED x onchip was unreachable and no
+    CI target exercised the combination. The onchip deferring object must
+    IMPORT the five-symbol §8.3 provider surface and re-export none of it."""
+    import tempfile
+    print("\n=== §6.3 APP_OWNED x profile reachability (issue #123) ===")
+    with tempfile.TemporaryDirectory() as td:
+        for profile_args, label in ([], "dma"), (["-D", "FP_ONCHIP_MUL"], "onchip"):
+            obj = Path(td) / f"m8_{label}.o"
+            rc, out = sh(["ca65", "--cpu", "6502", *APP_OWNED_DEFINE_ARGS,
+                          *profile_args, "-I", "src", "-o", str(obj),
+                          "src/mul_8x8.s"])
+            if rc:
+                failures.append(f"app-owned x {label}: mul_8x8.s does not assemble under full deferral")
+                print(f"  REACH FAIL [{label}]: {out.splitlines()[0] if out else 'assemble error'}")
+                continue
+            imports = od65_names(obj, "--dump-imports")
+            exports = od65_names(obj, "--dump-exports")
+            leaked = sorted(exports & CT_MUL_PROVIDER_SYMS)
+            if leaked:
+                failures.append(f"app-owned x {label}: deferring TU re-exports provider surface {leaked}")
+                print(f"  REACH FAIL [{label}]: re-exported provider surface: {leaked}")
+                continue
+            if label == "onchip":
+                missing = sorted(CT_MUL_PROVIDER_SYMS - imports)
+                if missing:
+                    failures.append(f"app-owned x onchip: og_common's provider-surface imports missing {missing}")
+                    print(f"  REACH FAIL [onchip]: provider-surface imports missing: {missing}")
+                    continue
+            print(f"  reachability OK [{label}] (assembles; surface imported, not re-exported)")
+
+
 def main():
     archives = parse_makefile_archives()
     failures = []
@@ -903,6 +965,7 @@ def main():
     version_identity_check(failures)
     zp_alias_audit(failures)
     gated_surface_check(failures)
+    app_owned_reachability_check(failures)
 
     for name in sorted(KNOWN_EXTERNAL):
         allow = KNOWN_EXTERNAL[name]

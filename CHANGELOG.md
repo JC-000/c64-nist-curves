@@ -14,6 +14,30 @@ contract).
 
 ### Fixed
 
+- **`-D SHARED_CT_MUL_8X8` now assembles against the on-chip TU — APP_OWNED ×
+  onchip reachable per §6.3** (issue #123, reported from the c64-https
+  consumer side; the contract-side §8.3-surface gap is tracked upstream).
+  `og_common` calls the canonical `ct_mul_8x8` at runtime (the per-row `a*a`
+  diagonal product) and SMC-bakes `a` into the body's two `smc_*_a_imm`
+  sites; the deferral gate removed those definitions without importing them,
+  so every onchip target failed to assemble under the switch — the one
+  §8.0 × profile combination no CI target exercised. Fix: the gate's
+  else-arm imports the five-symbol §8.3 provider surface under
+  `FP_ONCHIP_MUL` (`ct_mul_8x8`, `smc_sum_a_imm`, `smc_diff_a_imm`,
+  `poly_prod_lo`, `poly_prod_hi` — cross-TU SMC on imported labels is
+  fleet-established, c64-x25519 `fe25519.s`). The **product cells move
+  inside the gate** (reversing the earlier "adopter-private" placement,
+  which was correct only while no runtime caller crossed the deferral
+  boundary): a deferring build's `og_common` must read the cells the
+  *provider's* body writes, or every diagonal product is silently garbage.
+  Consequence: `nistcurves-app-owned.a` now documents `poly_prod_lo/hi` as
+  unresolved externals (the app's §8.3 provider exports them, as both fleet
+  providers already do). `make check-archives` gains the §8.3
+  provider-surface pins (exported from every owning archive, re-exported by
+  none deferring) and a §6.3 reachability leg assembling APP_OWNED × both
+  profiles — negative-tested. Default PRG and all owning archives
+  byte-unchanged (`18701274…`).
+
 - **Docs: `ec_precompute_256/384` boot cost was documented ~40-86× low**
   (issue #121, reported from the c64-https consumer side with an U64E
   measurement + operation-count cross-check). The Wave 7a source comment
