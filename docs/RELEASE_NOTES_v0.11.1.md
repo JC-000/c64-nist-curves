@@ -1,8 +1,8 @@
 # c64-nist-curves v0.11.1 — APP_OWNED × onchip reachable + measured precompute cost
 
 **Released:** 2026-08-15
-**Tarball:** `c64-nist-curves-v0.11.1.tar.gz` (SIZE_PLACEHOLDER bytes)
-**SHA256:** `SHA256_PLACEHOLDER`
+**Tarball:** `c64-nist-curves-v0.11.1.tar.gz` (243,268 bytes)
+**SHA256:** `971dc80058817f806a9849a269376bd41e5d0e8cda61b131da3496ac7b74a30a`
 
 PATCH release. `build/nist-curves.prg` is **byte-identical** to
 v0.10.0 through v0.11.0 (`18701274…`, 37480 B); `LIB_NISTCURVES_ABI_VERSION`
@@ -76,5 +76,8 @@ multiple verifies.
   + §6.3 APP_OWNED×profile reachability legs, both negative-tested).
   `make check-docs` PASS.
 - Tarball reproducible across two independent `make dist` runs.
-- Worktree-rebuild byte-identity at the tag: WORKTREE_PLACEHOLDER
-- Tarball builds standalone: TARBALL_BUILD_PLACEHOLDER
+- Worktree-rebuild byte-identity at the tag: PASS (fresh worktree at
+  v0.11.1: PRG `18701274…` identical).
+- Tarball builds standalone: PASS (extracted to a scratch directory,
+  `make` produces the byte-identical PRG and check-archives passes over
+  all twelve archives inside it).
