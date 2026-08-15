@@ -1038,7 +1038,48 @@ ca65 -D LIB_SHARED_SQTAB_BASE=$8800   # any page-aligned address; $9c00 is the d
 ```
 
 Page-aligned + `sqtab_hi = sqtab_lo + $0200` are
-enforced by `.assert` in `src/mul_8x8.s`. `LIB_NISTCURVES_SHARED_PRIMITIVES`
+enforced by `.assert` in `src/mul_8x8.s`.
+
+**§8.2 shared `reu_mul` placement** (contract v0.8.5 export discipline). The
+consumer-*input* equates `LIB_SHARED_REU_MUL_BANK` / `_OFFSET` /
+`_BANKS_USED` are **not exported** — they are unprefixed names every §8.2
+consumer defines, so exporting them collides in any composed link. Override
+them the same way as the sqtab base:
+
+```sh
+make lib CA65FLAGS='-D LIB_SHARED_REU_MUL_BANK=0x03'
+```
+
+What this library exports instead is the prefixed *output* counterparts, whose
+values are **the values the REU access paths actually read** — so a consumer
+can verify co-linked libraries agree on placement:
+
+<!-- check-docs: external="LIB_X25519_SHARED_REU_MUL_BANK" -->
+```asm
+.import LIB_NISTCURVES_SHARED_REU_MUL_BANK
+.import LIB_X25519_SHARED_REU_MUL_BANK
+.assert LIB_NISTCURVES_SHARED_REU_MUL_BANK = LIB_X25519_SHARED_REU_MUL_BANK, lderror, "co-linked libraries disagree on reu_mul placement"
+```
+
+`lderror`, not `error`: the operands are imports and have no value until link
+(§8.6's guard rule). `LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED` is derived from
+the same code-read bank, so it can be composed straight into a §3 REU-region
+collision `.assert`.
+
+The "values the code reads" wording is load-bearing rather than pedantic. These
+outputs alias `LIB_NISTCURVES_REU_BANK_MUL` — the symbol `fp256.s` / `fp384.s`
+actually load into the REU bank register — not the `LIB_SHARED_REU_MUL_BANK`
+knob, because **both spellings relocate the table**:
+
+| override | code reads | exported output |
+|---|---:|---:|
+| *(none)* | `$00` | `$00` |
+| `-D LIB_SHARED_REU_MUL_BANK=3` | `$03` | `$03` |
+| `-D LIB_NISTCURVES_REU_BANK_MUL=5` | `$05` | `$05` |
+
+Aliasing the knob would publish `$00` in the third row while the code read
+`$05` — an export that certifies nothing, which is the exact defect contract
+v0.8.5 cites from `c64-x25519`'s pre-#92 form. `LIB_NISTCURVES_SHARED_PRIMITIVES`
 bit `$0001` (= `LIB_SHARED_PRIMITIVES_SQTAB`) signals to consumers that
 this library claims ownership of the §8.1 primitive; consumers `.assert
 (LIB_NISTCURVES_SHARED_PRIMITIVES & LIB_X_SHARED_PRIMITIVES) = 0` to

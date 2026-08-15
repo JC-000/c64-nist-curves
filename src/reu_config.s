@@ -99,6 +99,41 @@ LIB_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_SHARED_REU_MUL_BANK) | (1 .shl (LIB_
 .export LIB_NISTCURVES_REU_OFFSET_COMB_P256:abs
 .export LIB_NISTCURVES_REU_OFFSET_COMB_P384:abs
 
+; -----------------------------------------------------------------------------
+; SPEC §8.2 export discipline (contract v0.8.5) -- prefixed OUTPUT counterparts
+; -----------------------------------------------------------------------------
+; The clause has two halves. The consumer-INPUT equates above must not be
+; exported (they are shared names; see the block below). Each §8.2-consuming
+; library must instead export library-prefixed OUTPUTS "whose values are the
+; values the code reads", so a consumer can read back where the table actually
+; landed and assert agreement with a co-linked sibling.
+;
+; The "values the code reads" wording is load-bearing, and the reason is a real
+; bug: c64-x25519's pre-#92 export published a number nothing consumed, so a
+; consumer `-D` override succeeded silently and relocated nothing. To avoid
+; that here these alias LIB_NISTCURVES_REU_BANK_MUL -- the symbol
+; fp256.s/fp384.s actually load into the REU bank register -- NOT the
+; LIB_SHARED_REU_MUL_BANK knob. Both spellings move the code-read value:
+;
+;   ca65 -D LIB_SHARED_REU_MUL_BANK=3      -> code reads 3 (through the alias)
+;   ca65 -D LIB_NISTCURVES_REU_BANK_MUL=3  -> code reads 3 (direct override)
+;
+; so aliasing the knob would be decorative under the second spelling, which is
+; exactly the failure the clause names. Aliasing the code-read symbol tracks
+; both.
+;
+; OFFSET has no runtime reader: the row fetch writes reu_reu_lo = 0 directly,
+; and the .assert above pins the equate to $0000, so equate and code agree by
+; construction rather than by aliasing. BANKS_USED is derived here from the
+; code-read bank for the same reason the BANK output is.
+LIB_NISTCURVES_SHARED_REU_MUL_BANK   = LIB_NISTCURVES_REU_BANK_MUL
+LIB_NISTCURVES_SHARED_REU_MUL_OFFSET = LIB_SHARED_REU_MUL_OFFSET
+LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_NISTCURVES_REU_BANK_MUL) | (1 .shl (LIB_NISTCURVES_REU_BANK_MUL + 1))
+
+.export LIB_NISTCURVES_SHARED_REU_MUL_BANK:abs
+.export LIB_NISTCURVES_SHARED_REU_MUL_OFFSET:abs
+.export LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED:abs
+
 ; SPEC §8.2 canonical equates are deliberately NOT exported
 ; (c64-lib-contract #82). They are consumer-supplied placement values:
 ; `.ifndef`-guarded here and overridden with `ca65 -D`, exactly like §8.1's

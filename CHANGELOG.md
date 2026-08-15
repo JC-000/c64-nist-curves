@@ -52,6 +52,41 @@ contract).
   make, the shell, ca65 or ld65. `\$$50` and `0x50` are both correct; `0x50`
   needs no escaping and is documented as the form to use.
 
+- **§8.2 prefixed output counterparts** (c64-lib-contract v0.8.5 export
+  discipline — the second half of the #82 ruling). This library now exports
+  `LIB_NISTCURVES_SHARED_REU_MUL_BANK` / `_OFFSET` / `_BANKS_USED`, so a
+  consumer can verify co-linked libraries agree on `reu_mul` placement:
+
+  ```asm
+  .import LIB_NISTCURVES_SHARED_REU_MUL_BANK
+  .import LIB_X25519_SHARED_REU_MUL_BANK
+  .assert LIB_NISTCURVES_SHARED_REU_MUL_BANK = LIB_X25519_SHARED_REU_MUL_BANK, lderror, "co-linked libraries disagree on reu_mul placement"
+  ```
+
+  The consumer-*input* equates stay unexported (shipped in the previous
+  entry) — those are the unprefixed names that collided.
+
+  **The exported values are the values the code reads**, which the clause makes
+  normative and which is the part worth care. They alias
+  `LIB_NISTCURVES_REU_BANK_MUL` — the symbol `fp256.s`/`fp384.s` actually load
+  into the REU bank register — rather than the `LIB_SHARED_REU_MUL_BANK` knob,
+  because **both spellings relocate the table**:
+
+  | override | code reads | exported output |
+  |---|---:|---:|
+  | *(none)* | `$00` | `$00` |
+  | `-D LIB_SHARED_REU_MUL_BANK=3` | `$03` | `$03` |
+  | `-D LIB_NISTCURVES_REU_BANK_MUL=5` | `$05` | `$05` |
+
+  Aliasing the knob — which is literally what the SPEC's example snippet shows
+  — would publish `$00` in the third row while the code read `$05`: an export
+  that certifies nothing, i.e. exactly the defect v0.8.5 cites from
+  `c64-x25519`'s pre-#92 form. Reported upstream.
+
+  Pinned present in the four default-profile §8.2-consuming archives and
+  negative-tested; the documented consumer assert is covered by
+  `make check-docs`, so it cannot ship un-assemblable.
+
 ### Fixed
 
 - **§8.2 placement equates no longer exported** (c64-lib-contract #82).
