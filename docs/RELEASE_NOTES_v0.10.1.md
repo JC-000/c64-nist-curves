@@ -1,8 +1,8 @@
 # c64-nist-curves v0.10.1 — identity correction
 
 **Released:** 2026-08-15
-**Tarball:** `c64-nist-curves-v0.10.1.tar.gz` (SIZE_PLACEHOLDER bytes)
-**SHA256:** `SHA256_PLACEHOLDER`
+**Tarball:** `c64-nist-curves-v0.10.1.tar.gz` (227,512 bytes)
+**SHA256:** `7eaf94b800c2937fc199ea1308882462dad9858e0e1df1a8a69661915b2b7b14`
 
 PATCH release, zero functional change. **Pin this tag instead of v0.10.0.**
 
@@ -51,4 +51,4 @@ gated zero-bare surface — applies to this tag verbatim.
   `make check-docs` PASS.
 - PRG byte-identical to v0.10.0.
 - Tarball reproducible across two independent `make dist` runs.
-- Worktree-rebuild byte-identity at the tag: WORKTREE_PLACEHOLDER.
+- Worktree-rebuild byte-identity at the tag: PASS at `1edd634` (fresh worktree: PRG `18701274…` identical; check-archives incl. the new identity check PASS).
