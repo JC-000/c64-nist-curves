@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-15
+
 ### Added
 
 - **P-256 comb archives: `make lib-p256-comb` / `make lib-p256-comb-onchip`**
@@ -1891,6 +1893,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.11.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.11.0
 [0.10.2]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.2
 [0.10.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.1
 [0.10.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.10.0
