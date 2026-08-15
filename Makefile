@@ -83,6 +83,25 @@ ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 
 LIB_DIR = $(BUILD_DIR)/lib
 
+# --- §6.3 looks-reachable knob-staleness guard (SPEC v0.10.5) -----------------
+# CONTRACT_DEFINES / CONTRACT_ZP_DEFINES reach every TU's assembly flags, but
+# make cannot see a knob-VALUE change: a re-invocation with different defines
+# would reuse every stale object and exit 0 with an artifact other than the
+# one requested -- the v0.10.5 shape-3 "silent no-op" (measured here during
+# the issue #123 repro: `make lib-p256-verify-onchip CONTRACT_DEFINES=...`
+# answered "Nothing to be done"). The stamp records the flattened knob string
+# at parse time; when it changes, every object and archive is invalidated --
+# the knobs reach every TU, so every object genuinely is stale -- and the
+# requested configuration is built. Unchanged knobs leave the tree alone
+# (same-knob incremental builds stay incremental). Pinned by the
+# defines-staleness leg in tools/check_archives.py.
+CONTRACT_STAMP := $(BUILD_DIR)/.contract-defines.stamp
+CURRENT_KNOBS := $(strip $(CONTRACT_DEFINES) @ $(CONTRACT_ZP_DEFINES))
+STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
+ifneq ($(CURRENT_KNOBS),$(STORED_KNOBS))
+$(shell mkdir -p $(BUILD_DIR); rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a; printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP))
+endif
+
 .PHONY: all clean build-acme bench-u64 dist \
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
         lib-app-owned lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \

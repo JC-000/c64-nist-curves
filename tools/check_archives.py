@@ -944,6 +944,45 @@ def app_owned_reachability_check(failures):
             print(f"  reachability OK [{label}] (assembles; surface imported, not re-exported)")
 
 
+def defines_staleness_check(failures):
+    """§6.3 looks-reachable rule, staleness shape (SPEC v0.10.5): a make
+    re-invocation with a changed CONTRACT_*DEFINES value must rebuild --
+    without the Makefile's knob stamp, make reuses every stale object and
+    exits 0 with an artifact other than the one requested (shape-3 silent
+    no-op, measured live during the issue #123 repro). Drives the REAL make
+    flow three ways and reads the built object's exported value each time.
+    Runs LAST: a knob change wipes build/*.o by design; the final leg
+    restores the default configuration."""
+    print("\n=== §6.3 knob-staleness guard (defines change must rebuild) ===")
+
+    def fp_src1_value():
+        return od65_value([BUILD / "zp_config.o"], "fp_src1")
+
+    legs = [
+        (["make", "-C", str(REPO), "build/zp_config.o"], 0x22, "default build"),
+        (["make", "-C", str(REPO), "build/zp_config.o",
+          "CONTRACT_ZP_DEFINES=-D fp_src1=0x50"],
+         0x50, "changed knob must take effect (stale-reuse would keep 0x22)"),
+        (["make", "-C", str(REPO), "build/zp_config.o"], 0x22, "revert to default"),
+    ]
+    for cmd, want, label in legs:
+        rc, out = sh(cmd)
+        got = fp_src1_value()
+        if rc or got != want:
+            failures.append(f"knob-staleness: {label}: fp_src1={got if got is not None else '?'}, want {hex(want)} (rc={rc})")
+            print(f"  STALENESS FAIL [{label}]: fp_src1 = {hex(got) if got is not None else '?'}, expected {hex(want)}")
+            return
+    # incremental sanity: an unchanged-knob re-run must NOT rebuild
+    before = (BUILD / "zp_config.o").stat().st_mtime_ns
+    sh(["make", "-C", str(REPO), "build/zp_config.o"])
+    after = (BUILD / "zp_config.o").stat().st_mtime_ns
+    if before != after:
+        failures.append("knob-staleness: unchanged knobs re-ran the assembler (stamp churns)")
+        print("  STALENESS FAIL: unchanged knobs rebuilt the object -- stamp not stable")
+        return
+    print("  staleness guard OK (change rebuilds; revert rebuilds; no-change is incremental)")
+
+
 def main():
     archives = parse_makefile_archives()
     failures = []
@@ -1051,6 +1090,11 @@ def main():
                 else:
                     print(f"  link gap OK [{label}] unresolved (documented): {sorted(unres)}")
         print()
+
+    # Runs last by design: its knob-change legs wipe build/*.o via the
+    # Makefile stamp, and the final default-build leg restores only the
+    # object it exercises.
+    defines_staleness_check(failures)
 
     if failures:
         print("ARCHIVE CONTRACT RATCHET: FAIL")
