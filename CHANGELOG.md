@@ -12,6 +12,29 @@ contract).
 
 ## [Unreleased]
 
+### Added
+
+- **§6.3 knob-staleness guard (SPEC v0.10.5 alignment).** A make
+  re-invocation with a changed `CONTRACT_DEFINES`/`CONTRACT_ZP_DEFINES`
+  value used to reuse every stale object and exit 0 with an artifact other
+  than the one requested — the v0.10.5 "looks-reachable" shape-3 silent
+  no-op, measured live during the issue #123 repro ("Nothing to be done").
+  The Makefile now records the flattened knob string in a parse-time
+  content stamp (`build/.contract-defines.stamp`); a changed value
+  invalidates every object and archive (the knobs reach every TU, so all
+  genuinely are stale), an unchanged value stays fully incremental.
+  `make check-archives` gains a defines-staleness leg driving the real
+  make flow three ways plus an incrementality assertion — negative-tested
+  (guard disabled → the changed-knob leg trips on the stale value).
+  With this, the library is conformant through **SPEC v0.10.6**: v0.10.4's
+  member-set-axis obligation was discharged by v0.11.0's comb targets,
+  and v0.10.6's §8.3 provider-surface enumeration is exactly the shape
+  v0.11.1 shipped (verified clause-by-clause against the tagged text).
+  Doc note per v0.10.5's checkability ruling: archive/object byte
+  comparisons are unsound across builds (`ca65` `OPT_DATETIME`); linked
+  PRGs and od65 structural dumps are the valid comparands — our gates
+  already compare exactly those.
+
 ## [0.11.1] — 2026-08-15
 
 ### Fixed

@@ -8,9 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v0.10.3** (verified clause-by-clause; the
+— conformant through **SPEC v0.10.6** (verified clause-by-clause; the
 alignment baseline lives in the session memory's lib-contract-alignment-monitor
-note). That covers §1–§7 core (prefixed version equates with gated bare
+note; v0.10.4–v0.10.6 are the #117/#123-driven clarifications — the comb
+targets discharge v0.10.4's member-set-axis obligation, the Makefile's
+knob-staleness stamp discharges v0.10.5's looks-reachable rule for
+`CONTRACT_DEFINES`/`CONTRACT_ZP_DEFINES`, and the §8.3 provider-surface
+import shape shipped in v0.11.1 satisfies v0.10.6). That covers §1–§7 core (prefixed version equates with gated bare
 aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, REU symbol contract,
 §4 load-bearing cfg attribute declarations, per-archive §5 manifests with
 §6.6 safe-direction footprint values, the §6 build-and-consume chapter:
