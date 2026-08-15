@@ -1,8 +1,8 @@
 # c64-nist-curves v0.11.0 — P-256 comb archives + vic_blank figure correction
 
 **Released:** 2026-08-15
-**Tarball:** `c64-nist-curves-v0.11.0.tar.gz` (SIZE_PLACEHOLDER bytes)
-**SHA256:** `SHA256_PLACEHOLDER`
+**Tarball:** `c64-nist-curves-v0.11.0.tar.gz` (238,482 bytes)
+**SHA256:** `251c5d12f6ad59bf54108ae1f6606a75fa5340f76d1117c89061338d148e9abe`
 
 MINOR release. `build/nist-curves.prg` is **byte-identical** to
 v0.10.0/v0.10.1/v0.10.2 (`18701274…`, 37480 B); no exported symbol is
@@ -89,5 +89,8 @@ link `nistcurves-p256-comb.a` (stock/1 MHz-class hosts) or
   identity check at 0.11.0, R2 ZP alias audit over six arms, gated
   surface, per-archive value pins). `make check-docs` PASS.
 - Tarball reproducible across two independent `make dist` runs.
-- Worktree-rebuild byte-identity at the tag: WORKTREE_PLACEHOLDER
-- Tarball builds standalone: TARBALL_BUILD_PLACEHOLDER
+- Worktree-rebuild byte-identity at the tag: PASS (fresh worktree at
+  v0.11.0: PRG `18701274…` identical; check-archives PASS inside it).
+- Tarball builds standalone: PASS (extracted to a scratch directory,
+  `make` produces the byte-identical PRG and check-archives passes over
+  all twelve archives — completeness proven by construction).
