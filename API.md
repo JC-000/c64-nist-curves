@@ -1230,12 +1230,29 @@ rather than assuming `$0001` is permanent.
 
 One subtlety worth stating explicitly, because it looks like an error:
 the `FP_ONCHIP_MUL` build claims §8.3 `ct_mul_8x8` (`$0004`) in **both**
-masks even though its row generator never calls `ct_mul_8x8` at runtime
-(issue #71 inlines its own quarter-square; the canonical body stays
-boot/diag-only). Per SPEC §8.0, shipping a primitive's canonical body
-counts as consuming it — the body is present, callable, and available
-for a co-linked sibling to defer to. Dropping the bit would break that
-sibling's deferral.
+masks. The issue #71 row generator inlines its own quarter-square for
+the per-product inner loop, but `og_common` still `jsr`s the canonical
+`ct_mul_8x8` once per generated row for the `a*a` diagonal — a genuine
+runtime call (this is precisely the call that made `-D
+SHARED_CT_MUL_8X8` fail to assemble against the onchip TU until issue
+#123 added the gated provider-surface imports). And per SPEC §8.0,
+shipping a primitive's canonical body counts as consuming it in any
+case — the body is present, callable, and available for a co-linked
+sibling to defer to. Dropping the bit would break that sibling's
+deferral.
+
+Deferring builds (issue #123): under `-D SHARED_CT_MUL_8X8` this TU
+imports the five-symbol §8.3 provider surface — `ct_mul_8x8`, the two
+`smc_*_a_imm` SMC bake sites, and the `poly_prod_lo/hi` product cells —
+instead of defining it, so APP_OWNED × onchip is reachable per §6.3.
+The product cells travel with the body: a deferring build's runtime
+callers must read the cells the *provider's* body writes. Consequence:
+the app-owned archive carries `poly_prod_lo`/`poly_prod_hi` as
+documented unresolved externals (the app's §8.3 provider exports them,
+as both fleet providers already do); `make check-archives` pins the
+surface exported from every owning archive, absent from the deferring
+one, and assembles APP_OWNED × both profiles as a standing
+reachability leg.
 
 **§8.0 precalc-table manifest** (`src/precalc_manifest.s`): alongside
 the equates above, every archive ships the SPEC §8.0 precalculated-table
