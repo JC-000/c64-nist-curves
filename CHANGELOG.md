@@ -12,6 +12,33 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two §5 footprint values violated SPEC v0.10.0 §6.6's safe-direction MUST**
+  (each value ≥ the measured sum for its archive). Both were round-to-tens
+  artifacts erring in the unsafe direction — flagged by this library's own
+  review question on the §6.6 draft, resolved by the merged rule:
+
+  | archive | equate | was | measured | now |
+  |---|---|---:|---:|---:|
+  | `p384-sha384.a` | `RESIDENT_BYTES` | 9000 | 9001 | **9216** (next 256-byte boundary, the §6.6 fleet convention; +2.4%) |
+  | verify-onchip ×2 | `COLD_BYTES` | 240 | 243 | **250** (≥ measured; the 256-boundary would be +5.3%, outside §5's ±5% at this size) |
+
+  The COLD values previously suspected of wrong-sign rounding (1840/1650/430,
+  each ≥ measured) are **correct** under the merged rule: COLD is its own
+  budget, so it rounds up like RESIDENT — `declared ≤ budget` implies
+  `actual ≤ budget` only when declared ≥ actual.
+
+### Added
+
+- **§6.6 consumer footprint-assert worked example** in API.md §8.6.1, with
+  this library's real equates — covered by `make check-docs`, so it links
+  against the shipped objects.
+
+- **Release-process obligation recorded** (§6.6): release notes MUST state
+  footprint deltas per (profile × variant) — one tag carries several footprint
+  pairs, so a single per-version delta is meaningless.
+
 ## [0.10.1] — 2026-08-15
 
 > **Identity-correction release.** `v0.10.0` ships content that self-reports

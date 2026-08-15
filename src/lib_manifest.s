@@ -285,7 +285,11 @@
 ; -----------------------------------------------------------------------------
 .ifndef LIB_NISTCURVES_RESIDENT_BYTES
   .ifdef LIB_SHA384_ONLY
-    LIB_NISTCURVES_RESIDENT_BYTES = 9000
+    ; §6.6 (SPEC v0.10.0): MUST be >= the measured sum. 9000 was < the
+    ; measured 9001 -- a round-to-tens artifact erring in the unsafe
+    ; direction by one byte. Now the next 256-byte boundary above measured
+    ; (the §6.6 fleet convention), +2.4%, inside §5's ±5%.
+    LIB_NISTCURVES_RESIDENT_BYTES = 9216
   .elseif .defined(LIB_P256_VERIFY_ONLY)
     LIB_NISTCURVES_RESIDENT_BYTES = 8700
   .elseif .defined(LIB_P384_VERIFY_ONLY)
@@ -419,7 +423,11 @@
     LIB_NISTCURVES_COLD_BYTES = 0
   .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
     .if .defined(FP_ONCHIP_MUL)
-      LIB_NISTCURVES_COLD_BYTES = 240
+      ; §6.6: MUST be >= measured (243). 240 was under by 3. The 256-byte
+      ; fleet convention would be +5.3% here, outside §5's ±5% band at this
+      ; size, so this value keeps fine granularity: >= measured, minimal
+      ; headroom.
+      LIB_NISTCURVES_COLD_BYTES = 250
     .else
       LIB_NISTCURVES_COLD_BYTES = 430
     .endif
