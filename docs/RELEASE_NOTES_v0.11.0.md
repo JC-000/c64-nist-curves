@@ -40,6 +40,17 @@ one it lacks. Boot obligation vs the verify archives grows by
 anchor table **in both profiles** — the onchip arm still populates and
 DMA-fetches comb anchors; it is the multiply table it does without.
 
+> **Correction (2026-08-15, issue #121):** the paragraph above originally
+> quoted the `ec_precompute_256` boot cost as "~25 s at 1 MHz", inherited
+> from API.md §8.5. That figure was ~40× low — VICE warp-mode *wall*
+> seconds had been passed off as real-C64 time since Wave 7a. Measured
+> (jiffy clock, VICE): **~1038 Mcyc ≈ 17 min at 1 MHz** in this archive's
+> default profile; the onchip arm measures ~2061 Mcyc ≈ 34 min at 1 MHz
+> but scales with the host clock (~45 s at 48 MHz, consumer-measured). At
+> stock clock the
+> comb fill amortises only over multiple verifies — see API.md §8.5's
+> sizing note before picking a comb archive for a 1 MHz target.
+
 ## Footprint values, per (profile × variant) — SPEC §6.6 obligation
 
 All ten pre-existing archives: **unchanged** in every §5/§6.6 equate.

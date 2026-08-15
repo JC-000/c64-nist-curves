@@ -154,10 +154,15 @@ The program writes `$42` to `$02A7` as the very last step of `start:` after all
 init (sqtab, REU multiply tables, precompute tables via `ec_precompute_256` and
 `ec_precompute_384`, etc.) completes. Tests poll this sentinel
 byte via `peek(0x02A7)` instead of racing with `wait_for_text("READY.")` + a
-`jsr()` re-init (which would cost ~2 minutes to repopulate REU tables). In
-warp mode the sentinel appears in roughly 2 seconds after VICE launch.
+`jsr()` re-init (which would cost ~2 minutes to repopulate REU tables). Boot
+is dominated by the two `ec_precompute_*` passes (~51 min of emulated 1 MHz
+time combined in the default profile, more onchip — issue #121), so even
+under warp the sentinel takes **minutes of wall time** (~222 s default /
+~490 s onchip at the ~15× warp measured on this host — NOT the "~2 seconds"
+this note claimed through v0.11.0; budget `C64_INIT_TIMEOUT` accordingly).
 See `tools/test_fp384.py` and `tools/test_points384.py` for the canonical
-pattern.
+pattern — note the `transport.resume()` after each poll: binmon reads pause
+emulation, and a poll loop without the resume freezes the machine forever.
 
 ## Architecture
 All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry propagation.
@@ -539,7 +544,11 @@ keep all library calls on a single thread of control.
 - P-384: bank 2, offset $4000..$9F9F, 256 entries x 96 bytes (X,Y only) = 24 KB
 - Total used in bank 2: 40 KB of 64 KB (banks 0-1 hold multiply tables; bank 2 scratch $A000-$FFFF = 24 KB free)
 - Tables are computed once at boot by `ec_precompute_256` and `ec_precompute_384`
-- Boot cost at h=8: ~100s additional over h=4 baseline (~89s measured on P-384 bench tool; P-256 comparable)
+- Boot cost at h=8 (issue #121, measured via jiffy clock — the old "~100s"
+  here was VICE-warp wall time presented as if it were real time):
+  `ec_precompute_256` ~1038 Mcyc ≈ 17 min at 1 MHz, `ec_precompute_384`
+  ~2108 Mcyc ≈ 34 min (default profile; onchip measures ~2061/~4782 Mcyc
+  at 1 MHz but scales with clock — ~45 s @48 MHz consumer-measured)
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues

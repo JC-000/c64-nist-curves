@@ -151,7 +151,9 @@ def bench_routine(transport, labels, routine_label, loops, setup_fn=None,
     # Install the trampoline fresh each time (cheap, and ensures no stale code).
     write_bytes(transport, TRAMPOLINE_ADDR, trampoline)
 
-    # VIC blanking gives +20-25% CPU back to the 6510.
+    # VIC blanking gives ~6% CPU back to the 6510 on this text screen
+    # (per-badline steal; see issue #116) -- and, more importantly for a
+    # bench, removes the badline jitter from the measurement.
     jsr(transport, labels["vic_blank"], timeout=5.0)
     jsr(transport, labels["bench_start"], timeout=5.0)
     jsr(transport, TRAMPOLINE_ADDR, timeout=timeout)

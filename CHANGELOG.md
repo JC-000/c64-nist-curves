@@ -12,6 +12,33 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docs: `ec_precompute_256/384` boot cost was documented ~40-86× low**
+  (issue #121, reported from the c64-https consumer side with an U64E
+  measurement + operation-count cross-check). The Wave 7a source comment
+  said "~25 Mcyc" and API.md carried "~25 s / ~80 s on a real C64" —
+  root cause: VICE **warp-mode wall seconds** (the §8.5 table even said
+  "in warp mode"; README's "89 s" was the bench tool's warp wall) were
+  passed off as 1 MHz time, and the ~15× warp factor on the measuring
+  host is what the reporter saw as an ~86× gap against their onchip
+  build. Measured via the KERNAL jiffy clock under VICE (NTSC, VIC
+  blanked): `ec_precompute_256` **~1038 Mcyc ≈ 17 min at 1 MHz** and
+  `ec_precompute_384` **~2108 Mcyc ≈ 34 min** in the default profile;
+  onchip measures **~2061 Mcyc ≈ 34 min** / **~4782 Mcyc ≈ 78 min** at
+  1 MHz but scales with host clock (~45 s @48 MHz consumer-measured —
+  the reporter's ~2160 s @1 MHz extrapolation is the *onchip* figure,
+  confirmed here within 7%; only onchip divides by the clock
+  multiplier, the default profile's REU row fetches being wall-anchored
+  at turbo, issue #83). Corrected in
+  `src/points256_comb.s`, API.md §3/§2-table/§8.4/§8.4.1/§8.5 (the §8.5
+  table is now per-profile with a consumer amortisation note), README,
+  CLAUDE.md (including the "sentinel in ~2 s under warp" claim — it is
+  minutes; and the boot-cost bullet), and the v0.11.0 release notes
+  (annotated correction; GitHub release body synced). Also corrects the
+  last stale VIC-blank "+20-25%" comment (`tools/bench_p256.py`,
+  issue #116 class). Doc/comment-only — PRG byte-identical.
+
 ## [0.11.0] — 2026-08-15
 
 ### Added

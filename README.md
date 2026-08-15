@@ -345,10 +345,15 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 - **P-384:** `ec_scalar_mul_384` drops from 270,572,330 cycles to
   134,416,870 cycles (-50.3%). 48 iterations instead of 96. The
   precompute table occupies REU bank 2 `$4000`..`$9F9F` (24 KB).
-- **Boot cost:** building the 256-entry tables adds roughly 89 seconds
-  of init time (measured via the P-384 bench tool: 17.6 s h=4 baseline
-  to 106.3 s h=8). Within budget; deliberate trade for a one-shot
-  per-process cost in exchange for ~2x per-call scalar_mul speedup.
+- **Boot cost:** building the two 256-entry tables costs **~51 minutes
+  of 1 MHz time combined** (issue #121: `ec_precompute_256` ~1038 Mcyc
+  ≈ 17 min, `ec_precompute_384` ~2108 Mcyc ≈ 34 min, measured via the
+  KERNAL jiffy clock under VICE, default profile). The "~89 seconds"
+  this bullet carried from Wave 7a was the bench tool's *warp-mode wall
+  clock* (17.6 s h=4 → 106.3 s h=8 on that host), not C64 time.
+  Deliberate trade for a one-shot per-process cost in exchange for ~2×
+  per-call scalar_mul speedup — but at stock clock the fill only
+  amortises over multiple verifies (see API.md §8.5 sizing note).
 
 ## Status
 
