@@ -612,6 +612,21 @@ archives in `build/lib/`. Consumers fetch the archive matching their
 use case and pass it to `ld65` directly; no source patching, no
 intermediate `.o` shuffling.
 
+**Member basenames are contract surface, and they change at the next
+MAJOR.** SPEC §6.5 lists archive member basenames alongside symbol and
+segment names as versioned surface. This library's members are still
+unprefixed (`lib_version.o`, `lib_manifest_<variant>.o`,
+`precalc_manifest_<variant>.o`, `zp_config_<variant>.o`, plus the
+per-module objects), which is the flat namespace §6.5 defers to each
+library's next MAJOR: at that bump they take the `nistcurves_` prefix
+(`nistcurves_lib_version.o`). Members cannot dual-name, so this rides
+MAJOR rather than the usual one-MINOR rename window. A consumer whose
+build scripts name members — an `od65` post-check over an extracted
+member, an `ar65 d` surgery step — should read them from `ar65 t` at
+build time rather than hard-coding them across a MAJOR bump. (SPEC
+v0.11.0's carve-out, which has new libraries born prefixed, does not
+reach this library: it scopes to libraries with no released consumers.)
+
 | Target                       | Archive                              | Use case                                                                                 |
 |------------------------------|--------------------------------------|------------------------------------------------------------------------------------------|
 | `make lib`                   | `nistcurves.a`                       | Whole library minus the standalone test PRG driver. Default for whole-library consumers. |
@@ -675,6 +690,27 @@ Exclusion summary (per minimal archive):
   | `nistcurves-p384-sha384.a` | `LIB_SHA384_ONLY` | 8 | `$00` | `$0000` | `$0000` | 9000 | 0 | sha384_k (1) |
   | `nistcurves-p256-comb.a` | `LIB_P256_COMB_ONLY` | 17 | `$07` | `$0007` | `$0007` | 9216 | 1050 | sqtab, reu_mul, lim_lee_comb_p256 (3) |
   | `nistcurves-p256-comb-onchip.a` | `LIB_P256_COMB_ONLY` + `FP_ONCHIP_MUL` | 17 | `$04` | `$0005` | `$0005` | 9216 | 870 | sqtab, lim_lee_comb_p256 (2) |
+
+  **What the two byte figures cover.** Per SPEC §5, `RESIDENT_BYTES` and
+  `COLD_BYTES` are **code + rodata only**. RW scratch (the `*_BSS`
+  segments), the page-aligned 512 B REU DMA landing pages
+  (`LIB_NISTCURVES_TABLES`), and the 1 KB `sqtab` table generated at
+  runtime into `LIB_SHARED_SQTAB_BASE` are all excluded and must be
+  budgeted separately — see the §8.3 memory map. Worked example for the
+  archive most consumers link, measured with `od65 --dump-segments` over
+  the extracted members of `build/lib/nistcurves-p256-verify.a`:
+  `P256_CODE` 8324 + `MUL_CODE` 429 + `P256_RODATA` 192 = 8945 code +
+  rodata (of which 429 B is the cold block itemized in
+  `src/lib_manifest.s` — `sqtab_init` + `ct_mul_8x8` 223,
+  `reu_fetch_mul_row` 20, `reu_mul_init` 186 — leaving 8516 resident
+  against the 8700 equate, §6.6 safe direction), **plus** 1348 B BSS
+  (`data_p256.o` 1312 + `data_shared.o` 36) + 512 B DMA landing pages,
+  and 1024 B of `sqtab` if no sibling library already owns it. Total RAM
+  for that archive is therefore 10805 B, or 11829 B counting `sqtab` —
+  not the 27000 the *whole-library*
+  manifest reports: since v0.9.0 (issue #90) each archive links its own
+  `lib_manifest_<variant>.o`, so read the row above for the archive you
+  actually link rather than the default one.
 
   The two `nistcurves-p256-comb*` rows (issue #117) are the verify set
   plus the comb: ZP adds `nistcurves_zp_ptr1` (the `ec_precompute_256`
@@ -958,8 +994,13 @@ comb-carrying onchip archive and use fixed-base scalar_mul).
 Programs using only one curve may omit the other's `ec_precompute_*`
 call. Programs using neither curve's scalar_mul (e.g. only raw field
 arithmetic or point double/add on caller-supplied points) may omit both
-`ec_precompute_*` calls and save the full ~100 s precompute cost, at
-the price of losing `ec_scalar_mul` and `ec_scalar_mul_384`.
+`ec_precompute_*` calls and save the whole precompute cost — **~3146
+Mcyc ≈ 51 min at 1 MHz** in the default profile, ~6843 Mcyc ≈ 112 min
+onchip (the two rows of the table above summed) — at the price of
+losing `ec_scalar_mul` and `ec_scalar_mul_384`. (The "~100 s" this
+sentence carried through v0.11.2 was one of the VICE warp-mode
+wall-second figures issue #121 corrected; it was missed in that
+sweep.)
 
 ### 8.6 Version compatibility checks
 
