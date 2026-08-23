@@ -14,7 +14,7 @@ contract).
 
 ### Changed
 
-- **Conformance baseline moves to c64-lib-contract SPEC v0.11.0**
+- **Conformance baseline moves to c64-lib-contract SPEC v0.11.1**
   (doc-only; no source, no archive, no manifest change). The two
   releases since our v0.10.6 baseline are the `c64-mlkem` intake pair and
   impose nothing on this library, verified clause-by-clause against the
@@ -30,6 +30,32 @@ contract).
   bare `LIB_VERSION_*` keep being exported (gated behind
   `-D LIB_NO_BARE_EXPORTS=1`) and the `nistcurves_`-prefixed member
   basenames remain a next-MAJOR obligation.
+
+  **v0.11.1** (§6.3, PATCH) names which consequence the v0.10.5
+  select-or-reject rule carries in which case: a knob value the target
+  cannot honor is rejected at parse time, one it can honor **invalidates
+  what it reconfigures**. This library is on the invalidation branch (the
+  Makefile knob stamp, shipped in v0.11.2) and upstream's entry records it
+  as such — no behaviour change owed. The clause states two properties a
+  guard must have, and the second exposed a real gap in our check; see
+  below.
+
+### Added
+
+- **`make check-archives`: the knob-staleness leg now covers
+  `CONTRACT_DEFINES`, not just `CONTRACT_ZP_DEFINES`.** SPEC v0.11.1 states
+  that an invalidation check must assert the **artifact flipped** rather
+  than that something rebuilt. Ours did assert a flip — but only on the ZP
+  axis, while the Makefile stamp flattens *both* knobs, so a regression
+  dropping `$(CONTRACT_DEFINES)` from `CURRENT_KNOBS` passed the ratchet.
+  Three new legs drive the real make flow with
+  `CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1` and read `lib_version.o`'s
+  export surface: bare `LIB_VERSION_MAJOR` present → absent → present.
+  Negative-tested by making exactly that Makefile edit: the ZP legs stay
+  green (`fp_src1` still flips `0x22`→`0x50`→`0x22`) and the new leg fails
+  on the stale bare exports. The incrementality assertion (unchanged knobs
+  must not re-run the assembler) covers the clause's first property and was
+  already present.
 
 ### Fixed
 
