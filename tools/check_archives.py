@@ -950,13 +950,56 @@ def defines_staleness_check(failures):
     without the Makefile's knob stamp, make reuses every stale object and
     exits 0 with an artifact other than the one requested (shape-3 silent
     no-op, measured live during the issue #123 repro). Drives the REAL make
-    flow three ways and reads the built object's exported value each time.
-    Runs LAST: a knob change wipes build/*.o by design; the final leg
-    restores the default configuration."""
+    flow six ways -- three per knob, CONTRACT_DEFINES then
+    CONTRACT_ZP_DEFINES -- and reads the built object's exported surface each
+    time, which is SPEC v0.11.1's "assert the artifact flipped, not that
+    something rebuilt". Runs LAST: a knob change wipes build/*.o by design;
+    the final leg restores the default configuration."""
     print("\n=== §6.3 knob-staleness guard (defines change must rebuild) ===")
 
     def fp_src1_value():
         return od65_value([BUILD / "zp_config.o"], "fp_src1")
+
+    # SPEC v0.11.1 states the two properties an invalidation guard must have:
+    # unchanged knobs must not rebuild (the mtime leg at the bottom), and the
+    # check must assert the ARTIFACT FLIPPED rather than that something
+    # rebuilt -- a check with only change-rebuilds legs passes on a guard that
+    # has degraded to an unconditional rebuild. Every leg here reads the built
+    # object's exported surface, so both properties are covered.
+    #
+    # CONTRACT_DEFINES leg first: the stamp flattens BOTH knobs
+    # (Makefile CURRENT_KNOBS), and through v0.11.2 this check exercised only
+    # the ZP half -- so a regression dropping $(CONTRACT_DEFINES) from the
+    # stamp passed. Negative-tested by making exactly that edit: with only the
+    # ZP legs the check still reported OK; with this leg it fails on the
+    # unchanged bare-export surface. Runs before the ZP legs because a knob
+    # change wipes build/*.o, and the ZP legs' final default-build leg is what
+    # leaves zp_config.o current for the incrementality assertion.
+    def bare_version_exported():
+        return "LIB_VERSION_MAJOR" in od65_names(BUILD / "lib_version.o",
+                                                 "--dump-exports")
+
+    defines_legs = [
+        (["make", "-C", str(REPO), "build/lib_version.o"], True,
+         "default build (bare §1 aliases exported)"),
+        (["make", "-C", str(REPO), "build/lib_version.o",
+          "CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1"], False,
+         "changed CONTRACT_DEFINES must take effect (stale reuse would keep the bare exports)"),
+        (["make", "-C", str(REPO), "build/lib_version.o"], True,
+         "revert to default"),
+    ]
+    for cmd, want, label in defines_legs:
+        rc, out = sh(cmd)
+        got = bare_version_exported()
+        if rc or got != want:
+            failures.append(
+                f"knob-staleness: {label}: bare LIB_VERSION_MAJOR "
+                f"{'exported' if got else 'absent'}, want "
+                f"{'exported' if want else 'absent'} (rc={rc})")
+            print(f"  STALENESS FAIL [{label}]: bare LIB_VERSION_MAJOR "
+                  f"{'exported' if got else 'absent'}, expected "
+                  f"{'exported' if want else 'absent'}")
+            return
 
     legs = [
         (["make", "-C", str(REPO), "build/zp_config.o"], 0x22, "default build"),
@@ -980,7 +1023,8 @@ def defines_staleness_check(failures):
         failures.append("knob-staleness: unchanged knobs re-ran the assembler (stamp churns)")
         print("  STALENESS FAIL: unchanged knobs rebuilt the object -- stamp not stable")
         return
-    print("  staleness guard OK (change rebuilds; revert rebuilds; no-change is incremental)")
+    print("  staleness guard OK (both knobs flip the artifact; revert restores; "
+          "no-change is incremental)")
 
 
 def main():

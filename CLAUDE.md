@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v0.11.0** (verified clause-by-clause; the
+— conformant through **SPEC v0.11.1** (verified clause-by-clause; the
 alignment baseline lives in the session memory's lib-contract-alignment-monitor
 note; v0.10.4–v0.10.6 are the #117/#123-driven clarifications — the comb
 targets discharge v0.10.4's member-set-axis obligation, the Makefile's
@@ -23,7 +23,16 @@ version exports not emitted at all). Both scope to libraries with no
 released consumers; c64-https pins our v0.11.2, so we stay on the MAJOR
 path — bare `LIB_VERSION_*` stay exported and gated, and the
 `nistcurves_`-prefixed member basenames remain a next-MAJOR obligation,
-not a now one). That covers §1–§7 core (prefixed version equates with gated bare
+not a now one. **v0.11.1** names which consequence §6.3's select-or-reject
+rule carries in which case, and puts this library on the *invalidation*
+branch — a knob value the build can honor must invalidate what it
+reconfigures, which is what the Makefile's knob stamp does; upstream
+records us as already on that branch. Its two stated guard properties
+(unchanged knobs must not rebuild; the check must assert the **artifact
+flipped**, not that something rebuilt) are both pinned by
+`make check-archives`, which since this alignment drives the real make
+flow six ways — three legs per knob axis — reading the built object's
+exported surface each time). That covers §1–§7 core (prefixed version equates with gated bare
 aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, REU symbol contract,
 §4 load-bearing cfg attribute declarations, per-archive §5 manifests with
 §6.6 safe-direction footprint values, the §6 build-and-consume chapter:
