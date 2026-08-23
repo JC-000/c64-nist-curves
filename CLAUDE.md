@@ -8,13 +8,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v0.10.6** (verified clause-by-clause; the
+— conformant through **SPEC v0.11.0** (verified clause-by-clause; the
 alignment baseline lives in the session memory's lib-contract-alignment-monitor
 note; v0.10.4–v0.10.6 are the #117/#123-driven clarifications — the comb
 targets discharge v0.10.4's member-set-axis obligation, the Makefile's
 knob-staleness stamp discharges v0.10.5's looks-reachable rule for
 `CONTRACT_DEFINES`/`CONTRACT_ZP_DEFINES`, and the §8.3 provider-surface
-import shape shipped in v0.11.1 satisfies v0.10.6). That covers §1–§7 core (prefixed version equates with gated bare
+import shape shipped in v0.11.1 satisfies v0.10.6. **v0.10.7 and v0.11.0
+are the c64-mlkem-intake pair and impose nothing on this library**:
+v0.10.7 registers the `mlkem_` ZP prefix — collision-free against our
+`fp_` / `ec_` / `sha_` / `nistcurves_` rows — and v0.11.0 adds two
+*zero-consumer* carve-outs (§6.5 member basenames born prefixed, §1 bare
+version exports not emitted at all). Both scope to libraries with no
+released consumers; c64-https pins our v0.11.2, so we stay on the MAJOR
+path — bare `LIB_VERSION_*` stay exported and gated, and the
+`nistcurves_`-prefixed member basenames remain a next-MAJOR obligation,
+not a now one). That covers §1–§7 core (prefixed version equates with gated bare
 aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, REU symbol contract,
 §4 load-bearing cfg attribute declarations, per-archive §5 manifests with
 §6.6 safe-direction footprint values, the §6 build-and-consume chapter:

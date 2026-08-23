@@ -12,6 +12,48 @@ contract).
 
 ## [Unreleased]
 
+### Changed
+
+- **Conformance baseline moves to c64-lib-contract SPEC v0.11.0**
+  (doc-only; no source, no archive, no manifest change). The two
+  releases since our v0.10.6 baseline are the `c64-mlkem` intake pair and
+  impose nothing on this library, verified clause-by-clause against the
+  `v0.10.6..v0.11.0` SPEC diff: **v0.10.7** registers the `mlkem_` ZP
+  prefix (collision-free against our `fp_` / `ec_` / `sha_` /
+  `nistcurves_` registry rows; the new library claims zero REU banks,
+  zero §8.0 shared-primitive bits and 8 B of ZP, so a consumer co-linking
+  it with any of our archives has no disjointness or §3 budget
+  interaction), and **v0.11.0** adds two *zero-consumer* carve-outs —
+  §6.5 member basenames born prefixed, §1 bare version exports not
+  emitted at all. Both scope to libraries with no released consumers;
+  `c64-https` pins our v0.11.2, so this library stays on the MAJOR path:
+  bare `LIB_VERSION_*` keep being exported (gated behind
+  `-D LIB_NO_BARE_EXPORTS=1`) and the `nistcurves_`-prefixed member
+  basenames remain a next-MAJOR obligation.
+
+### Fixed
+
+- **`API.md` §8.5: the last VICE warp-mode wall-second figure issue #121
+  missed.** The "omit both `ec_precompute_*` calls and save the full
+  ~100 s precompute cost" sentence still carried a warp figure after that
+  sweep corrected the table directly above it; the real saving is ~3146
+  Mcyc ≈ 51 min at 1 MHz (default profile) / ~6843 Mcyc ≈ 112 min
+  (onchip).
+
+### Added
+
+- **`API.md` §8.4: what `RESIDENT_BYTES` / `COLD_BYTES` actually cover**,
+  with a measured worked example for `nistcurves-p256-verify.a` (8945 B
+  code+rodata of which 429 B cold, plus 1348 B BSS + 512 B DMA landing
+  pages + 1024 B `sqtab`). Written after a consumer sizing a memory
+  budget attributed the whole-library 27000 to the verify archive; the
+  note points at the per-archive row and records that each archive has
+  linked its own `lib_manifest_<variant>.o` since v0.9.0.
+- **`API.md` §8.4: archive member basenames are versioned surface** and
+  take the `nistcurves_` prefix at the next MAJOR — members cannot
+  dual-name, so consumer scripts that name members should read them from
+  `ar65 t` at build time rather than hard-coding them across that bump.
+
 ## [0.11.2] — 2026-08-15
 
 ### Added
