@@ -48,6 +48,7 @@
 .import reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi
 .import reu_reu_bank, reu_len_lo, reu_len_hi
 .import reu_addr_ctrl, reu_command
+.import nistcurves_reu_dma_wait    ; SPEC v0.13.0 §8.2 (issue #130)
 
 ; --- REU layout contract (SPEC §3) ---
 .import LIB_NISTCURVES_REU_BANK_COMB
@@ -690,6 +691,7 @@ sm384w_stash_p2:
         sta reu_addr_ctrl
         lda #%10110000           ; execute + autoload + STASH
         sta reu_command
+        jsr nistcurves_reu_dma_wait ; SPEC v0.13.0 §8.2 (a)+(b): restore rewrites registers next
 
         jsr sm384w_restore_reu
         rts
@@ -713,6 +715,7 @@ sm384w_fetch_to_p2:
         sta reu_addr_ctrl
         lda #%10110001           ; execute + autoload + FETCH
         sta reu_command
+        jsr nistcurves_reu_dma_wait ; SPEC v0.13.0 §8.2 (a)+(b): restore rewrites registers next
 
         jsr sm384w_restore_reu
         rts

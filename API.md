@@ -229,6 +229,29 @@ routine that may invoke `fp_mul` / `fp_sqr` / any field op that
 multiplies.** Interleaving host REU traffic with library multiplies
 without honouring this contract will produce silent wrong answers.
 
+**DMA completion confirm + post-execute settle (c64-lib-contract SPEC
+v0.13.0 §8.2, issue #130).** After every REU execute, and before the
+next REU register access, the library (a) reads `$DF00` and confirms
+bit 6 (end-of-block), spinning bounded if it is not set, and (b) leaves
+a post-execute settle. This is not optional hardening: on U64E fw 3.15
+at 48 MHz the REU's post-transfer restore outlasts a turbo CPU, and a
+register write that follows the execute immediately is lost or
+misapplied — wrong row, wrong products, silent wrong crypto
+([c64-lib-contract#144](https://github.com/JC-000/c64-lib-contract/issues/144)).
+The six `fp_mul` / `fp_sqr` row fetches use an inline 7-cycle confirm
+(the settle is structural there — the next REU write is a full
+accumulate body away); the table build, the comb DMA routines and
+`reu_fetch_mul_row` call `nistcurves_reu_dma_wait`, whose settle length
+is `LIB_NISTCURVES_REU_SETTLE_ITER` (default 8 → ~107 cycles, 2.2× the
+measured ≥ 49-cycle floor at 48 MHz; see §8.6.1 to raise it). If a
+bounded spin ever expires, the sticky byte `nistcurves_reu_dma_timeout`
+is set to 1 and execution proceeds; a host that wants fail-closed
+behaviour tests it after `reu_mul_init`. **Host programs that issue
+their own REU DMA between library calls should apply the same clause to
+their own execute sites** — the library's confirm covers only the
+transfers it issues. 64 MHz (C64 Ultimate) is unbracketed as of SPEC
+v0.13.0; raise the knob there until a FAIL/PASS bracket exists.
+
 ## 5. Public API reference
 
 All symbols below are defined as globally-addressable labels in the file
@@ -699,14 +722,17 @@ Exclusion summary (per minimal archive):
   budgeted separately — see the §8.3 memory map. Worked example for the
   archive most consumers link, measured with `od65 --dump-segments` over
   the extracted members of `build/lib/nistcurves-p256-verify.a`:
-  `P256_CODE` 8324 + `MUL_CODE` 429 + `P256_RODATA` 192 = 8945 code +
-  rodata (of which 429 B is the cold block itemized in
+  `P256_CODE` 8348 + `MUL_CODE` 477 + `P256_RODATA` 192 = 9017 code +
+  rodata (of which 438 B is the cold block itemized in
   `src/lib_manifest.s` — `sqtab_init` + `ct_mul_8x8` 223,
-  `reu_fetch_mul_row` 20, `reu_mul_init` 186 — leaving 8516 resident
-  against the 8700 equate, §6.6 safe direction), **plus** 1348 B BSS
-  (`data_p256.o` 1312 + `data_shared.o` 36) + 512 B DMA landing pages,
+  `reu_fetch_mul_row` 23, `reu_mul_init` 192 — leaving 8579 resident
+  against the 8700 equate, §6.6 safe direction; figures after the SPEC
+  v0.13.0 §8.2 completion-confirm adoption, issue #130, which added 24 B
+  to `fp256.o`, 42 B to `mul_8x8.o` and 6 B to `reu_mul_init.o`),
+  **plus** 1351 B BSS
+  (`data_p256.o` 1312 + `data_shared.o` 39) + 512 B DMA landing pages,
   and 1024 B of `sqtab` if no sibling library already owns it. Total RAM
-  for that archive is therefore 10805 B, or 11829 B counting `sqtab` —
+  for that archive is therefore 10880 B, or 11904 B counting `sqtab` —
   not the 27000 the *whole-library*
   manifest reports: since v0.9.0 (issue #90) each archive links its own
   `lib_manifest_<variant>.o`, so read the row above for the archive you
@@ -1148,6 +1174,26 @@ can verify co-linked libraries agree on placement:
 .import LIB_X25519_SHARED_REU_MUL_BANK
 .assert LIB_NISTCURVES_SHARED_REU_MUL_BANK = LIB_X25519_SHARED_REU_MUL_BANK, lderror, "co-linked libraries disagree on reu_mul placement"
 ```
+
+**§8.2 post-execute settle knob** (SPEC v0.13.0, issue #130).
+`LIB_NISTCURVES_REU_SETTLE_ITER` (default 8; 1..255) sets how many
+9-cycle iterations `nistcurves_reu_dma_wait` settles for after every REU
+execute at a tight site, on top of the `$DF00` bit-6 confirm. The
+default's ~107-cycle execute-to-next-write distance is 2.2× the measured
+floor (≥ 49 cycles at 48 MHz, U64E fw 3.15). The floor is
+**unbracketed at 64 MHz**; a consumer running a C64 Ultimate at that
+clock raises the knob until a FAIL/PASS bracket exists (§13.6's ~63 µs
+fence ≈ 450 iterations is the contract's safe over-estimate — cap at 255
+and split across the boot cost if you need more):
+
+```sh
+make lib CONTRACT_DEFINES='-D LIB_NISTCURVES_REU_SETTLE_ITER=32'
+```
+
+The equate is exported `:abs` as the value the code reads, so a consumer
+can `.import` it and `.assert` the archive settles for what it expects.
+`nistcurves_reu_dma_timeout` (BSS, sticky) is 1 if any bounded spin
+expired; see §4.
 
 `lderror`, not `error`: the operands are imports and have no value until link
 (§8.6's guard rule). `LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED` is derived from

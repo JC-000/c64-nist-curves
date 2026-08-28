@@ -16,6 +16,10 @@
 ; REU layout contract (SPEC §3)
 .import LIB_NISTCURVES_REU_BANK_MUL
 
+; SPEC v0.13.0 §8.2 DMA completion confirm (issue #130)
+.import reu_status, nistcurves_reu_dma_wait
+.include "reu_dma_done.inc"
+
 .ifdef FP_ONCHIP_MUL
 .import og_common, og_src_ld    ; issue #69 on-chip-mul turbo profile
 .endif
@@ -198,6 +202,7 @@ fp_mul:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a); (b) structural -- see reu_dma_done.inc
 .endif
 
         lda #<fp_wide
@@ -452,6 +457,7 @@ fp_sqr:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a); (b) structural -- see reu_dma_done.inc
 .endif
 
         lda #<fp_wide
@@ -694,6 +700,7 @@ fp_sqr:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a); (b) structural -- see reu_dma_done.inc
 .endif
 
         ldy nistcurves_mul_cached_a

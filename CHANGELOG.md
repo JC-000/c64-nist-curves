@@ -14,6 +14,41 @@ contract).
 
 ### Changed
 
+- **Adopts c64-lib-contract SPEC v0.13.0 §8.2: REU DMA completion is
+  confirmed and a post-execute settle observed before the next REU
+  register access** (issue #130; upstream
+  [c64-lib-contract#144](https://github.com/JC-000/c64-lib-contract/issues/144)
+  / #146). On U64E fw 3.15 at 48 MHz the REU's post-transfer restore
+  outlasts a turbo CPU, so the register write that follows an execute
+  lands on a busy controller — measured upstream as every REU-backed
+  Noise handshake failing its AEAD while the same build passed at 1 MHz
+  and on fw 3.14d. Every adopter, this library included, had assumed the
+  REU's DMA line halting the CPU was the whole story. All fourteen
+  `sta reu_command` execute sites now honour the clause, in two forms
+  chosen by how soon the next REU register access follows:
+  - the six `fp_mul` / `fp_sqr` row fetches (both curves) get an inline
+    `bit $DF00 / bvs` end-of-block confirm (7 cycles, A/X/Y preserved)
+    that only enters the bounded spin if bit 6 is clear; the settle
+    obligation is met structurally there, the accumulate body between
+    consecutive fetches being ≥ ~80 cycles;
+  - the two `reu_mul_init` stashes, the four comb stash/fetch routines
+    (whose `*_restore` rewrites five registers at once) and the exported
+    `reu_fetch_mul_row` call the new `nistcurves_reu_dma_wait`: bounded
+    16-bit spin on bit 6, then `LIB_NISTCURVES_REU_SETTLE_ITER` × 9-cycle
+    settle (default 8 → ~107 cycles execute-to-next-write, 2.2× the
+    measured ≥ 49-cycle floor at 48 MHz).
+
+  Cost: +7 cycles per multiply row (~0.25 % of `fp_mul`), +108 B of
+  code across six objects (PRG 37480 → 37483 B — page-alignment padding
+  absorbed the rest), +3 B BSS. §5 manifest pins unchanged and still
+  measured inside the band by `make check-archives`. The oracle suites
+  pass on VICE (which sets bit 6 on the first read, so no site ever
+  spins). **64 MHz remains unbracketed** in SPEC v0.13.0 and here: the
+  settle knob exists precisely so a C64 Ultimate bracket can raise it
+  without a code change. Conformance baseline moves to **SPEC v0.14.0**;
+  v0.12.0, v0.12.1 and v0.14.0 are §13 (network ABI) releases and impose
+  nothing on this library, which does not adopt §13.
+
 - **Conformance baseline moves to c64-lib-contract SPEC v0.11.1**
   (doc-only; no source, no archive, no manifest change). The two
   releases since our v0.10.6 baseline are the `c64-mlkem` intake pair and
@@ -41,6 +76,20 @@ contract).
   below.
 
 ### Added
+
+- **`LIB_NISTCURVES_REU_SETTLE_ITER`** (`src/reu_config.s`, exported
+  `:abs`, consumer-overridable via `CONTRACT_DEFINES='-D
+  LIB_NISTCURVES_REU_SETTLE_ITER=<1..255>'`): iterations of the SPEC
+  v0.13.0 §8.2 post-execute settle loop in `nistcurves_reu_dma_wait`.
+  Exported as the code-read symbol so a consumer can assert what the
+  archive actually settles for.
+- **`nistcurves_reu_dma_timeout`** (`src/data_shared.s`, 1 B, sticky):
+  set to 1 if any bounded spin on `$DF00` bit 6 ever expires. The
+  primitive has no error channel, so this is how a bounded-spin failure
+  surfaces (the clause's SHOULD); consumers whose linker config makes the
+  BSS segment `bss`-typed must zero it before init.
+- **`src/reu_dma_done.inc`**: the `REU_DMA_CONFIRM` macro and the
+  per-site rationale; shipped in the release tarball.
 
 - **`make check-archives`: the knob-staleness leg now covers
   `CONTRACT_DEFINES`, not just `CONTRACT_ZP_DEFINES`.** SPEC v0.11.1 states

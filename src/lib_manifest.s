@@ -329,6 +329,10 @@
     ; the variant shares one figure across both profiles like every
     ; other variant. §6.6: next 256-byte boundary above the larger
     ; measurement (9094) = 9216, margin +1.3% onchip / +2.5% DMA.
+    ; Issue #130 (SPEC v0.13.0 §8.2 completion confirm): +24 B fp256
+    ; (inline confirms) + 39 B nistcurves_reu_dma_wait (resident, both
+    ; profiles) + 6 B points256_comb -> 9060 DMA / 9163 onchip resident;
+    ; 9216 still covers both (+0.6% onchip). Pinned by check-archives.
     LIB_NISTCURVES_RESIDENT_BYTES = 9216
   .else
     LIB_NISTCURVES_RESIDENT_BYTES = 27000
@@ -471,6 +475,8 @@
     ;
     ;   DMA:    sqtab_init+ct_mul_8x8 223 + reu_fetch_mul_row 20
     ;           + reu_mul_init 186 + ec_precompute_256 616  = 1045
+    ;           (issue #130: reu_fetch_mul_row 23, reu_mul_init 192 -> 1054;
+    ;            nistcurves_reu_dma_wait is RESIDENT, not cold)
     ;   onchip: mul_8x8_onchip cold 243 + ec_precompute_256 616 = 859
     ;
     ; The 186 B reu_mul_init delta is 18% -- outside ±5% like every other

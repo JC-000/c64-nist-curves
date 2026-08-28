@@ -59,6 +59,9 @@
 ; --- REU layout contract (SPEC §3) ---
 .import LIB_NISTCURVES_REU_BANK_MUL
 
+; --- SPEC v0.13.0 §8.2 DMA completion confirm (issue #130) ---
+.import nistcurves_reu_dma_wait
+
 ; --- mul_8x8 imports ---
 .import mul_8x8, poly_prod_lo, poly_prod_hi
 .import smc_sum_a_imm, smc_diff_a_imm
@@ -124,6 +127,7 @@ reu_mul_init:
         sta reu_addr_ctrl      ; both addresses increment
         lda #%10110000         ; execute + autoload + STASH (C64->REU)
         sta reu_command
+        jsr nistcurves_reu_dma_wait ; SPEC v0.13.0 §8.2 (a)+(b): next stash follows at once
 
         ; Stash hi table (256 bytes) to REU at offset a*512+256
         lda #<nistcurves_mul_dma_hi
@@ -149,6 +153,7 @@ reu_mul_init:
         sta reu_addr_ctrl
         lda #%10110000         ; execute + autoload + STASH
         sta reu_command
+        jsr nistcurves_reu_dma_wait ; SPEC v0.13.0 §8.2 (a)+(b): @outer re-stashes immediately
 
         inc reu_init_a
         beq @init_done         ; if wrapped to 0, done
