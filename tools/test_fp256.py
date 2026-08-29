@@ -456,9 +456,18 @@ def test_fp_zero(transport, labels, rng):
     return passed, failed
 
 
+def _flags_cz(regs):
+    """(C, Z) from the register dict jsr() returns ('FL' = 6502 P)."""
+    fl = regs.get("FL", regs.get("FLAGS", regs.get("SR", 0)))
+    return fl & 1, (fl >> 1) & 1
+
+
 def test_fp_cmp(transport, labels, rng):
-    """fp_cmp: smoke test that the routine executes without crashing for
-    a mix of random and edge-case inputs."""
+    """fp_cmp: C = 1 iff (fp_src1) >= (fp_src2), asserted from the status
+    register jsr() returns. (Through v0.11.x this test counted every case
+    as passed without reading anything back -- audit 2026-08-28 F-4.)
+    Z is NOT part of the contract (F-5: the trailing `dey` clears it on
+    equality), so only C is asserted."""
     passed = failed = 0
     cases = [
         (42, 42),
@@ -467,6 +476,11 @@ def test_fp_cmp(transport, labels, rng):
         ((1 << 256) - 1, 0),
         (0, (1 << 256) - 1),
         (GX256, GY256),
+        (P256, P256),
+        (P256 - 1, P256),
+        (P256 + 1, P256),
+        (1 << 248, 1),                 # high-byte-only difference
+        (1, 1 << 248),
     ]
     for i in range(RANDOM_CASES):
         cases.append((rng.rand_256bit(), rng.rand_256bit()))
@@ -475,26 +489,38 @@ def test_fp_cmp(transport, labels, rng):
         write_field_elem(transport, labels["fp_tmp2"], b)
         set_fp_ptrs(transport, labels,
                     src1=labels["fp_tmp1"], src2=labels["fp_tmp2"])
-        jsr(transport, labels["fp_cmp"])
-        passed += 1
+        regs = jsr(transport, labels["fp_cmp"])
+        c, _z = _flags_cz(regs)
+        expected = 1 if a >= b else 0
+        if c == expected:
+            passed += 1
+        else:
+            failed += 1
+            print(f"  FAIL fp_cmp({a:#x}, {b:#x}): C={c}, expected {expected}")
     return passed, failed
 
 
 def test_fp_is_zero(transport, labels, rng):
-    """fp_is_zero: smoke test — verifies the routine runs against a mix
-    of zero and non-zero inputs. (No flag extraction here; full flag
-    checking would require reading the 6502 status register.)"""
+    """fp_is_zero: Z = 1 iff (fp_src1) == 0, asserted from the status
+    register jsr() returns (was a run-without-checking smoke test through
+    v0.11.x -- audit 2026-08-28 F-4)."""
     passed = failed = 0
     if labels.address("fp_is_zero") is None:
         return 0, 0
-    cases = [0, 1, (1 << 256) - 1, GX256, GY256]
+    cases = [0, 1, (1 << 256) - 1, GX256, GY256, 1 << 248, 1 << 8, 256]
     for i in range(RANDOM_CASES):
         cases.append(rng.rand_256bit())
     for val in cases:
         write_field_elem(transport, labels["fp_tmp1"], val)
         set_fp_ptrs(transport, labels, src1=labels["fp_tmp1"])
-        jsr(transport, labels["fp_is_zero"])
-        passed += 1
+        regs = jsr(transport, labels["fp_is_zero"])
+        _c, z = _flags_cz(regs)
+        expected = 1 if val == 0 else 0
+        if z == expected:
+            passed += 1
+        else:
+            failed += 1
+            print(f"  FAIL fp_is_zero({val:#x}): Z={z}, expected {expected}")
     return passed, failed
 
 

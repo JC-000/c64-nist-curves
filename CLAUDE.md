@@ -109,6 +109,8 @@ python3 tools/bench_p384.py          # P-384 primitive benchmarks (oracle-gated)
 python3 tools/bench_p256_u64.py      # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_p384_u64.py      # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAVP SigVer)
+python3 tools/test_ecdsa_adversarial.py  # adversarial ECDSA verify: Q-gate h=0 construction, range/h>=n/u1=0/R=inf/cofactor/malleability, CAVP reason codes asserted (hazmat oracle; --strict fails red-known rows)
+python3 tools/test_prims_adversarial.py  # adversarial field/point/SHA-384: fp_cmp/is_zero flags, point-add degeneracies, comb + var-base k edges, SHA chaining; fp_mod_inv(0)/j2a(Z=0) hangs are RED(known F-1) until fixed
 python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
 python3 tools/bench_sha384.py        # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 python3 tools/bench_reu_mult.py      # REU multiply-table cost decomposition (row-fetch DMA vs mul_8x8 vs fp_mul; VICE, ~4 min; not CI-gating)

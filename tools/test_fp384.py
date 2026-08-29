@@ -269,9 +269,20 @@ def test_fp_zero(transport, labels, rng):
     return passed, failed
 
 
+def _flags_cz(regs):
+    """(C, Z) from the register dict jsr() returns ('FL' = 6502 P)."""
+    fl = regs.get("FL", regs.get("FLAGS", regs.get("SR", 0)))
+    return fl & 1, (fl >> 1) & 1
+
+
 def test_fp_cmp(transport, labels, rng):
+    """fp_cmp_384: C = 1 iff (fp_src1) >= (fp_src2), asserted from the
+    status register jsr() returns (counted unconditionally through v0.11.x
+    -- audit 2026-08-28 F-4). Z is not contractual (F-5); only C."""
     passed = failed = 0
-    cases = [(42, 42), (0, 1), (1, 0), ((1 << 384) - 1, 0), (GX384, GY384)]
+    cases = [(42, 42), (0, 1), (1, 0), ((1 << 384) - 1, 0), (GX384, GY384),
+             (0, (1 << 384) - 1), (P384, P384), (P384 - 1, P384),
+             (P384 + 1, P384), (1 << 376, 1), (1, 1 << 376)]
     for i in range(RANDOM_CASES):
         cases.append((rng.rand_384bit(), rng.rand_384bit()))
     for a, b in cases:
@@ -279,21 +290,36 @@ def test_fp_cmp(transport, labels, rng):
         write_fe_384(transport, labels["fp384_tmp2"], b)
         set_fp_ptrs(transport, labels,
                     src1=labels["fp384_tmp1"], src2=labels["fp384_tmp2"])
-        jsr(transport, labels["fp_cmp_384"], timeout=10.0)
-        passed += 1
+        regs = jsr(transport, labels["fp_cmp_384"], timeout=10.0)
+        c, _z = _flags_cz(regs)
+        expected = 1 if a >= b else 0
+        if c == expected:
+            passed += 1
+        else:
+            failed += 1
+            print(f"  FAIL fp_cmp_384({a:#x}, {b:#x}): C={c}, "
+                  f"expected {expected}")
     return passed, failed
 
 
 def test_fp_is_zero(transport, labels, rng):
+    """fp_is_zero_384: Z = 1 iff (fp_src1) == 0, asserted from the status
+    register (was unconditional pass through v0.11.x -- audit F-4)."""
     passed = failed = 0
-    cases = [0, 1, (1 << 384) - 1, GX384, GY384, 1 << 380]
+    cases = [0, 1, (1 << 384) - 1, GX384, GY384, 1 << 380, 1 << 376, 1 << 8]
     for i in range(RANDOM_CASES):
         cases.append(rng.rand_384bit())
     for val in cases:
         write_fe_384(transport, labels["fp384_tmp1"], val)
         set_fp_ptrs(transport, labels, src1=labels["fp384_tmp1"])
-        jsr(transport, labels["fp_is_zero_384"], timeout=10.0)
-        passed += 1
+        regs = jsr(transport, labels["fp_is_zero_384"], timeout=10.0)
+        _c, z = _flags_cz(regs)
+        expected = 1 if val == 0 else 0
+        if z == expected:
+            passed += 1
+        else:
+            failed += 1
+            print(f"  FAIL fp_is_zero_384({val:#x}): Z={z}, expected {expected}")
     return passed, failed
 
 

@@ -24,20 +24,25 @@ Oracle model (same shape as tools/vectors/README.md):
      ECDSA verification across the full verify space).
 
   3. NIST CAVP SigVer vectors (`tools/vectors/nist_p{256,384}_sigver.rsp`,
-     15 per curve, subsampled in fast mode). The harness result is
-     compared against `cryptography.verify`; if `cryptography` ever
-     disagrees with the KAT's Result = P/F field the test prints a
-     loud WARNING but still trusts the oracle. The KAT Result field
-     tells us *what the vector was meant to exercise* (mod code 1=Msg,
-     2=R, 3=S, 4=Q) and is reported alongside each case for context.
+     15 per curve, subsampled in fast mode). The KAT's `Result` column is
+     parsed -- `P (0 )` or `F (k - <reason>)`, mod code 1=Msg, 2=R, 3=S,
+     4=Q -- and ASSERTED: the C64 must return C=0 for P and C=1 for F,
+     and `cryptography.verify` must agree with the column (a
+     disagreement is a hard failure, not a warning -- the vectors are
+     verbatim NIST; if the oracle and NIST differ something is broken).
+     The fast-mode subset is balanced (`select_cavp_subset`): one
+     vector of every Result class present comes first, so e.g. the
+     P-384 fast subset always carries an `F (1 - Message changed)`
+     vector; `--full` runs every vector in the file.
 
 Usage:
     python3 tools/test_ecdsa_verify.py           # 5 CAVP vectors/curve
-    python3 tools/test_ecdsa_verify.py --full    # 20 CAVP vectors/curve
+    python3 tools/test_ecdsa_verify.py --full    # all 15 CAVP vectors/curve
 """
 
 import hashlib
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -234,9 +239,17 @@ def c64_verify_with_msg_384(transport, labels, r, s, message, qx, qy):
     return result
 
 
-def run_case(transport, labels, curve, r, s, h_bytes, qx, qy, label):
-    """Run one vector on both oracle and C64, compare. Returns (pass, fail)."""
+def run_case(transport, labels, curve, r, s, h_bytes, qx, qy, label,
+             expected_c=None):
+    """Run one vector on both oracle and C64, compare. Returns (pass, fail).
+
+    `expected_c`, when given (CAVP Result column), must agree with the
+    oracle -- a mismatch is a failure before the C64 is even called."""
     oracle_valid = oracle_verify(curve, r, s, h_bytes, qx, qy)
+    if expected_c is not None and expected_c != (0 if oracle_valid else 1):
+        print(f"  FAIL [{curve}] {label}: stated expectation C={expected_c} "
+              f"disagrees with oracle ({'VALID' if oracle_valid else 'INVALID'})")
+        return 0, 1
     expected_c = 0 if oracle_valid else 1
     t0 = time.time()
     try:
@@ -417,36 +430,89 @@ def run_q_validation_tests(transport, labels, curve, vec, byte_len, hash_name):
     return passed, failed
 
 
+_CAVP_RESULT_RE = re.compile(r"^([PF])\s*\(\s*(\d+)\s*(?:-\s*(.*?))?\s*\)\s*$")
+
+
+def parse_cavp_result(raw):
+    """Parse a CAVP SigVer `Result` value into (code, reason).
+
+    `P (0 )` -> (0, "pass"); `F (2 - R changed)` -> (2, "R changed").
+    Codes: 1 = Message changed, 2 = R changed, 3 = S changed,
+    4 = Q changed. Raises ValueError on anything else, so a malformed
+    or edited .rsp cannot silently become "expected VALID"."""
+    m = _CAVP_RESULT_RE.match(raw.strip())
+    if not m:
+        raise ValueError(f"unparseable CAVP Result: {raw!r}")
+    pf, code, reason = m.group(1), int(m.group(2)), m.group(3)
+    if pf == "P":
+        if code != 0:
+            raise ValueError(f"P result with non-zero code: {raw!r}")
+        return 0, "pass"
+    if code not in (1, 2, 3, 4):
+        raise ValueError(f"F result with unknown mod code: {raw!r}")
+    return code, (reason or "").strip()
+
+
+def select_cavp_subset(vectors, n_max):
+    """Balanced fast-mode subset: the first vector of every distinct Result
+    class (in file order), then the remaining vectors in file order, cut to
+    n_max. n_max None (or >= len) returns every vector. This guarantees a
+    fast run exercises each modification class the file carries."""
+    if n_max is None or n_max >= len(vectors):
+        return list(vectors)
+    seen = set()
+    head, tail = [], []
+    for v in vectors:
+        code = parse_cavp_result(v["raw_result"])[0]
+        if code in seen:
+            tail.append(v)
+        else:
+            seen.add(code)
+            head.append(v)
+    return (head + tail)[:n_max]
+
+
 def run_cavp_tests(transport, labels, curve, hash_alg, path, section, n_max):
-    """NIST CAVP SigVer vectors for one curve/hash pair."""
+    """NIST CAVP SigVer vectors for one curve/hash pair.
+
+    Each vector's Result column is parsed (`parse_cavp_result`) and the
+    parsed verdict is what the C64 is held to; the `cryptography` oracle
+    must agree with the column for every vector in the file (hard fail
+    otherwise). Fast mode runs `select_cavp_subset(vectors, n_max)`."""
     passed = failed = 0
     vectors = load_sigver_vectors(path, section)
     if not vectors:
         print(f"  ERROR: no vectors parsed from {path} section {section}")
         return 0, 1
 
-    # Cross-validate oracle vs KAT Result column for reporting (loud
-    # warning only; the oracle wins if they disagree).
-    oracle_mismatch = []
+    # The KAT Result column and the oracle must agree on every vector.
     for v in vectors:
+        code, _ = parse_cavp_result(v["raw_result"])
         h = hash_alg(v["Msg"]).digest()
         ok = oracle_verify(curve, v["R"], v["S"], h, v["Qx"], v["Qy"])
-        if ok != v["expected_pass"]:
-            oracle_mismatch.append(v)
-    if oracle_mismatch:
-        print(f"  WARNING: {len(oracle_mismatch)}/{len(vectors)} vectors' KAT Result "
-              f"disagrees with cryptography oracle; trusting oracle")
+        if ok != (code == 0):
+            print(f"  FAIL: CAVP Result={v['raw_result']!r} but cryptography "
+                  f"oracle says {'VALID' if ok else 'INVALID'}")
+            failed += 1
+    if failed:
+        return passed, failed
 
-    # Pick a balanced subset: include at least one P and at least one each
-    # of F modifications. Simple strategy: take the first n_max as stored.
-    subset = vectors[:n_max]
+    subset = select_cavp_subset(vectors, n_max)
+    classes = sorted({parse_cavp_result(v["raw_result"])[0] for v in vectors})
+    covered = sorted({parse_cavp_result(v["raw_result"])[0] for v in subset})
+    if covered != classes:
+        print(f"  FAIL: subset covers Result classes {covered}, file has "
+              f"{classes}")
+        failed += 1
     print(f"  Running {len(subset)}/{len(vectors)} CAVP vectors "
-          f"(section {section})")
+          f"(section {section}; Result classes {covered})")
     for i, v in enumerate(subset):
+        code, reason = parse_cavp_result(v["raw_result"])
         h = hash_alg(v["Msg"]).digest()
-        tag = f"CAVP[{i}] {v['raw_result']}"
+        tag = f"CAVP[{i}] {v['raw_result']} -> expect C={0 if code == 0 else 1}"
         p, f = run_case(transport, labels, curve,
-                        v["R"], v["S"], h, v["Qx"], v["Qy"], tag)
+                        v["R"], v["S"], h, v["Qx"], v["Qy"], tag,
+                        expected_c=0 if code == 0 else 1)
         passed += p; failed += f
     return passed, failed
 
@@ -585,7 +651,9 @@ def run_p384_msg_wrapper_tests(transport, labels):
 
 def run_tests(transport, labels, run_full):
     total_p = total_f = 0
-    n_cavp = 20 if run_full else 5
+    # None = every vector in the file (15 per curve); the old "20" silently
+    # clamped to 15 and hid that --full was not a superset request.
+    n_cavp = None if run_full else 5
 
     groups = [
         ("P-256 RFC 6979 A.2.5 + 8 negatives",
@@ -600,12 +668,12 @@ def run_tests(transport, labels, run_full):
         ("P-384 issue #66 Q validation (4 negatives)",
          lambda: run_q_validation_tests(transport, labels, "p384",
                                         RFC6979_P384, 48, "sha384")),
-        (f"P-256 NIST CAVP SigVer ({n_cavp} vectors)",
+        (f"P-256 NIST CAVP SigVer ({n_cavp or "all"} vectors, Result asserted)",
          lambda: run_cavp_tests(
              transport, labels, "p256", hashlib.sha256,
              os.path.join(PROJECT_ROOT, "tools/vectors/nist_p256_sigver.rsp"),
              "P-256,SHA-256", n_cavp)),
-        (f"P-384 NIST CAVP SigVer ({n_cavp} vectors)",
+        (f"P-384 NIST CAVP SigVer ({n_cavp or "all"} vectors, Result asserted)",
          lambda: run_cavp_tests(
              transport, labels, "p384", hashlib.sha384,
              os.path.join(PROJECT_ROOT, "tools/vectors/nist_p384_sigver.rsp"),

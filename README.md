@@ -67,6 +67,9 @@ python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_ecdsa_u64.py  # ECDSA verify + variable-base scalar_mul on U64E
 python3 tools/test_sha384.py      # SHA-384 streaming hash (FIPS 180-4 KAT + boundary lengths)
 python3 tools/bench_sha384.py     # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
+python3 tools/test_ecdsa_verify.py       # ECDSA verify (RFC 6979 + CAVP SigVer, Result codes asserted)
+python3 tools/test_ecdsa_adversarial.py  # adversarial ECDSA verify (hazmat oracle; Q-gate, range, h>=n, cofactor ...)
+python3 tools/test_prims_adversarial.py  # adversarial field/point/SHA (flags, degeneracies, k edges; F-1 hangs RED(known))
 ```
 
 U64 benchmarks require `U64_HOST` set or the device at the default address.
