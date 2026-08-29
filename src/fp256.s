@@ -55,6 +55,8 @@ fp_zero:
 
 ; =============================================================================
 ; fp_cmp - Compare (fp_src1) vs (fp_src2), 32 bytes, little-endian
+; Carry set if src1 >= src2, clear if src1 < src2. Only C is defined: Z is
+; NOT set on equality (the final dey clears it) -- branch on bcc/bcs (issue #135).
 ; =============================================================================
 fp_cmp:
         ldy #31

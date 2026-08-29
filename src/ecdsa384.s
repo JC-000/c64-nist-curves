@@ -175,7 +175,7 @@ ecdsa_verify_384:
         jmp @ev_fail
 @ev_snz:
 
-        ; r >= n384?  (fp_cmp_384: C=1 if src1>=src2, Z=1 if equal)
+        ; r >= n384?  (fp_cmp_384: C=1 if src1>=src2; only C is defined -- Z is NOT set on equality, issue #135)
         lda #<ecdsa384_r
         sta fp_src1
         lda #>ecdsa384_r

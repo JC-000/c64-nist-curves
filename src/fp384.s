@@ -72,7 +72,8 @@ fp_zero_384:
 ; fp_cmp_384 - Compare (fp_src1) vs (fp_src2), 48 bytes, little-endian
 ;
 ; Compare from byte 47 (MSB) down to byte 0 (LSB).
-; Carry set if src1 >= src2, carry clear if src1 < src2.
+; Carry set if src1 >= src2, carry clear if src1 < src2. Only C is defined:
+; Z is NOT set on equality (the final dey clears it) -- branch on bcc/bcs (issue #135).
 ; Clobbers: A, Y
 ; =============================================================================
 fp_cmp_384:
