@@ -711,6 +711,12 @@ fp_sqr:
                         ; next sta reu_reu_hi is site -> bcc @diag_skip (taken) ->
                         ; @diag_skip .. jmp @diag_outer -> @diag_outer .. @diag_reu_hi.
                         ; Three straight-line segments; byte sum vs the 48 MHz floor.
+                        ; Hand-counted MINIMUM cycles on that path (no page-cross
+                        ; penalties, all branches on their cheapest arm):
+                        ;   site -> bcc taken : 55   @diag_skip -> jmp : 15
+                        ;   @diag_outer -> sta reu_reu_hi : 16   => 86 cycles.
+                        ; The byte assert (60-70 B) is the conservative proxy; if the
+                        ; floor is time-anchored, 64 MHz needs ~65 cy and 86 clears it.
         REU_SETTLE_ASSERT_BYTES (@diag_prop - @diag_reu_site) + (@sqr_done - @diag_skip) + (@diag_reu_hi - @diag_outer)
 .endif
 
