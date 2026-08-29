@@ -852,6 +852,9 @@ fp_mod_sqr_384:
 ; =============================================================================
 ; fp_mod_inv_384 - fp384_r0 = (fp_src1)^(-1) mod (fp_misc)
 ; Binary extended GCD, 48-byte version.
+; Returns C=0 with the inverse in fp384_r0. If (fp_src1) == 0 or == (fp_misc)
+; -- residue class 0, no inverse -- returns C=1 with fp384_r0 := 0 instead
+; of hanging (issue #132). Clobbers fp_src1/fp_src2; fp_dst is preserved.
 ; =============================================================================
 fp_mod_inv_384:
         lda fp_dst
@@ -897,6 +900,36 @@ fp_mod_inv_384:
         sta fp_dst+1
         pla
         sta fp_dst
+
+        ; --- issue #132 guard: input == 0 (mod modulus) has no inverse. ---
+        ; Mirrors fp_mod_inv (mod256.s): u = 0 never terminates, u = modulus
+        ; becomes u = 0 after one subtraction. fp384_r0 := 0, C=1; every
+        ; normal exit returns C=0. Top-down scan leaves at the first
+        ; non-zero / mismatching byte, so the hot-path cost is a few cycles.
+        ldy #47
+@zchk:
+        lda fp384_inv_u,y
+        bne @nonzero
+        dey
+        bpl @zchk
+        jmp @noinv
+@nonzero:
+        ldy #47
+@mchk:
+        lda fp384_inv_u,y
+        cmp fp384_inv_v,y       ; v == modulus at this point
+        bne @mainlp
+        dey
+        bpl @mchk
+@noinv:
+        lda #0
+        ldy #47
+@zr0:
+        sta fp384_r0,y
+        dey
+        bpl @zr0
+        sec
+        rts
 
 @mainlp:
         lda #<fp384_inv_u
@@ -1064,6 +1097,7 @@ fp_mod_inv_384:
         sta fp384_r0,y
         dey
         bpl @cu
+        clc                     ; C=0: inverse exists (issue #132)
         rts
 
 @v_one:
@@ -1073,6 +1107,7 @@ fp_mod_inv_384:
         sta fp384_r0,y
         dey
         bpl @cv
+        clc                     ; C=0: inverse exists (issue #132)
         rts
 
 ; =============================================================================

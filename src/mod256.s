@@ -710,6 +710,9 @@ fp_mod_sqr:
 ; =============================================================================
 ; fp_mod_inv - fp_r0 = (fp_src1)^(-1) mod (fp_misc)
 ; Binary extended GCD algorithm.
+; Returns C=0 with the inverse in fp_r0. If (fp_src1) == 0 or == (fp_misc)
+; -- residue class 0, no inverse -- returns C=1 with fp_r0 := 0 instead of
+; hanging (issue #132). Clobbers fp_src1/fp_src2; fp_dst is preserved.
 ; =============================================================================
 fp_mod_inv:
         lda fp_dst
@@ -751,6 +754,38 @@ fp_mod_inv:
         sta fp_dst+1
         pla
         sta fp_dst
+
+        ; --- issue #132 guard: input == 0 (mod modulus) has no inverse. ---
+        ; The binary GCD below never terminates on u = 0 (the "u even ->
+        ; halve" branch is taken forever and v = modulus is never reduced),
+        ; and u = modulus reaches u = 0 after one subtraction. Both are the
+        ; residue class 0, so both are rejected here: fp_r0 := 0, C=1.
+        ; Every normal exit returns C=0. Hot-path cost: a top-down byte
+        ; scan that leaves at the first non-zero / mismatching byte.
+        ldy #31
+@zchk:
+        lda fp_inv_u,y
+        bne @nonzero
+        dey
+        bpl @zchk
+        jmp @noinv
+@nonzero:
+        ldy #31
+@mchk:
+        lda fp_inv_u,y
+        cmp fp_inv_v,y          ; v == modulus at this point
+        bne @mainlp
+        dey
+        bpl @mchk
+@noinv:
+        lda #0
+        ldy #31
+@zr0:
+        sta fp_r0,y
+        dey
+        bpl @zr0
+        sec
+        rts
 
 @mainlp:
         lda #<fp_inv_u
@@ -914,6 +949,7 @@ fp_mod_inv:
         sta fp_r0,y
         dey
         bpl @cu
+        clc                     ; C=0: inverse exists (issue #132)
         rts
 
 @v_one:
@@ -923,6 +959,7 @@ fp_mod_inv:
         sta fp_r0,y
         dey
         bpl @cv
+        clc                     ; C=0: inverse exists (issue #132)
         rts
 
 ; =============================================================================
