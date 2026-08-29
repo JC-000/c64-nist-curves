@@ -49,6 +49,7 @@
 .import reu_c64_lo, reu_c64_hi, reu_reu_lo, reu_reu_hi
 .import reu_reu_bank, reu_len_lo, reu_len_hi
 .import reu_addr_ctrl, reu_command
+.import nistcurves_reu_dma_wait    ; SPEC v0.13.0 §8.2 (issue #130)
 
 ; --- REU layout contract (SPEC §3) ---
 .import LIB_NISTCURVES_REU_BANK_COMB
@@ -89,6 +90,7 @@ sm256_reu_stash_affine:
         sta reu_addr_ctrl
         lda #$B0                ; execute + autoload + STASH
         sta reu_command
+        jsr nistcurves_reu_dma_wait ; SPEC v0.13.0 §8.2 (a)+(b): restore rewrites registers next
         jmp sm256_reu_restore
 
 ; --- REU DMA: fetch 64 bytes (affine X,Y) from REU table slot to ec_p2 ---
@@ -113,6 +115,7 @@ sm256_reu_fetch_affine:
         sta reu_addr_ctrl
         lda #$B1                ; execute + autoload + FETCH
         sta reu_command
+        jsr nistcurves_reu_dma_wait ; SPEC v0.13.0 §8.2 (a)+(b): restore rewrites registers next
         jmp sm256_reu_restore
 
 ; --- Calculate offset = idx * 64 (idx in 0..255 -> 16-bit result 0..16320) ---

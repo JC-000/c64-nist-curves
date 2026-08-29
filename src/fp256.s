@@ -16,6 +16,10 @@
 ; REU layout contract (SPEC §3)
 .import LIB_NISTCURVES_REU_BANK_MUL
 
+; SPEC v0.13.0 §8.2 DMA completion confirm (issue #130)
+.import reu_status, nistcurves_reu_dma_wait
+.include "reu_dma_done.inc"
+
 .ifdef FP_ONCHIP_MUL
 .import og_common, og_src_ld    ; issue #69 on-chip-mul turbo profile
 .endif
@@ -198,6 +202,10 @@ fp_mul:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a)
+@mul_reu_site:          ; (b) structural: straight-line SMC patch block to @mul_inner,
+                        ; then >= one inner iteration, before the next sta reu_reu_hi
+        REU_SETTLE_ASSERT_BYTES @mul_inner - @mul_reu_site
 .endif
 
         lda #<fp_wide
@@ -452,6 +460,9 @@ fp_sqr:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a)
+@sqr_reu_site:          ; (b) structural: straight-line SMC patch block to @sqr_inner
+        REU_SETTLE_ASSERT_BYTES @sqr_inner - @sqr_reu_site
 .endif
 
         lda #<fp_wide
@@ -688,12 +699,25 @@ fp_sqr:
         jsr gen_mul_row
 .else
         asl
+@diag_reu_hi:
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL
         adc #0
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a)
+@diag_reu_site:         ; (b) structural, the TIGHTEST hot site: shortest path to the
+                        ; next sta reu_reu_hi is site -> bcc @diag_skip (taken) ->
+                        ; @diag_skip .. jmp @diag_outer -> @diag_outer .. @diag_reu_hi.
+                        ; Three straight-line segments; byte sum vs the 48 MHz floor.
+                        ; Hand-counted MINIMUM cycles on that path (no page-cross
+                        ; penalties, all branches on their cheapest arm):
+                        ;   site -> bcc taken : 55   @diag_skip -> jmp : 15
+                        ;   @diag_outer -> sta reu_reu_hi : 16   => 86 cycles.
+                        ; The byte assert (60-70 B) is the conservative proxy; if the
+                        ; floor is time-anchored, 64 MHz needs ~65 cy and 86 clears it.
+        REU_SETTLE_ASSERT_BYTES (@diag_prop - @diag_reu_site) + (@sqr_done - @diag_skip) + (@diag_reu_hi - @diag_outer)
 .endif
 
         ldy nistcurves_mul_cached_a

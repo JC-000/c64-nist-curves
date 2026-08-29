@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v0.11.1** (verified clause-by-clause; the
+— conformant through **SPEC v0.15.0** (verified clause-by-clause; the
 alignment baseline lives in the session memory's lib-contract-alignment-monitor
 note; v0.10.4–v0.10.6 are the #117/#123-driven clarifications — the comb
 targets discharge v0.10.4's member-set-axis obligation, the Makefile's
@@ -32,7 +32,23 @@ records us as already on that branch. Its two stated guard properties
 flipped**, not that something rebuilt) are both pinned by
 `make check-archives`, which since this alignment drives the real make
 flow six ways — three legs per knob axis — reading the built object's
-exported surface each time). That covers §1–§7 core (prefixed version equates with gated bare
+exported surface each time). **v0.12.0 / v0.12.1 / v0.14.0 are §13
+(network ABI) releases** — not adopted, nothing owed. **v0.13.0 §8.2 is
+adopted (issue #130)**: every REU execute site confirms `$DF00` bit 6 and
+observes a post-execute settle before the next REU register access —
+see the Known-issues entry and `src/reu_dma_done.inc`; the settle floor
+is bracketed at 48 MHz only, 64 MHz is open upstream. **v0.14.1** (PATCH,
+written against our #131) names `bit $DF00` a conformant capture form and
+asks that a *structurally* met settle be asserted, not described — the six
+hot sites now `REU_SETTLE_ASSERT_BYTES` their straight-line distance to the
+next REU register write against the 49-cycle floor (bytes ≤ cycles on any
+6502 path, so the byte distance is a conservative floor). **v0.14.2** is doc-only (§8.1's override examples shown `0x`-form,
+the §6.2 make-interface rule — we carried the same `$` trap in two
+examples, API.md §8.6.1 and this file's sqtab note; both now `0x`). **v0.15.0** adds the §8.4
+zero-consumer carve-out for the bare `LIB_PRECALC_<name>_*` triple; like
+v0.11.0's pair it scopes to libraries with no released consumers, so this
+library keeps emitting the bare triple (gated under `LIB_NO_BARE_EXPORTS`)
+through v0.x — nothing owed. That covers §1–§7 core (prefixed version equates with gated bare
 aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, REU symbol contract,
 §4 load-bearing cfg attribute declarations, per-archive §5 manifests with
 §6.6 safe-direction footprint values, the §6 build-and-consume chapter:
@@ -72,7 +88,7 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   source-level stepping / breakpoints / span lookup. `.dbg` is a separate
   artifact; the .prg is byte-identical with or without `-g` (verified by
   sha256 round-trip).
-Current PRG size: ~36.6 KB (37480 bytes as of v0.10.0's issue #98 P384_BSS fix — 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801.
+Current PRG size: ~36.6 KB (37483 bytes as of issue #130's SPEC v0.13.0 §8.2 completion confirm, +3 B over the 37480 of v0.10.0's issue #98 P384_BSS fix — 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801.
 
 `src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
 ACME build path used in side-by-side diff testing only — do not edit
@@ -202,12 +218,13 @@ archive contract.
 | reu_mul_init.s | SPEC §8.2 reu_mul provider: `reu_mul_init` / `reu_mul_tables_init` (128 KB REU multiply-table init). Moved out of main.s by issue #81 so the default-profile archives ship it (via Makefile `LIB_MUL_OBJS`); excluded from the FP_ONCHIP_MUL archives, which never build or read the table. Body gated on `.ifndef SHARED_REU_MUL_INIT`. |
 | constants.s | Hardware addresses, REU registers |
 | zp_config.s | Zero-page allocations (consumer-tunable, `.exportzp` per SPEC §2). 27 bytes claimed by default (issue #90 — was 32 through v0.8.0; `fp_loop`, `poly_i`/`poly_j`/`poly_carry`/`poly_tmp`, and `proc_port` were claimed but referenced by no archived object and were dropped, while `ec_scalar_ptr` was found to be a 2-byte pointer, not the 1 byte previously documented — net 32 − 6 + 1 = 27). `proc_port` moved to `main.s` as a local equate; it is no longer a library-exported slot in any archive. Built six ways: default (27 B), `-D LIB_P256_VERIFY_ONLY` / `-D LIB_P384_VERIFY_ONLY` (`zp_config_p256verify.o` / `zp_config_p384verify.o`, 15 B each — identical slot sets, kept as separate objects for future divergence), `-D LIB_P384_CURVE_ONLY` (`zp_config_p384curve.o`, 23 B), `-D LIB_P256_COMB_ONLY` (`zp_config_p256comb.o`, 17 B — the verify 9 slots plus `nistcurves_zp_ptr1`, issue #117), and `-D LIB_SHA384_ONLY` (`zp_config_sha384.o`, 8 B, issue #88 — unchanged by #90). ZP truth does not depend on `FP_ONCHIP_MUL`: each variant's onchip and DMA-profile archives share the same `zp_config_<variant>.o`. General-purpose scratch is canonically `nistcurves_zp_{tmp1,tmp2,ptr1,ptr2}` per the §2 ZP registry (lib-contract #83); bare `zp_*` aliases are export-gated and removed at next MAJOR. |
-| reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`), consumer-overridable via `ca65 -D` |
+| reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`) plus the SPEC v0.13.0 §8.2 settle knob `LIB_NISTCURVES_REU_SETTLE_ITER` (default 8, exported `:abs` as the code-read value), all consumer-overridable via `ca65 -D` |
 | lib_version.s | Semver + ABI version equates per SPEC §1: canonical prefixed `LIB_NISTCURVES_VERSION_MAJOR` / `_MINOR` / `_PATCH` / `LIB_NISTCURVES_ABI_VERSION`, plus the deprecated bare `LIB_VERSION_*` / `LIB_ABI_VERSION` aliases (emitted by default, suppressed by `-D LIB_NO_BARE_EXPORTS=1`, removed at contract v1.0). **TU isolation is load-bearing** — this file must export the version equates and nothing else, or the bare names ride into a consumer's link uninvited via ld65's whole-member pull and collide with a sibling library (issue #86). |
 | lib_manifest.s | Aggregate manifest equates per SPEC §5 (`LIB_NISTCURVES_REU_BANKS_USED` / `_ZP_USAGE_BYTES` / `_RESIDENT_BYTES` / `_COLD_BYTES`) plus the §8.0 mask pair `LIB_NISTCURVES_SHARED_PRIMITIVES` (owned) and `LIB_NISTCURVES_SHARED_CONSUMES` (consumed). The two masks differ by design: profile gates (`FP_ONCHIP_MUL`) drop a bit from **both**, `SHARED_*` deferral switches drop it from **ownership only** — that gap is what distinguishes "deferring consumer, needs a provider in the link" from "non-consumer, needs none". Subset invariant `.assert`ed in-file. Built eleven ways (issue #90 made it nine; #117 added the comb pair; was three through v0.8.0): default, `-D FP_ONCHIP_MUL`, `-D LIB_P256_VERIFY_ONLY` [`± FP_ONCHIP_MUL`], `-D LIB_P384_VERIFY_ONLY` [`± FP_ONCHIP_MUL`], `-D LIB_P384_CURVE_ONLY` [`± FP_ONCHIP_MUL`], `-D LIB_P256_COMB_ONLY` [`± FP_ONCHIP_MUL`] (issue #117), and `-D LIB_SHA384_ONLY` (no onchip sibling) — one object per archive, `lib_manifest_<variant>[_onchip].o`, each reporting figures true to that archive's actual contents. `RESIDENT_BYTES` keys off variant alone (shared across a variant's onchip/DMA pair); `REU_BANKS_USED`/`COLD_BYTES`/precalc-row enumeration key off variant **and** profile. Full per-archive table: API.md §8.4. Before issue #90 every non-SHA archive inherited whole-library figures from one shared manifest object regardless of what it actually contained — six of nine archives had a wrong `REU_BANKS_USED`, and the default ZP claim of 32 was itself off by one (`ec_scalar_ptr` mis-documented as a 1-byte index when it is a 2-byte pointer) on top of six dead-slot bytes now removed; true default is 27. |
 | precalc_manifest.s | Precalc-table enumeration per SPEC §8.4: one `LIB_PRECALC_TABLE` invocation per qualifying table (sqtab, reu_mul, lim_lee_comb_p256/p384, sha384_k), gated by row-presence flags computed from the same six variant switches as `lib_manifest.s` (issue #90; the two `lim_lee_comb_*` rows gate separately per curve since issue #117, so the P-256 comb archive enumerates its own 16 KB table without advertising the 24 KB P-384 one) so each archive enumerates only the tables it actually contains — a P-256-only verify archive no longer advertises the 24 KB P-384 comb table, for instance. Each row passes `"NISTCURVES"` as the §1 library prefix so the emitted equates are collision-free. Exports both `LIB_NISTCURVES_PRECALC_<name>_{SIZE,REGION,SHARED}` and the deprecated bare `LIB_PRECALC_<name>_*` triple. Doc twin (with rationale + Profiles column): `docs/precalc-tables.md` — the two must stay in lock-step. Linked into every archive; eleven build variants total (was three through v0.8.0, nine through v0.10.2), one per archive — `precalc_manifest_<variant>[_onchip].o` — enumerating 1 to 5 rows depending on which of sqtab/reu_mul/lim_lee_comb_p256/lim_lee_comb_p384/sha384_k that archive's linked objects actually build or read. |
+| reu_dma_done.inc | `REU_DMA_CONFIRM` macro (SPEC v0.13.0 §8.2, issue #130): inline `bit reu_status / bvs` end-of-block confirm for the six hot `fp_mul`/`fp_sqr` row-fetch sites, falling into `nistcurves_reu_dma_wait` only if bit 6 is clear. The header comment is the per-site rationale (which sites settle structurally, which `jsr` the full wait). Included by fp256.s / fp384.s. |
 | precalc_table.inc | Canonical `LIB_PRECALC_TABLE` macro + region/shared constants, copied byte-for-byte from `c64-lib-contract/precalc_table.inc` (currently at upstream `9da3aca`, SPEC v0.7.4). Do not edit locally; updates land via coordinated cross-repo PR. |
-| mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, an exported public helper for the REU multiply-table row-fetch DMA sequence (moved here from main.s by issue #18 fix so standalone-link consumers resolve it) — offered to consumers that want to drive the row-fetch themselves, but **not called anywhere in the library's own code**: `fp_mul`/`fp_sqr`/`fp_mul_384`/`fp_sqr_384` each inline their own three-register-write fetch directly. Classified `COLD` in the §5 footprint accounting for exactly that reason. |
+| mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, an exported public helper for the REU multiply-table row-fetch DMA sequence (moved here from main.s by issue #18 fix so standalone-link consumers resolve it) — offered to consumers that want to drive the row-fetch themselves, but **not called anywhere in the library's own code**: `fp_mul`/`fp_sqr`/`fp_mul_384`/`fp_sqr_384` each inline their own three-register-write fetch directly. Classified `COLD` in the §5 footprint accounting for exactly that reason. Since issue #130 also hosts `nistcurves_reu_dma_wait` (ungated, RESIDENT: the hot-path slow branch calls it) — the SPEC v0.13.0 §8.2 bounded `$DF00` bit-6 confirm + `LIB_NISTCURVES_REU_SETTLE_ITER` settle that every tight execute site `jsr`s. |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
 | curve256.s | P-256 curve parameters (little-endian). A duplicate copy of the RFC 6979 self-test vectors used to live here; issue #91 deleted it — nothing referenced it, and ld65's whole-member pull shipped 288 B of dead data into every P-256 archive. The vectors the test suite uses are unaffected: they live in `tools/test_ecdsa_verify.py`, transcribed from the RFC (an on-chip copy could not serve as an oracle anyway — see the testing-model note below). |
@@ -223,7 +240,7 @@ archive contract.
 | ecdsa384.s | P-384 ECDSA verify (`ecdsa_verify_384`) + BE<->LE helper `fp_reverse48`. Non-constant-time (public-input-only). |
 | ecdsa384_msg.s | `ecdsa_verify_with_message_384` — one-shot SHA-384-then-verify wrapper. Factored out of ecdsa384.s so `lib-p384-verify` can exclude SHA; consumers that drive streaming SHA themselves don't need this object. |
 | sha384.s | SHA-384 streaming hash (FIPS 180-4 §6.4) — `sha384_init` / `sha384_update` / `sha384_final` + 48 B BE digest at `sha384_digest`. Self-contained (no REU DMA, no shared field/multiply scratch). Used by `ecdsa_verify_with_message_384`. |
-| data_shared.s | Cross-curve RW state: `nistcurves_mul_cached_a`, `nistcurves_mul_src2_buf`, page-aligned `nistcurves_mul_dma_lo` / `nistcurves_mul_dma_hi` DMA targets (§6.5 rename window — `mul_` is registered to c64-x25519 in the §2 registry; bare `mul_*` names remain as same-address aliases, export-gated under `-D LIB_NO_BARE_EXPORTS=1`, removed at next MAJOR). |
+| data_shared.s | Cross-curve RW state: `nistcurves_reu_wait_cnt` (2 B spin/settle counter) + sticky `nistcurves_reu_dma_timeout` (issue #130), `nistcurves_mul_cached_a`, `nistcurves_mul_src2_buf`, page-aligned `nistcurves_mul_dma_lo` / `nistcurves_mul_dma_hi` DMA targets (§6.5 rename window — `mul_` is registered to c64-x25519 in the §2 registry; bare `mul_*` names remain as same-address aliases, export-gated under `-D LIB_NO_BARE_EXPORTS=1`, removed at next MAJOR). |
 | data_p256.s | P-256 field / point / ECDSA scratch (fp_*, ec_*, ecdsa_*) actually referenced on the verify path — trimmed to 1312 B by issue #54. |
 | data_p256_invref.s | `fp_tmp1`, the inv256.s (Fermat-reference) scratch. Rides with inv256.o: full archive + standalone PRG only, excluded from `lib-p256-verify`. |
 | data_p256_limlee.s | P-256 Lim-Lee anchor RAM (`ec_aff2g_256_x/y`, `ec_anchor{1..8}_x/y`, `cm_k`). Excluded from `lib-p256-verify`. |
@@ -262,7 +279,8 @@ gets stale otherwise).
   The per-row fetch inside fp_mul / fp_sqr (and the `_384` variants)
   writes only three bytes per row: reu_reu_hi ($DF05), reu_reu_bank
   ($DF06), reu_command ($DF01) — 20 cycles of register setup per row
-  fetch. (The full fetch still costs ~542 cy because the 512-byte DMA
+  fetch, plus the 7-cycle SPEC v0.13.0 §8.2 end-of-block confirm
+  (`REU_DMA_CONFIRM`, issue #130). (The full fetch still costs ~542 cy because the 512-byte DMA
   cycle-steals ~1 cy/byte while the 6510 is halted; only the setup head
   is compressible.) Point-level DMA routines
   (`.sm_reu_restore` / `.sm384w_restore_reu`) restore this invariant
@@ -600,7 +618,7 @@ keep all library calls on a single thread of control.
   quarter-square multiply tables `sqtab_lo` and `sqtab_hi` (1 KB total)
   now derive from `LIB_SHARED_SQTAB_BASE` per c64-lib-contract SPEC §8.1
   — `.ifndef`-guarded with a `$9c00` default for standalone builds, and
-  overridable by consumers via `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>`
+  overridable by consumers via `ca65 -D LIB_SHARED_SQTAB_BASE=0x<addr>` (`0x`, never `$` — SPEC v0.14.2)
   so multiple sqtab-using libraries linked into the same PRG agree on
   one placement. The previous failure mode that motivated the 2026-05-17
   move from `$7800` to `$9C00` (code growth from J+J primitives +
@@ -648,6 +666,32 @@ keep all library calls on a single thread of control.
   `fp_mul`/`fp_sqr` (×2 curves), `ec_scalar_mul`/`_var` (×2 curves),
   `ecdsa_verify_256/384`. ~80 raw bytes of code, transparent runtime
   cost (6 cy per call). Same bug shape and fix as the x25519 sibling.
+- **SPEC v0.13.0 §8.2 REU DMA completion confirm + post-execute settle
+  (issue #130, 2026-08-28; upstream c64-lib-contract#144/#146).** Every
+  adopter's REU path — ours included — was `sta $DF01` → immediate use
+  of the row or the next register write, trusting the REU's DMA line to
+  halt the CPU for the whole transfer. On U64E fw 3.15 at 48 MHz the
+  transfer IS complete when the CPU resumes (bit 6 already set on the
+  first read, 0 spins in 19 416 calls upstream), but the REU's
+  post-transfer autoload/restore outlasts the turbo CPU, so the very
+  next REU register write lands on a busy controller: wrong row, wrong
+  products, silent wrong crypto (every REU-backed c64-wireguard
+  handshake failed its AEAD; same build passed at 1 MHz and on 3.14d). A
+  ~49-cycle delay-only variant also passes there, so the mechanism is a
+  settle, and the status read is insurance (a device that does not hold
+  the CPU has not been observed). Now all 14 execute sites honour both
+  obligations: six hot `fp_mul`/`fp_sqr` sites via the inline 7-cycle
+  `REU_DMA_CONFIRM` (settle structural — next REU write ≥ ~80 cycles
+  away), eight tight sites (init stashes, comb stash/fetch, exported
+  `reu_fetch_mul_row`) via `nistcurves_reu_dma_wait` (bounded 16-bit
+  spin + `LIB_NISTCURVES_REU_SETTLE_ITER` × 9 cycles, default ~107 cy
+  total). Expiry sets sticky `nistcurves_reu_dma_timeout`. **64 MHz is
+  unbracketed** (C64U unreachable upstream at the time); the knob exists
+  so a bracket raises the floor without code change. Not a VICE-visible
+  bug: VICE sets bit 6 immediately and has no restore window, so the
+  oracle suites cannot catch a regression here — only hardware at turbo
+  can. Do not "optimise away" the confirm/settle on the strength of a
+  VICE pass.
 - Issue #14 (constant-time bug in `mul_8x8`) was
   remediated via Option B: the quarter-square primitive in `src/mul_8x8.s`
   was replaced with a branchless, SMC-dispatched implementation ported
