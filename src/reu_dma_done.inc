@@ -43,6 +43,32 @@
 ; a consumer that wants fail-closed behaviour tests it after init.
 ; =============================================================================
 
+; SPEC v0.14.1 (non-normative, written against this file's #131 shape): a
+; STRUCTURALLY met settle is the easiest one to lose -- the constraint lives
+; in instructions unrelated to the REU, the natural optimisation shortens
+; exactly that path, and no emulator reproduces the failure. So each hot
+; site ASSERTS its distance rather than describing it. Byte distance along a
+; straight-line 6502 path is a conservative cycle floor (every instruction
+; costs at least as many cycles as it has bytes: 1 B -> 2 cy, 2 B -> >= 2 cy,
+; 3 B -> >= 4 cy; a taken branch is 2 B / 3 cy), so `bytes >= floor` implies
+; `cycles >= floor` on that path. The floor asserted is the 48 MHz one; the
+; clock is in the name because 64 MHz is unbracketed (SPEC v0.13.0 §8.2) --
+; if a 64 MHz bracket exceeds the hot sites' distance, switch them to the
+; jsr form rather than raising this constant.
+; Measured margins (2026-08-28, negative test by inflating the floor): the
+; diagonal-squaring sites trip between 60 and 70 B (tightest), fp_mul's
+; between 100 and 120, fp_sqr's between 120 and 140 -- in both curves.
+; `.ifndef` so the negative test (ca65 -D REU_SETTLE_FLOOR_CYCLES_48MHZ=<n>)
+; can prove the asserts fire and measure each site's margin; NOT a consumer
+; knob -- the floor is a measurement, not a preference.
+.ifndef REU_SETTLE_FLOOR_CYCLES_48MHZ
+REU_SETTLE_FLOOR_CYCLES_48MHZ = 49
+.endif
+
+.macro REU_SETTLE_ASSERT_BYTES dist
+        .assert (dist) >= REU_SETTLE_FLOOR_CYCLES_48MHZ, error, "SPEC v0.13.0 §8.2 (b): structural post-execute settle shorter than the 48 MHz floor (49 cy) -- use the jsr nistcurves_reu_dma_wait form at this site"
+.endmacro
+
 .macro REU_DMA_CONFIRM
 .local @reu_done
         bit reu_status              ; V = bit 6 (END OF BLOCK); clears 5-7

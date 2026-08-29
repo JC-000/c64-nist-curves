@@ -45,9 +45,17 @@ contract).
   pass on VICE (which sets bit 6 on the first read, so no site ever
   spins). **64 MHz remains unbracketed** in SPEC v0.13.0 and here: the
   settle knob exists precisely so a C64 Ultimate bracket can raise it
-  without a code change. Conformance baseline moves to **SPEC v0.14.0**;
+  without a code change. Conformance baseline moves to **SPEC v0.14.1**;
   v0.12.0, v0.12.1 and v0.14.0 are §13 (network ABI) releases and impose
-  nothing on this library, which does not adopt §13.
+  nothing on this library, which does not adopt §13. **v0.14.1** (PATCH,
+  written against this PR and x25519#116) names the `bit $DF00` capture
+  form conformant and asks that a structurally met settle be *asserted*
+  rather than described — so each hot site now carries
+  `REU_SETTLE_ASSERT_BYTES`, an assemble-time assert that the straight-line
+  byte distance to the next REU register write is ≥ the 49-cycle floor
+  (bytes are a conservative cycle floor on a 6502 path). Negative-tested
+  by inflating the floor with `-D`: the diagonal-squaring sites (the
+  tightest) trip first. No bytes emitted; PRG unchanged.
 
 - **Conformance baseline moves to c64-lib-contract SPEC v0.11.1**
   (doc-only; no source, no archive, no manifest change). The two

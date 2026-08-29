@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v0.14.0** (verified clause-by-clause; the
+— conformant through **SPEC v0.14.1** (verified clause-by-clause; the
 alignment baseline lives in the session memory's lib-contract-alignment-monitor
 note; v0.10.4–v0.10.6 are the #117/#123-driven clarifications — the comb
 targets discharge v0.10.4's member-set-axis obligation, the Makefile's
@@ -37,7 +37,12 @@ exported surface each time). **v0.12.0 / v0.12.1 / v0.14.0 are §13
 adopted (issue #130)**: every REU execute site confirms `$DF00` bit 6 and
 observes a post-execute settle before the next REU register access —
 see the Known-issues entry and `src/reu_dma_done.inc`; the settle floor
-is bracketed at 48 MHz only, 64 MHz is open upstream. That covers §1–§7 core (prefixed version equates with gated bare
+is bracketed at 48 MHz only, 64 MHz is open upstream. **v0.14.1** (PATCH,
+written against our #131) names `bit $DF00` a conformant capture form and
+asks that a *structurally* met settle be asserted, not described — the six
+hot sites now `REU_SETTLE_ASSERT_BYTES` their straight-line distance to the
+next REU register write against the 49-cycle floor (bytes ≤ cycles on any
+6502 path, so the byte distance is a conservative floor). That covers §1–§7 core (prefixed version equates with gated bare
 aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, REU symbol contract,
 §4 load-bearing cfg attribute declarations, per-archive §5 manifests with
 §6.6 safe-direction footprint values, the §6 build-and-consume chapter:

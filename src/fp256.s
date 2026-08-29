@@ -202,7 +202,10 @@ fp_mul:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
-        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a); (b) structural -- see reu_dma_done.inc
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a)
+@mul_reu_site:          ; (b) structural: straight-line SMC patch block to @mul_inner,
+                        ; then >= one inner iteration, before the next sta reu_reu_hi
+        REU_SETTLE_ASSERT_BYTES @mul_inner - @mul_reu_site
 .endif
 
         lda #<fp_wide
@@ -457,7 +460,9 @@ fp_sqr:
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
-        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a); (b) structural -- see reu_dma_done.inc
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a)
+@sqr_reu_site:          ; (b) structural: straight-line SMC patch block to @sqr_inner
+        REU_SETTLE_ASSERT_BYTES @sqr_inner - @sqr_reu_site
 .endif
 
         lda #<fp_wide
@@ -694,13 +699,19 @@ fp_sqr:
         jsr gen_mul_row
 .else
         asl
+@diag_reu_hi:
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL
         adc #0
         sta reu_reu_bank
         lda #%10110001
         sta reu_command
-        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a); (b) structural -- see reu_dma_done.inc
+        REU_DMA_CONFIRM         ; SPEC v0.13.0 §8.2 (a)
+@diag_reu_site:         ; (b) structural, the TIGHTEST hot site: shortest path to the
+                        ; next sta reu_reu_hi is site -> bcc @diag_skip (taken) ->
+                        ; @diag_skip .. jmp @diag_outer -> @diag_outer .. @diag_reu_hi.
+                        ; Three straight-line segments; byte sum vs the 48 MHz floor.
+        REU_SETTLE_ASSERT_BYTES (@diag_prop - @diag_reu_site) + (@sqr_done - @diag_skip) + (@diag_reu_hi - @diag_outer)
 .endif
 
         ldy nistcurves_mul_cached_a
