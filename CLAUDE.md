@@ -43,7 +43,8 @@ asks that a *structurally* met settle be asserted, not described — the six
 hot sites now `REU_SETTLE_ASSERT_BYTES` their straight-line distance to the
 next REU register write against the 49-cycle floor (bytes ≤ cycles on any
 6502 path, so the byte distance is a conservative floor). **v0.14.2** is doc-only (§8.1's override examples shown `0x`-form,
-the §6.2 make-interface rule — ours already are). **v0.15.0** adds the §8.4
+the §6.2 make-interface rule — we carried the same `$` trap in two
+examples, API.md §8.6.1 and this file's sqtab note; both now `0x`). **v0.15.0** adds the §8.4
 zero-consumer carve-out for the bare `LIB_PRECALC_<name>_*` triple; like
 v0.11.0's pair it scopes to libraries with no released consumers, so this
 library keeps emitting the bare triple (gated under `LIB_NO_BARE_EXPORTS`)
@@ -617,7 +618,7 @@ keep all library calls on a single thread of control.
   quarter-square multiply tables `sqtab_lo` and `sqtab_hi` (1 KB total)
   now derive from `LIB_SHARED_SQTAB_BASE` per c64-lib-contract SPEC §8.1
   — `.ifndef`-guarded with a `$9c00` default for standalone builds, and
-  overridable by consumers via `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>`
+  overridable by consumers via `ca65 -D LIB_SHARED_SQTAB_BASE=0x<addr>` (`0x`, never `$` — SPEC v0.14.2)
   so multiple sqtab-using libraries linked into the same PRG agree on
   one placement. The previous failure mode that motivated the 2026-05-17
   move from `$7800` to `$9C00` (code growth from J+J primitives +

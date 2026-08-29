@@ -57,7 +57,9 @@ contract).
   by inflating the floor with `-D`: the diagonal-squaring sites (the
   tightest) trip first. No bytes emitted; PRG unchanged.
   Baseline then moves on to **v0.15.0**: v0.14.2 is doc-only (§8.1
-  examples `0x`-form; ours already are) and v0.15.0's §8.4 bare
+  examples `0x`-form — and we carried the same `$` trap in two of our own
+  examples, API.md §8.6.1's `ca65 -D LIB_SHARED_SQTAB_BASE=$8800` and
+  CLAUDE.md's sqtab note; both fixed to `0x`) and v0.15.0's §8.4 bare
   `LIB_PRECALC_*` carve-out scopes to zero-consumer libraries — this
   library has released consumers and keeps the gated bare triple.
 

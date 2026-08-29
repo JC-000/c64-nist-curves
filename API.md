@@ -1148,7 +1148,10 @@ ca65 -D LIB_NISTCURVES_REU_OFFSET_COMB_P384=$4000  # default $4000
 provides one base address, all sqtab-consuming sibling libs agree):
 
 ```sh
-ca65 -D LIB_SHARED_SQTAB_BASE=$8800   # any page-aligned address; $9c00 is the default
+ca65 -D LIB_SHARED_SQTAB_BASE=0x8800   # any page-aligned address; 0x9c00 is the default
+# 0x, never $: an unquoted $8800 is a shell positional expansion ($8 + "800"),
+# and through make (CONTRACT_DEFINES) $ is eaten too -- either way the §8.1
+# asserts pass on 0 and sqtab lands on zero page (SPEC v0.14.2 §8.1 note).
 ```
 
 Page-aligned + `sqtab_hi = sqtab_lo + $0200` are
