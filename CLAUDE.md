@@ -94,7 +94,7 @@ python3 tools/bench_p256_u64.py      # P-256 on Ultimate 64 Elite (16/48 MHz tur
 python3 tools/bench_p384_u64.py      # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAVP SigVer)
 python3 tools/test_ecdsa_adversarial.py  # adversarial ECDSA verify: Q-gate h=0 construction, range/h>=n/u1=0/R=inf/cofactor/malleability, CAVP reason codes asserted (hazmat oracle; --strict fails red-known rows)
-python3 tools/test_prims_adversarial.py  # adversarial field/point/SHA-384: fp_cmp/is_zero flags, point-add degeneracies, comb + var-base k edges, SHA chaining; fp_mod_inv(0)/j2a(Z=0) hangs are RED(known F-1) until fixed
+python3 tools/test_prims_adversarial.py  # adversarial field/point/SHA-384: fp_cmp/is_zero flags, point-add degeneracies, comb + var-base k edges, SHA chaining; fp_mod_inv(0/modulus) + j2a(Z=0/p) assert the issue #132 C=1/zero-output guard (--strict fails any red-known row)
 python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
 python3 tools/bench_sha384.py        # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 python3 tools/bench_reu_mult.py      # REU multiply-table cost decomposition (row-fetch DMA vs mul_8x8 vs fp_mul; VICE, ~4 min; not CI-gating)
@@ -576,6 +576,24 @@ keep all library calls on a single thread of control.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
+- **`fp_mod_inv` residue-class-0 guard / `ec_jacobian_to_affine` Z=0
+  guard (issue #132, adversarial audit F-1 — FIXED).** The binary
+  extended GCD in `fp_mod_inv[_384]` only exits through `u == 1` /
+  `v == 1`, so input 0 halved forever and input == modulus reached 0 after
+  one subtraction; `ec_jacobian_to_affine[_384]` inverted Z with no Z=0
+  test, so converting the library's own infinity encoding (emitted by
+  `ec_scalar_mul` for k ≡ 0, `ec_point_add[_jj]` for P + (−P)) locked the
+  machine. Both now return **C=1 with the output zeroed** (`fp_r0` /
+  `fp384_r0`, `ec_affine_x/y` / `ec384_affine_x/y`) and **C=0** on every
+  normal path; the guard compares against `(fp_misc)`, so the mod-n case
+  is covered. Hot-path cost is a top-down byte scan that leaves at the
+  first non-zero / mismatching byte. `ecdsa_verify_256/384` (both comb
+  variants) never reach either guard — `s = 0` is rejected before the
+  inversion, Z ≠ 0 is tested before the cofactor compare — and no caller
+  relied on the previously undefined C. Pinned by the `hang-*/10-F1`
+  rows of `tools/test_prims_adversarial.py --strict`. PRG size unchanged
+  (37480 B; the code lands in MAIN's alignment slack). Contract:
+  API.md §4 Outputs, §5.2, §5.3.
 - **U64E CIA Timer A jiffy-rate drift between runs at 48 MHz** (observed
   2026-05-19, fw 3.14d). Two back-to-back ECDSA bench runs against
   the same `master` HEAD, on the same U64E (cold power-cycled between
