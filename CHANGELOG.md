@@ -56,6 +56,10 @@ contract).
   (bytes are a conservative cycle floor on a 6502 path). Negative-tested
   by inflating the floor with `-D`: the diagonal-squaring sites (the
   tightest) trip first. No bytes emitted; PRG unchanged.
+  Baseline then moves on to **v0.15.0**: v0.14.2 is doc-only (§8.1
+  examples `0x`-form; ours already are) and v0.15.0's §8.4 bare
+  `LIB_PRECALC_*` carve-out scopes to zero-consumer libraries — this
+  library has released consumers and keeps the gated bare triple.
 
 - **Conformance baseline moves to c64-lib-contract SPEC v0.11.1**
   (doc-only; no source, no archive, no manifest change). The two
