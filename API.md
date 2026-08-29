@@ -184,6 +184,12 @@ Scalars must be zero-padded up to the curve's full field width.
 - Point ops: result in `ec_p3` (P-256) or `ec384_p3` (P-384).
 - `ec_jacobian_to_affine` writes the affine result to `ec_affine_x/y` (P-256)
   or `ec384_affine_x/y` (P-384).
+- Status flag (issue #132): `fp_mod_inv` / `fp_mod_inv_384` and
+  `ec_jacobian_to_affine` / `_384` return **C=0** on success and **C=1**
+  when there is no result — input ≡ 0 (mod modulus) for the inversion,
+  Z ≡ 0 (mod p), i.e. the point at infinity, for the conversion — with the
+  output buffer zeroed. Every other routine leaves C undefined unless its
+  §5 row says otherwise (`fp_cmp`, `ecdsa_verify_*`).
 - `fp_add` / `fp_sub` (and their `_384` variants) store the carry-out or
   borrow-out byte in `fp_carry` (1 = carry/borrow occurred, 0 = clean).
 
@@ -242,7 +248,7 @@ identically to the P-256 version.
 |---|---|---|---|---|
 | `fp_copy` / `fp_copy_384` | fp256/fp384 | `fp_src1`, `fp_dst` | `(fp_dst)` := `(fp_src1)` | Clobbers A, Y. |
 | `fp_zero` / `fp_zero_384` | fp256/fp384 | `fp_dst` | `(fp_dst)` := 0 | Clobbers A, Y. |
-| `fp_cmp` / `fp_cmp_384` | fp256/fp384 | `fp_src1`, `fp_src2` | Carry set if src1 >= src2, Z set if equal | No memory output. |
+| `fp_cmp` / `fp_cmp_384` | fp256/fp384 | `fp_src1`, `fp_src2` | Carry set if src1 >= src2, clear if src1 < src2. **Only C is defined** — Z is NOT set on equality (the final `dey` clears it; issue #135). | No memory output. Branch on `bcc` / `bcs`; test equality with `fp_sub` + `fp_is_zero` if needed. |
 | `fp_add` / `fp_add_384` | fp256/fp384 | `fp_src1`, `fp_src2`, `fp_dst` | `(fp_dst)` := src1 + src2; `fp_carry` = carry-out | Non-reducing. |
 | `fp_sub` / `fp_sub_384` | fp256/fp384 | `fp_src1`, `fp_src2`, `fp_dst` | `(fp_dst)` := src1 - src2; `fp_carry` = borrow-out | Non-reducing. |
 | `fp_is_zero` / `fp_is_zero_384` | fp256/fp384 | `fp_src1` | Z flag set iff `(fp_src1)` == 0 | |
@@ -254,17 +260,37 @@ identically to the P-256 version.
 
 | Name | Source | Inputs | Output | Notes |
 |---|---|---|---|---|
-| `fp_mod_add` / `fp_mod_add_384` | mod256/mod384 | `fp_src1`, `fp_src2`, `fp_dst`, `fp_misc` | `(fp_dst)` := (src1 + src2) mod (fp_misc) | Works for any modulus passed via `fp_misc`. |
-| `fp_mod_sub` / `fp_mod_sub_384` | mod256/mod384 | `fp_src1`, `fp_src2`, `fp_dst`, `fp_misc` | `(fp_dst)` := (src1 - src2) mod (fp_misc) | |
-| `fp_mod_reduce256` | mod256 | `fp_wide` | `fp_r0` := `fp_wide` mod p256 | Solinas fast reduction. Hard-wired to the P-256 prime. |
-| `fp_mod_reduce384` | mod384 | `fp384_wide` | `fp384_r0` := `fp384_wide` mod p384 | Solinas fast reduction. Hard-wired to the P-384 prime. |
-| `fp_mod_mul` / `fp_mod_mul_384` | mod256/mod384 | `fp_src1`, `fp_src2` | `fp_r0` / `fp384_r0` := (src1 * src2) mod p | Hard-wired to the curve prime via `fp_mod_reduce*`. |
-| `fp_mod_sqr` / `fp_mod_sqr_384` | mod256/mod384 | `fp_src1` | `fp_r0` / `fp384_r0` := src1^2 mod p | |
-| `fp_mod_inv` / `fp_mod_inv_384` | mod256/mod384 | `fp_src1`, `fp_misc` | `fp_r0` / `fp384_r0` := src1^(-1) mod `(fp_misc)` | Binary extended GCD; accepts any prime modulus (p or n). Saves and restores `fp_dst`. |
+| `fp_mod_add` / `fp_mod_add_384` | mod256/mod384 | `fp_src1`, `fp_src2`, `fp_dst`, `fp_misc` | `(fp_dst)` := (src1 + src2) mod (fp_misc) | Works for any modulus passed via `fp_misc`. **Precondition: both inputs canonical (`< modulus`)** — see below. |
+| `fp_mod_sub` / `fp_mod_sub_384` | mod256/mod384 | `fp_src1`, `fp_src2`, `fp_dst`, `fp_misc` | `(fp_dst)` := (src1 - src2) mod (fp_misc) | **Precondition: both inputs canonical (`< modulus`)** — see below. |
+| `fp_mod_reduce256` | mod256 | `fp_wide` | `fp_r0` := `fp_wide` mod p256 | Solinas fast reduction. Hard-wired to the P-256 prime. Exact for any 64-byte input. |
+| `fp_mod_reduce384` | mod384 | `fp384_wide` | `fp384_r0` := `fp384_wide` mod p384 | Solinas fast reduction. Hard-wired to the P-384 prime. Exact for any 96-byte input. |
+| `fp_mod_mul` / `fp_mod_mul_384` | mod256/mod384 | `fp_src1`, `fp_src2` | `fp_r0` / `fp384_r0` := (src1 * src2) mod p | Hard-wired to the curve prime via `fp_mod_reduce*`. Exact for any full-width operands (no canonical-input precondition). |
+| `fp_mod_sqr` / `fp_mod_sqr_384` | mod256/mod384 | `fp_src1` | `fp_r0` / `fp384_r0` := src1^2 mod p | Exact for any full-width operand. |
+| `fp_mod_mul_n` / `fp_mod_mul_n_384` | mod256/mod384 | `fp_src1`, `fp_src2` | `fp_r0` / `fp384_r0` := (src1 * src2) mod n | Bit-serial multiply mod the group order. **Precondition: at least one operand `< n`** — see below. |
+| `fp_mod_inv` / `fp_mod_inv_384` | mod256/mod384 | `fp_src1`, `fp_misc` | `fp_r0` / `fp384_r0` := src1^(-1) mod `(fp_misc)`; **C=0** | Binary extended GCD; accepts any prime modulus (p or n). Saves and restores `fp_dst`. **C=1 with `fp_r0` / `fp384_r0` := 0 when src1 ≡ 0 (mod modulus)** — all-zero input or input equal to `(fp_misc)` — the "no inverse" encoding (issue #132; these inputs hung the GCD before). Clobbers `fp_src1` / `fp_src2`. |
 | `ec_set_modp` / `ec_set_modp_384` | mod256/mod384 | — | `fp_misc` := address of curve prime p | Convenience setter. |
 | `ec_set_modn` / `ec_set_modn_384` | mod256/mod384 | — | `fp_misc` := address of curve group order n | Convenience setter. |
 | `ec_mulp` / `ec_mulp_384` | mod256/mod384 | `fp_src1`, `fp_src2`, `fp_dst` | `(fp_dst)` := (src1 * src2) mod p | Wrapper: `ec_set_modp` + `fp_mod_mul` + copy `fp_r0` to `(fp_dst)`. Preserves `fp_src1`. |
 | `ec_sqrp` / `ec_sqrp_384` | mod256/mod384 | `fp_src1`, `fp_dst` | `(fp_dst)` := src1^2 mod p | Wrapper as above using `fp_mod_sqr`. |
+
+**Canonical-input preconditions (issue #135, adversarial audit F-6 / F-8).**
+`fp_mod_add` / `fp_mod_sub` (and `_384`) apply a single conditional `±p`
+after the raw add / subtract, so they are exact **only when both inputs
+are `< modulus`**; for inputs `≥ p` the output is non-canonical. Measured
+on both curves (P-384 identical in shape; `W = 2^bits − 1`):
+`mod_add(p+1, p−1) → p` (expected 0), `mod_sub(p, 0) → p`,
+`mod_sub(p+1, 1) → p`, `mod_sub(1, W) → p+2`, `mod_sub(0, W) → p+1`,
+`mod_add(W, W)` non-canonical. Every in-library caller passes canonical
+values (the ECDSA Q-validation gate guarantees `Qx, Qy < p`), and
+`fp_mod_mul` / `fp_mod_sqr` / `fp_mod_reduce256/384` are exact for any
+full-width input — so a consumer feeding externally sourced values into
+`fp_mod_add` / `fp_mod_sub` must reduce them first (e.g. one
+`fp_mod_mul` by 1, or a `fp_cmp` + `fp_sub` against the modulus).
+`fp_mod_mul_n` / `fp_mod_mul_n_384` (bit-serial mod-n multiply) require
+**at least one operand `< n`**: with both operands `≥ n` the result is
+wrong / non-reduced (`W·(n+1) → 2^bits − 1`, `W·W` wrong). The packaged
+verifiers satisfy this by passing `w = s⁻¹ < n` as the *second* operand;
+`h ≥ n` as the first operand was verified correct end-to-end.
 
 ### 5.3 Point operations (`points256_core.s` / `points256_comb.s`, `points384_core.s` / `points384_comb.s`)
 
@@ -279,8 +305,8 @@ curve archive); the `_comb` modules carry the Lim-Lee fixed-base comb
 | `ec_point_add_jj` / `ec_point_add_jj_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (full Jacobian), `ec_p2` / `ec384_p2` (full Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Full Jacobian+Jacobian addition (Bernstein-Lange add-2007-bl, 11M + 5S). Reads Z2 from `ec_p2+64` (or `ec384_p2+96`) — caller must populate it. Handles P1∞, P2∞, both∞, same projective point (tail-calls `ec_point_double`), and P1=-P2 natively. Used by `ecdsa_verify_256/384` at the `u1*G + u2*Q` join. |
 | `ec_scalar_mul` | points256_comb | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. |
 | `ec_scalar_mul_384` | points384_comb | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
-| `ec_jacobian_to_affine` | points256_core | `ec_p3` | `ec_affine_x`, `ec_affine_y` | Sets `fp_misc` to p256 internally. |
-| `ec_jacobian_to_affine_384` | points384_core | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y` | P-384 analogue. |
+| `ec_jacobian_to_affine` | points256_core | `ec_p3` | `ec_affine_x`, `ec_affine_y`; **C=0** | Sets `fp_misc` to p256 internally. **C=1 with `ec_affine_x` / `ec_affine_y` := 0 when Z ≡ 0 (mod p)** — the point at infinity (the library's own encoding, emitted by `ec_scalar_mul` for k ≡ 0 mod n, `ec_scalar_mul_var` for k ≡ 0, and `ec_point_add[_jj]` for P + (−P)); has no affine form. Issue #132 — this input hung the inversion before. |
+| `ec_jacobian_to_affine_384` | points384_core | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y`; **C=0** | P-384 analogue; same **C=1 / zeroed-output** infinity encoding. |
 | `ec_precompute_256` | points256_comb | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~17 min at 1 MHz, default profile — §8.5, issue #121). |
 | `ec_precompute_384` | points384_comb | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~34 min at 1 MHz, default profile — §8.5). |
 
