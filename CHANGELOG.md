@@ -59,6 +59,43 @@ contract).
 
 ### Fixed
 
+- **`fp_mod_inv` / `fp_mod_inv_384` hung forever on input 0 or on the
+  modulus itself; `ec_jacobian_to_affine` / `_384` hung on Z=0 — the
+  library's own point-at-infinity encoding (issue #132, adversarial audit
+  F-1).** The binary extended GCD only leaves through `u == 1` / `v == 1`,
+  so `u = 0` halved forever and `u = modulus` reached `u = 0` after one
+  subtraction. Both routines now scan the input on entry (top-down,
+  leaving at the first non-zero / mismatching byte — a few cycles on the
+  ~750 kcy hot path) and, for the residue class 0 (all-zero **or** equal
+  to `(fp_misc)`, so the mod-n case is covered too), return **C=1** with
+  `fp_r0` / `fp384_r0` zeroed; every normal exit now returns **C=0**
+  (previously C was whatever `fp_chk_one`'s `cmp #1` left — set). The
+  affine conversions branch on that flag: Z ≡ 0 (mod p) returns **C=1**
+  with `ec_affine_x/y` (`ec384_affine_x/y`) zeroed, normal conversion
+  C=0. No in-library caller depended on the old undefined C (the eight
+  comb-precompute `ec_jacobian_to_affine` sites convert anchors that are
+  never infinity; the packaged verifiers reject `s = 0` before the mod-n
+  inversion and test Z ≠ 0 before the cofactor compare, so
+  `ecdsa_verify_256/384` and the `ECDSA_NO_COMB` variants are
+  behaviourally unchanged). PRG stays 37480 B (the +110 B of code land in
+  MAIN's existing alignment slack; `__MAIN_LAST__` unchanged at `$9A67`);
+  no §5 footprint pin moved (`make check-archives` green). The six
+  formerly red-known rows in `tools/test_prims_adversarial.py` now assert
+  the encoding, plus the mod-n twins, Z=p, and C=0 on normal inversions /
+  conversions — a regression of the guard fails the run. Contract in
+  `API.md` §5.2 / §5.3.
+- **Docs: `fp_cmp` "Z=1 if equal" was false; undocumented canonical-input
+  preconditions (issue #135, audit F-5 / F-6 / F-8).** The comments at
+  the `r >= n` gates in `ecdsa256.s` / `ecdsa384.s` and the `fp_cmp` row
+  in `API.md` §5.1 promised Z on equality; the routine's final `dey`
+  clears it, so only C is defined (every caller branches on `bcc` /
+  `bcs`). `API.md` §5.2 now states that `fp_mod_add` / `fp_mod_sub`
+  (`_384`) require canonical inputs (`< modulus`) — one conditional ±p
+  leaves e.g. `mod_add(p+1, p−1) = p`, `mod_sub(1, 2^bits−1) = p+2` —
+  while `fp_mod_mul` / `fp_mod_sqr` / `fp_mod_reduce*` are exact for any
+  full-width input; and documents `fp_mod_mul_n` (`_384`)'s load-bearing
+  "at least one operand < n" precondition, which the verifiers satisfy by
+  passing `w < n` second. No code change.
 - **`API.md` §8.5: the last VICE warp-mode wall-second figure issue #121
   missed.** The "omit both `ec_precompute_*` calls and save the full
   ~100 s precompute cost" sentence still carried a warp figure after that

@@ -1445,6 +1445,10 @@ var_r_inf:       .byte 0
 ; ec_jacobian_to_affine: convert ec_p3 (Jacobian) to affine (x,y)
 ; Result: ec_affine_x, ec_affine_y (32 bytes each)
 ; Computes x = X/Z^2, y = Y/Z^3 using modular inverse.
+; Returns C=0 on success. If Z == 0 (the library's own point-at-infinity
+; encoding; Z == p is treated the same) there is no affine form: returns
+; C=1 with ec_affine_x / ec_affine_y := 0 instead of hanging in the
+; inversion (issue #132).
 ; =============================================================================
 ec_jacobian_to_affine:
         jsr ec_set_modp
@@ -1454,7 +1458,8 @@ ec_jacobian_to_affine:
         sta fp_src1
         lda #>(ec_p3+64)
         sta fp_src1+1
-        jsr fp_mod_inv          ; fp_r0 = Z^(-1)
+        jsr fp_mod_inv          ; fp_r0 = Z^(-1); C=1 if Z == 0 (mod p)
+        bcs @jta_inf
 
         ; Copy Z^(-1) to ec_t1
         ldy #31
@@ -1524,4 +1529,17 @@ ec_jacobian_to_affine:
         sta fp_dst+1
         jsr ec_mulp             ; affine_y = Y*Z^(-3)
 
+        clc                     ; C=0: affine result valid
+        rts
+
+@jta_inf:
+        ; Point at infinity: no affine form. Zero both outputs, C=1.
+        lda #0
+        ldy #31
+@jta_zero:
+        sta ec_affine_x,y
+        sta ec_affine_y,y
+        dey
+        bpl @jta_zero
+        sec
         rts

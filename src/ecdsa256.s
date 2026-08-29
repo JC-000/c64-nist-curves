@@ -170,7 +170,7 @@ ecdsa_verify_256:
         jmp @ev_fail
 @ev_snz:
 
-        ; r >= n256?  (fp_cmp: C=1 if src1>=src2, Z=1 if equal)
+        ; r >= n256?  (fp_cmp: C=1 if src1>=src2; only C is defined -- Z is NOT set on equality, issue #135)
         lda #<ecdsa_r
         sta fp_src1
         lda #>ecdsa_r
