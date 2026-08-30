@@ -1685,8 +1685,38 @@ def arbiter_verdict(cell: CellResult) -> list[str]:
     return L
 
 
-def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy):
+def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy,
+                      settle_was_varied=True):
+    """Emit an anchoring verdict ONLY if a settle was actually varied.
+
+    HARD PRECONDITION ON THE CONCLUSION (2026-08-30). On an unmitigated
+    control build the settle poke is a no-op by design, so every cell runs at
+    the same native settle and the ladder collapses to one point. This
+    function was still handed the ladder's *nominal* labels and duly printed
+
+        48 MHz floor >= 12 cy; 16 MHz floor >= 12 cy; ratio 1.00x
+        Both clocks need about the same cycles: CYCLE-ANCHORING NOT REJECTED
+
+    from two thresholds that could not have differed. That was the only one
+    of the day's four instrument over-claims the tool would have PUBLISHED
+    rather than merely reported to a human who could push back -- a formatted
+    verdict string, heading for a row, heading for a contract issue, and
+    shaped like an answer so it would survive review.
+
+    The rule it violates: a null result is only evidence if the null could not
+    have been there anyway. Identical thresholds were guaranteed by
+    construction, so their identity carried no information. A verdict that
+    cannot be computed should not be computable.
+    """
     L = []
+    if not settle_was_varied:
+        L.append("ANCHORING: NOT COMPUTED — no settle was varied in this run "
+                 "(unmitigated control: the poke is a no-op, so every cell ran "
+                 "at the same native settle). A ladder that collapsed to one "
+                 "point cannot support an anchoring verdict in EITHER "
+                 "direction, and identical thresholds here are guaranteed by "
+                 "construction rather than measured.")
+        return L
     if th_hi is None and th_lo is None:
         L.append(f"ANCHORING: INCONCLUSIVE — every ladder point down to "
                  f"{ladder_min_cy} cy passed at both clocks. No reachable "
@@ -2240,7 +2270,8 @@ def main(argv=None):
                 for ln in anchoring_verdict(thresholds.get(usable[0]),
                                             thresholds.get(usable[-1]),
                                             usable[0], usable[-1],
-                                            ladder_min_cy):
+                                            ladder_min_cy,
+                                            settle_was_varied=dev.mitigated):
                     print(ln); prose.append(f"[{size}] {ln}")
 
         # cells declared but never run, so a reader can tell 0/N from untested
