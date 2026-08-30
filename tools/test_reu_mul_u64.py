@@ -181,9 +181,16 @@ TABLE_POISON_HI = bytes((i ^ 0x5A) ^ 0xFF for i in range(256))
 REQUIRED_LABELS = [
     "main_loop", "reu_mul_init", "reu_fetch_mul_row",
     "nistcurves_mul_cached_a", "nistcurves_mul_dma_lo", "nistcurves_mul_dma_hi",
+    "bench_start", "bench_stop", "bench_ticks",
+]
+
+# Present only in a MITIGATED build (v0.12.0+). The unmitigated control -- the
+# only configuration that can discriminate "the settle fixed it" from "the core
+# removed it" -- has none of them, so requiring them made the control
+# unrunnable. Absence is the signal, not an error.
+MITIGATION_LABELS = [
     "nistcurves_reu_dma_wait", "nistcurves_reu_wait_cnt",
     "nistcurves_reu_dma_timeout",
-    "bench_start", "bench_stop", "bench_ticks",
 ]
 
 # If the mechanism is "the CPU resumes before the transfer has landed",
@@ -947,9 +954,13 @@ class Device:
         """`nistcurves_reu_dma_timeout` is sticky by design and re-init does
         not reset it, so a timeout in one cell would make every later cell
         look timed-out.  Host clears it per cell and reports it per cell."""
+        if not self.mitigated:
+            return      # unmitigated control: the sticky flag does not exist
         self.write(self.labels["nistcurves_reu_dma_timeout"], b"\x00")
 
     def dma_timeout_flag(self):
+        if not self.mitigated:
+            return 0    # unmitigated control: no sticky flag exists
         return self.read(self.labels["nistcurves_reu_dma_timeout"], 1)[0]
 
     # -- in-band clock verification ----------------------------------------
@@ -2020,10 +2031,23 @@ def main(argv=None):
             raise SystemExit(f"labels missing from {lbl_path}: {missing}")
         prg_sha = sha256_of(prg)
         print(f"  PRG sha256 {prg_sha}")
-        print(f"  nistcurves_reu_dma_wait @ "
-              f"${labels['nistcurves_reu_dma_wait']:04X}, reu_mul_init @ "
-              f"${labels['reu_mul_init']:04X}, reu_fetch_mul_row @ "
-              f"${labels['reu_fetch_mul_row']:04X}")
+        _mit = [n for n in MITIGATION_LABELS if labels.address(n) is not None]
+        if len(_mit) == len(MITIGATION_LABELS):
+            print(f"  nistcurves_reu_dma_wait @ "
+                  f"${labels['nistcurves_reu_dma_wait']:04X}, reu_mul_init @ "
+                  f"${labels['reu_mul_init']:04X}, reu_fetch_mul_row @ "
+                  f"${labels['reu_fetch_mul_row']:04X}")
+        elif not _mit:
+            print(f"  UNMITIGATED CONTROL BUILD: none of "
+                  f"{MITIGATION_LABELS} are present, so there is no settle to "
+                  f"poke and no confirm anywhere in the image. reu_mul_init @ "
+                  f"${labels['reu_mul_init']:04X}, reu_fetch_mul_row @ "
+                  f"${labels['reu_fetch_mul_row']:04X}")
+        else:
+            raise SystemExit(
+                f"ABORT: build is neither mitigated nor unmitigated -- only "
+                f"{_mit} of {MITIGATION_LABELS} present. Refusing to guess "
+                f"which surface is under test.")
         print(f"\nTuning budget (pre-registered): {', '.join(TUNING_BUDGET)}. "
               f"Anything else that moves during this run prints a DEVIATION "
               f"line.")
