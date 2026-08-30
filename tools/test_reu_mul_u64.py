@@ -868,9 +868,14 @@ class Device:
         self.write(SHIM_ADDR, bytes([0x4C, TRAMPOLINE_ADDR & 0xFF,
                                      (TRAMPOLINE_ADDR >> 8) & 0xFF]))
         self.write(TRAMPOLINE_ADDR, build_trampoline(labels))
-        self.wait_orig = self.read(labels["nistcurves_reu_dma_wait"],
-                                   WAIT_ROUTINE_BYTES)
-        self._check_wait_shape()
+        # An unmitigated control build has no wait routine to capture or
+        # restore -- absence is the signal, not an error (see MITIGATION_LABELS).
+        if self.mitigated:
+            self.wait_orig = self.read(labels["nistcurves_reu_dma_wait"],
+                                       WAIT_ROUTINE_BYTES)
+            self._check_wait_shape()
+        else:
+            self.wait_orig = None
         self.drain_status()
         return size
 
