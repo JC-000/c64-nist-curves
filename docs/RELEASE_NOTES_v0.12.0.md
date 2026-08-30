@@ -1,8 +1,8 @@
 # c64-nist-curves v0.12.0 — REU DMA settle (SPEC §8.2), adversarial test suite, and two machine-locking hangs fixed
 
 **Released:** 2026-08-30
-**Tarball:** `c64-nist-curves-vX.Y.Z.tar.gz` (SIZE_PLACEHOLDER bytes)
-**SHA256:** `SHA256_PLACEHOLDER`
+**Tarball:** `c64-nist-curves-v0.12.0.tar.gz` (265,893 bytes)
+**SHA256:** `bf6921d516a233d0063cba9e74912c14acf4ec553ec0397c9ece0a66ae659185`
 
 MINOR release. Four new exported symbols (all additive),
 `LIB_NISTCURVES_ABI_VERSION` stays **2**, and the PRG grows 3 bytes
