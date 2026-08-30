@@ -10,12 +10,14 @@ Groups, both curves unless noted:
       W vs 0, high-byte-only differences. fp_cmp's "Z=1 if equal" is
       recorded as INFO only: the last flag-setting instruction is `dey`
       (audit F-5); C is the contract and every in-library caller uses C.
-  10. fp_mod_inv(0) and ec_jacobian_to_affine on Z=0 (the library's own
-      infinity encoding) under a per-case timeout. These HANG today
-      (audit F-1) and are tagged expect_fixed_by="F-1": reported as
-      RED(known F-1), not FAIL, until the fix lands (--strict flips them
-      to FAIL). After each hang the transport is recovered (SP restored)
-      so the remaining rows still run. They run LAST.
+  10. fp_mod_inv on 0 and on the modulus itself (mod p AND mod n) and
+      ec_jacobian_to_affine on Z=0 / Z=p (the library's own infinity
+      encoding) under a per-case timeout. These HUNG before issue #132
+      (audit F-1); the guard now returns C=1 with the output zeroed, and
+      the rows assert exactly that encoding (plus C=0 on a normal
+      inversion / conversion), so a regression of the guard FAILS the
+      run. After a hang the transport is recovered (SP restored) so the
+      remaining rows still run. They run LAST.
   11. ec_point_add degeneracies: P(Z=1)+P, lift(P,z)+P (H=0 with Z!=1),
       P+(-P), lift(P,z)+(-P), inf(Z=0, garbage X/Y)+P, inf(0,0,0)+P;
       ec_point_double on Z=0 / lifted inputs; ec_point_add_jj same-point,
@@ -50,8 +52,8 @@ Usage:
                                             [--no-sha] [--no-p256] [--no-p384]
                                             [--no-hang]
 
-Exit status is non-zero on unexpected failures only; the F-1 rows are
-reported as red-known and do not fail the run unless --strict is given.
+Exit status is non-zero on any FAIL (the former F-1 red-known rows are
+real assertions since issue #132 closed); INFO rows never fail the run.
 """
 
 import hashlib
@@ -88,7 +90,8 @@ C = {
                  p1="ec_p1", p2="ec_p2", p3="ec_p3", bx="ec_base_x",
                  by="ec_base_y", dbl="ec_point_double", add="ec_point_add",
                  addjj="ec_point_add_jj", smul="ec_scalar_mul",
-                 smulv="ec_scalar_mul_var", j2a="ec_jacobian_to_affine"),
+                 smulv="ec_scalar_mul_var", j2a="ec_jacobian_to_affine",
+                 ax="ec_affine_x", ay="ec_affine_y"),
     "p384": dict(p=P384_P, n=P384_N, b=P384_B, G=(P384_GX, P384_GY), nb=48,
                  tmp1="fp384_tmp1", tmp2="fp384_tmp2", tmp3="fp384_tmp3",
                  r0="fp384_r0", wide="fp384_wide", modp="ec_p384",
@@ -102,7 +105,8 @@ C = {
                  dbl="ec_point_double_384", add="ec_point_add_384",
                  addjj="ec_point_add_jj_384", smul="ec_scalar_mul_384",
                  smulv="ec_scalar_mul_var_384",
-                 j2a="ec_jacobian_to_affine_384"),
+                 j2a="ec_jacobian_to_affine_384",
+                 ax="ec384_affine_x", ay="ec384_affine_y"),
 }
 
 # Per-call jsr() timeouts (warp-mode wall seconds; generous, hang = row).
@@ -165,6 +169,15 @@ class Drv:
         self.ptrs(src1=c["tmp1"], dst=c["tmp3"])
         jsr(self.t, self.L[c[routine]], timeout=timeout)
         return self.rfe(c["r0"])
+
+    def unop_r0_c(self, routine, a, timeout=T_INV):
+        """Like unop_r0 but returns (C, r0) -- the issue #132 encoding."""
+        c = self.c
+        self.wfe(c["tmp1"], a)
+        self.wfe(c["r0"], 0xDEADBEEF)
+        self.ptrs(src1=c["tmp1"], dst=c["tmp3"])
+        regs = jsr(self.t, self.L[c[routine]], timeout=timeout)
+        return flags_of(regs)[0], self.rfe(c["r0"])
 
     def reduce(self, wide, timeout=60.0):
         c = self.c
@@ -240,10 +253,15 @@ class Drv:
         jsr(self.t, self.L[self.c["smulv"]], timeout=T_SMULV)
         return self.rjac(self.c["p3"])
 
-    def j2a(self, x, y, z):
+    def j2a(self, x, y, z, timeout=T_HANG):
+        """ec_jacobian_to_affine on (x,y,z) -> (C, affine_x, affine_y).
+        Outputs are poisoned first so a zeroed result is a real write."""
         self.wjac(self.c["p3"], x, y, z)
-        jsr(self.t, self.L[self.c["j2a"]], timeout=T_HANG)
-        return self.rjac(self.c["p3"])
+        self.wfe(self.c["ax"], 0xDEADBEEF)
+        self.wfe(self.c["ay"], 0xDEADBEEF)
+        regs = jsr(self.t, self.L[self.c["j2a"]], timeout=timeout)
+        return (flags_of(regs)[0], self.rfe(self.c["ax"]),
+                self.rfe(self.c["ay"]))
 
 
 # ---------------------------------------------------------------------------
@@ -606,27 +624,56 @@ def sha_section(S, transport, labels, rng, full):
 
 
 def hang_section(S, D, curve):
-    """10. Audit F-1: fp_mod_inv(0) and ec_jacobian_to_affine(Z=0) hang.
-    RED(known F-1) until fixed; each runs under T_HANG and the transport
-    is recovered afterwards. Runs last."""
+    """10. Audit F-1 / issue #132: fp_mod_inv on the residue class 0 and
+    ec_jacobian_to_affine on Z=0 used to hang. The guard's documented
+    encoding is asserted: C=1 and a zeroed output (fp_r0 / affine x,y)
+    for 0, the modulus (mod p and mod n) and Z in {0, p}; C=0 and the
+    oracle value on a normal inversion / conversion. Each runs under
+    T_HANG and the transport is recovered after a timeout. Runs last."""
     c = D.c
-    p = c["p"]
+    p, n = c["p"], c["n"]
+    gx, gy = c["G"]
     sec = f"hang-{curve}/10-F1"
+    NOINV = (1, 0)                       # (C, fp_r0): no inverse
+    INF = (1, 0, 0)                      # (C, affine_x, affine_y): infinity
+
     D.modp()
-    S.timed(sec, "fp_mod_inv(0) mod p returns (any value; must not hang)",
-            lambda: D.unop_r0("mod_inv", 0, timeout=T_HANG), "returns",
-            transport=D.t, expect_fixed_by="F-1", post=lambda r: "returns",
-            detail={"note": "binary GCD: u=0 stays even forever"})
-    S.timed(sec, "ec_jacobian_to_affine(Z=0) returns (infinity encoding; "
-            "must not hang)",
-            lambda: D.j2a(5, 6, 0), "returns", transport=D.t,
-            expect_fixed_by="F-1", post=lambda r: "returns",
-            detail={"note": "no Z=0 guard before the inversion"})
-    S.timed(sec, "fp_mod_inv(p) mod p returns (u=p==0; suspected twin)",
-            lambda: D.unop_r0("mod_inv", p, timeout=T_HANG), "returns",
-            transport=D.t, expect_fixed_by="F-1", post=lambda r: "returns")
-    # Post-hang sanity: the transport must still compute correctly.
-    S.timed(sec, "post-hang sanity: mod_inv(2) mod p",
+    S.timed(sec, "fp_mod_inv(0) mod p -> C=1, r0=0 (issue #132 guard)",
+            lambda: D.unop_r0_c("mod_inv", 0, timeout=T_HANG), NOINV,
+            transport=D.t,
+            detail={"note": "binary GCD: u=0 stayed even forever"})
+    S.timed(sec, "fp_mod_inv(p) mod p -> C=1, r0=0 (u=p==0 mod p)",
+            lambda: D.unop_r0_c("mod_inv", p, timeout=T_HANG), NOINV,
+            transport=D.t)
+    S.timed(sec, "fp_mod_inv(2) mod p -> C=0, oracle value",
+            lambda: D.unop_r0_c("mod_inv", 2, timeout=T_INV),
+            (0, pow(2, -1, p)), transport=D.t)
+    S.timed(sec, "fp_mod_inv(p-1) mod p -> C=0, oracle value",
+            lambda: D.unop_r0_c("mod_inv", p - 1, timeout=T_INV),
+            (0, pow(p - 1, -1, p)), transport=D.t)
+
+    D.modn()
+    S.timed(sec, "fp_mod_inv(0) mod n -> C=1, r0=0 (issue #132 guard)",
+            lambda: D.unop_r0_c("mod_inv", 0, timeout=T_HANG), NOINV,
+            transport=D.t)
+    S.timed(sec, "fp_mod_inv(n) mod n -> C=1, r0=0 (u=n==0 mod n)",
+            lambda: D.unop_r0_c("mod_inv", n, timeout=T_HANG), NOINV,
+            transport=D.t)
+    S.timed(sec, "fp_mod_inv(n-1) mod n -> C=0, oracle value",
+            lambda: D.unop_r0_c("mod_inv", n - 1, timeout=T_INV),
+            (0, pow(n - 1, -1, n)), transport=D.t)
+    D.modp()
+
+    S.timed(sec, "ec_jacobian_to_affine(Z=0) -> C=1, x=y=0 (infinity)",
+            lambda: D.j2a(5, 6, 0), INF, transport=D.t,
+            detail={"note": "Z=0 is the library's own infinity encoding"})
+    S.timed(sec, "ec_jacobian_to_affine(Z=p) -> C=1, x=y=0 (Z==0 mod p)",
+            lambda: D.j2a(5, 6, p), INF, transport=D.t)
+    S.timed(sec, "ec_jacobian_to_affine(lift(G,3)) -> C=0, G",
+            lambda: D.j2a(*lift((gx, gy), 3, p), timeout=T_INV),
+            (0, gx, gy), transport=D.t)
+    # Post-probe sanity: the transport must still compute correctly.
+    S.timed(sec, "post-probe sanity: mod_inv(2) mod p",
             lambda: D.unop_r0("mod_inv", 2), pow(2, -1, p), transport=D.t)
 
 
