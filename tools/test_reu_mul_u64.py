@@ -104,6 +104,7 @@ import argparse
 import hashlib
 import os
 import random
+import pathlib
 import re
 import shutil
 import subprocess
@@ -884,7 +885,24 @@ class Device:
                              "`rts`; the routine length changed.")
 
     # -- settle control -----------------------------------------------------
+    @property
+    def mitigated(self) -> bool:
+        """False for a genuine pre-fix build: it has no settle routine at all.
+
+        The UNMITIGATED CONTROL is the discriminating experiment (see the
+        header): on a core that may have removed the hazard in hardware
+        (1.4E -> 1.4F, GideonZ/1541ultimate 59594060), a MITIGATED build
+        passes either way, so it cannot tell "the settle fixed it" from "the
+        core removed it". Only an unmitigated build can. Such a build has no
+        `nistcurves_reu_dma_wait` to poke -- its settle is whatever the
+        instruction stream inherently provides -- so every poke is a no-op
+        and the ladder collapses to a single native-settle cell.
+        """
+        return "nistcurves_reu_dma_wait" in self.labels
+
     def set_settle(self, form: str, k: int = 0):
+        if not self.mitigated:
+            return          # unmitigated control: nothing to poke, by design
         addr = self.labels["nistcurves_reu_dma_wait"]
         payload = self.wait_orig if form == "orig" else stub_bytes(form, k)
         if form != "orig" and k > stub_max_k(form):
@@ -1104,7 +1122,7 @@ class CellResult:
             f"surface={self.surface}",
             f"clock={self.clock}",
             f"clock_measured={'%.1f' % measured_mhz if measured_mhz else 'UNVERIFIED'}",
-            f"settle_cy={self.settle_cy}",
+            f"settle_cy={'native(unmitigated)' if self.settle_cy < 0 else self.settle_cy}",
             f"reu={self.reu_size.replace(' ', '')}",
             f"read={self.read_kind}",
             f"N={self.n}", f"k={self.k}",
@@ -1181,7 +1199,10 @@ def fetch_cell(dev, mhz, reu_size, rows, n_fetches, settle, name,
     positive and is never dropped for time.
     """
     form, k = settle
-    cell = CellResult(name, mhz, stub_cycles(form, k), reu_size,
+    # An unmitigated build has no pokeable settle; report it as native rather
+    # than as the cycle count of a stub that was never written.
+    settle_cy = stub_cycles(form, k) if dev.mitigated else -1
+    cell = CellResult(name, mhz, settle_cy, reu_size,
                       "cpu" + ("+host" if host_read else ""), "fetch")
     mdl, mdh = (dev.labels["nistcurves_mul_dma_lo"],
                 dev.labels["nistcurves_mul_dma_hi"])
@@ -1973,6 +1994,17 @@ def main(argv=None):
         dev = Device(transport, client, verbose=opts.verbose)
 
         prg = opts.prg or DEFAULT_PRG
+        # Artifact-level provenance for the control, printed rather than
+        # merely asserted, so a reader can see the build really is unmitigated
+        # without taking anyone's word (requested by the c64-wireguard lane).
+        # These are properties of the ARTIFACT, not of the build recipe.
+        try:
+            _img = pathlib.Path(prg).read_bytes()
+            _n_bit = _img.count(b"\x2c\x00\xdf")   # bit $DF00
+            print(f"  artifact provenance: `bit $DF00` occurrences in image: "
+                  f"{_n_bit}  (0 => no REU status read anywhere => unmitigated)")
+        except Exception as _e:
+            print(f"  artifact provenance: could not scan image ({_e})")
         lbl_path = opts.labels or (
             os.path.join(os.path.dirname(os.path.abspath(prg)), "labels.txt")
             if opts.prg else DEFAULT_LABELS)
