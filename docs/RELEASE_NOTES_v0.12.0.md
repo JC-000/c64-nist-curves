@@ -25,14 +25,14 @@ the same build passed at 1 MHz and on firmware 3.14d. Every adopter,
 this library included, had assumed the REU's DMA line halting the CPU
 was the whole story.
 
-All **fourteen** `sta reu_command` execute sites now confirm `$DF00`
+All **thirteen** `sta reu_command` execute sites now confirm `$DF00`
 bit 6 (end-of-block) and observe a post-execute settle before the next
 REU register access, in two forms chosen by how soon that access comes:
 
 | Sites | Form | Cost |
 |---|---|---|
 | 6 hot `fp_mul` / `fp_sqr` row fetches (both curves) | inline `REU_DMA_CONFIRM` (`bit reu_status / bvs`, `src/reu_dma_done.inc`), entering the bounded spin only if bit 6 is clear | 7 cycles/row, A/X/Y preserved |
-| 2 `reu_mul_init` stashes, 4 comb stash/fetch routines, exported `reu_fetch_mul_row` | `jsr nistcurves_reu_dma_wait`: bounded 16-bit spin, then `LIB_NISTCURVES_REU_SETTLE_ITER` × 9-cycle settle | ~107 cycles (default 8), 2.2× the measured floor |
+| 2 `reu_mul_init` stashes, 4 comb stash/fetch routines, exported `reu_fetch_mul_row` | `jsr nistcurves_reu_dma_wait`: bounded 16-bit spin, then `LIB_NISTCURVES_REU_SETTLE_ITER` × 9-cycle settle | ~106 cycles (default 8), 2.16× the measured floor |
 
 At the six hot sites the settle obligation is met **structurally** — the
 next REU register write is a full accumulate body away — and SPEC

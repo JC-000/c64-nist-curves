@@ -38,6 +38,7 @@ Requires the archives to be built first (the ``check-archives`` Makefile
 target builds them, then runs this). Exit 0 = contract intact, 1 = drift.
 """
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -956,6 +957,65 @@ def defines_staleness_check(failures):
     something rebuilt". Runs LAST: a knob change wipes build/*.o by design;
     the final leg restores the default configuration."""
     print("\n=== §6.3 knob-staleness guard (defines change must rebuild) ===")
+
+    # --- Linked-artifact leg (issue #144) ------------------------------------
+    # Every other leg in this function reads a built OBJECT's exported surface.
+    # Objects are the artifact for `make lib-*`, but for the PRG the link is a
+    # separate step, and it was being SKIPPED: the stamp deleted build/*.o but
+    # not build/*.prg, objects reassembled in well under a second, and GNU make
+    # 3.81 compares mtimes at whole-second granularity -- so make judged the
+    # existing PRG up to date and ld65 never ran. Measured before the fix:
+    # three consecutive knob values, one link, one PRG hash, exit 0 each time.
+    #
+    # That is the SPEC v0.11.1 §6.3 property this guard exists to provide
+    # ("assert the artifact FLIPPED, not that something rebuilt") failing in
+    # the half of the pipeline no leg inspected. The two knobs the other legs
+    # drive (CONTRACT_ZP_DEFINES, the sqtab base) cannot exhibit it: for both,
+    # the object IS the evidence. So this leg deliberately picks a knob whose
+    # failure path is longest -- downstream of the link.
+    #
+    # Negative-tested by reverting the Makefile fix (dropping *.prg from the
+    # stamp's rm list): this leg goes red on the second build while every
+    # object-level leg above stays green.
+    def prg_sha():
+        prg = BUILD / "nist-curves.prg"
+        if not prg.exists():
+            return None
+        return hashlib.sha256(prg.read_bytes()).hexdigest()
+
+    art_legs = [
+        (["make", "-C", str(REPO)], "default"),
+        (["make", "-C", str(REPO),
+          "CONTRACT_DEFINES=-D LIB_NISTCURVES_REU_SETTLE_ITER=4"], "ITER=4"),
+        (["make", "-C", str(REPO)], "revert to default"),
+    ]
+    art_hashes = []
+    for cmd, label in art_legs:
+        rc, _ = sh(cmd)
+        h = prg_sha()
+        art_hashes.append(h)
+        if rc or h is None:
+            failures.append(
+                f"knob-staleness(artifact): {label}: build failed (rc={rc})")
+            print(f"  ARTIFACT FAIL [{label}]: rc={rc}")
+    if len(art_hashes) == 3 and all(art_hashes):
+        if art_hashes[0] == art_hashes[1]:
+            failures.append(
+                "knob-staleness(artifact): a changed knob left the LINKED PRG "
+                f"identical ({art_hashes[0][:16]}...) -- the link was skipped, "
+                "so the build carries the previous knob's artifact (issue #144)")
+            print("  ARTIFACT FAIL: changed knob did not flip the PRG "
+                  f"({art_hashes[0][:16]}...)")
+        elif art_hashes[0] != art_hashes[2]:
+            failures.append(
+                "knob-staleness(artifact): reverting the knob did not restore "
+                f"the default PRG ({art_hashes[2][:16]}... != "
+                f"{art_hashes[0][:16]}...)")
+            print("  ARTIFACT FAIL: revert did not restore the default PRG")
+        else:
+            print(f"  artifact leg OK (PRG flips {art_hashes[0][:12]}... -> "
+                  f"{art_hashes[1][:12]}... -> back)")
+
 
     def fp_src1_value():
         return od65_value([BUILD / "zp_config.o"], "fp_src1")

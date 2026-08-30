@@ -25,7 +25,7 @@ contract).
   lands on a busy controller — measured upstream as every REU-backed
   Noise handshake failing its AEAD while the same build passed at 1 MHz
   and on fw 3.14d. Every adopter, this library included, had assumed the
-  REU's DMA line halting the CPU was the whole story. All fourteen
+  REU's DMA line halting the CPU was the whole story. All thirteen
   `sta reu_command` execute sites now honour the clause, in two forms
   chosen by how soon the next REU register access follows:
   - the six `fp_mul` / `fp_sqr` row fetches (both curves) get an inline
@@ -37,7 +37,7 @@ contract).
     (whose `*_restore` rewrites five registers at once) and the exported
     `reu_fetch_mul_row` call the new `nistcurves_reu_dma_wait`: bounded
     16-bit spin on bit 6, then `LIB_NISTCURVES_REU_SETTLE_ITER` × 9-cycle
-    settle (default 8 → ~107 cycles execute-to-next-write, 2.2× the
+    settle (default 8 → ~106 cycles execute-to-next-write, 2.16× the
     measured ≥ 49-cycle floor at 48 MHz).
 
   Cost: +7 cycles per multiply row (~0.25 % of `fp_mul`), +108 B of

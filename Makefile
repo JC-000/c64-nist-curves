@@ -99,7 +99,19 @@ CONTRACT_STAMP := $(BUILD_DIR)/.contract-defines.stamp
 CURRENT_KNOBS := $(strip $(CONTRACT_DEFINES) @ $(CONTRACT_ZP_DEFINES))
 STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
 ifneq ($(CURRENT_KNOBS),$(STORED_KNOBS))
-$(shell mkdir -p $(BUILD_DIR); rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a; printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP))
+# Issue #144: the LINKED artifacts must be invalidated too, not only the
+# objects. Objects are deleted and reassembled in well under a second, and
+# GNU make 3.81 (macOS system make) compares mtimes at whole-second
+# granularity -- so a same-second reassembly frequently leaves make judging
+# the existing .prg up to date, and ld65 never runs. The build then exits 0
+# carrying the PREVIOUS knob's artifact. Measured: three consecutive knob
+# values, one link, one PRG hash. That is precisely the SPEC v0.11.1 §6.3
+# property this stamp exists to provide ("assert the artifact flipped, not
+# that something rebuilt"), so the PRG, its label files and the dbg file go
+# with the objects.
+$(shell mkdir -p $(BUILD_DIR); rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a \
+        $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg; \
+        printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP))
 endif
 
 .PHONY: all clean build-acme bench-u64 dist \

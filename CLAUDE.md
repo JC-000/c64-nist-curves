@@ -699,12 +699,12 @@ keep all library calls on a single thread of control.
   handshake failed its AEAD; same build passed at 1 MHz and on 3.14d). A
   ~49-cycle delay-only variant also passes there, so the mechanism is a
   settle, and the status read is insurance (a device that does not hold
-  the CPU has not been observed). Now all 14 execute sites honour both
+  the CPU has not been observed). Now all 13 execute sites honour both
   obligations: six hot `fp_mul`/`fp_sqr` sites via the inline 7-cycle
   `REU_DMA_CONFIRM` (settle structural — next REU write ≥ ~80 cycles
-  away), eight tight sites (init stashes, comb stash/fetch, exported
+  away), seven tight sites (init stashes, comb stash/fetch, exported
   `reu_fetch_mul_row`) via `nistcurves_reu_dma_wait` (bounded 16-bit
-  spin + `LIB_NISTCURVES_REU_SETTLE_ITER` × 9 cycles, default ~107 cy
+  spin + `LIB_NISTCURVES_REU_SETTLE_ITER` × 9 cycles, default ~106 cy
   total). Expiry sets sticky `nistcurves_reu_dma_timeout`. **64 MHz is
   unbracketed** (C64U unreachable upstream at the time); the knob exists
   so a bracket raises the floor without code change. Not a VICE-visible

@@ -248,7 +248,7 @@ The six `fp_mul` / `fp_sqr` row fetches use an inline 7-cycle confirm
 (the settle is structural there — the next REU write is a full
 accumulate body away); the table build, the comb DMA routines and
 `reu_fetch_mul_row` call `nistcurves_reu_dma_wait`, whose settle length
-is `LIB_NISTCURVES_REU_SETTLE_ITER` (default 8 → ~107 cycles, 2.2× the
+is `LIB_NISTCURVES_REU_SETTLE_ITER` (default 8 → ~106 cycles, 2.16× the
 measured ≥ 49-cycle floor at 48 MHz; see §8.6.1 to raise it). If a
 bounded spin ever expires, the sticky byte `nistcurves_reu_dma_timeout`
 is set to 1 and execution proceeds; a host that wants fail-closed
@@ -1210,7 +1210,7 @@ can verify co-linked libraries agree on placement:
 `LIB_NISTCURVES_REU_SETTLE_ITER` (default 8; 1..255) sets how many
 9-cycle iterations `nistcurves_reu_dma_wait` settles for after every REU
 execute at a tight site, on top of the `$DF00` bit-6 confirm. The
-default's ~107-cycle execute-to-next-write distance is 2.2× the measured
+default's ~106-cycle execute-to-next-write distance is 2.16× the measured
 floor (≥ 49 cycles at 48 MHz, U64E fw 3.15). The floor is
 **unbracketed at 64 MHz**; a consumer running a C64 Ultimate at that
 clock raises the knob until a FAIL/PASS bracket exists (§13.6's ~63 µs

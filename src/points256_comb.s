@@ -52,7 +52,17 @@
 .import nistcurves_reu_dma_wait    ; SPEC v0.13.0 §8.2 (issue #130)
 
 ; --- REU layout contract (SPEC §3) ---
+; SPEC §3/§6.2 consumer override (issue #143). CONTRACT_DEFINES reaches
+; EVERY TU, so under `-D LIB_NISTCURVES_REU_BANK_COMB=<v>` ca65 defines the symbol here too and an
+; unconditional `.import` of the same name is "Symbol ... is already defined"
+; -- i.e. the documented override does not assemble at all. Guarding makes
+; both arms work: no override -> import reu_config.s's exported default;
+; override -> use the -D value, which is the same value reu_config.s exports,
+; because the one -D reaches both TUs. Same shape as src/sqtab_base.inc's
+; "included, not imported" note.
+.ifndef LIB_NISTCURVES_REU_BANK_COMB
 .import LIB_NISTCURVES_REU_BANK_COMB
+.endif
 
 
 ; =============================================================================

@@ -92,7 +92,8 @@ LIB_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_SHARED_REU_MUL_BANK) | (1 .shl (LIB_
 ; --- SPEC v0.13.0 §8.2 post-execute settle (issue #130) ---
 ; Iterations of the 9-cycle settle loop in nistcurves_reu_dma_wait
 ; (src/mul_8x8.s) after every REU execute at a tight site. Default 8 ->
-; ~107 cycles execute-to-next-register-write, 2.2x the measured floor
+; ~106 cycles execute-to-next-register-write (34 + 9*ITER; the loop is
+; 9*ITER-1 because the final bne falls through), 2.16x the measured floor
 ; (>= 49 cy @ 48 MHz, U64E fw 3.15, c64-lib-contract#144). 64 MHz is
 ; unbracketed as of SPEC v0.13.0: a consumer claiming that clock raises
 ; this (`ca65 -D LIB_NISTCURVES_REU_SETTLE_ITER=<n>`, 1..255) until a
