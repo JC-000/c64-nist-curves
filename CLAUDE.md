@@ -112,6 +112,16 @@ python3 tools/test_ecdsa_verify.py   # ECDSA verify (both curves, RFC 6979 + CAV
 python3 tools/test_ecdsa_adversarial.py  # adversarial ECDSA verify: Q-gate h=0 construction, range/h>=n/u1=0/R=inf/cofactor/malleability, CAVP reason codes asserted (hazmat oracle; --strict fails red-known rows)
 python3 tools/test_prims_adversarial.py  # adversarial field/point/SHA-384: fp_cmp/is_zero flags, point-add degeneracies, comb + var-base k edges, SHA chaining; fp_mod_inv(0/modulus) + j2a(Z=0/p) assert the issue #132 C=1/zero-output guard (--strict fails any red-known row)
 python3 tools/bench_ecdsa_u64.py     # ECDSA verify + variable-base scalar_mul on U64E
+python3 tools/test_reu_mul_u64.py    # SPEC v0.13.0 §8.2 REU DMA settle probe on U64 hardware
+                                     #   (issue #130, c64-lib-contract#144). Needs U64_HOST and
+                                     #   takes the DeviceLock; reboots the device and rewrites its
+                                     #   REU enable/size + turbo, restoring the values observed at
+                                     #   startup in a finally block. Settle lengths are POKED into
+                                     #   nistcurves_reu_dma_wait (12..84 cy) rather than rebuilt --
+                                     #   the LIB_NISTCURVES_REU_SETTLE_ITER knob only reaches
+                                     #   43..106 cy (34 + 9*ITER) and may not straddle the floor.
+                                     #   --self-test and --dry-run need no device; --verify-builds
+                                     #   rebuilds the knob variants (no device, no VICE).
 python3 tools/bench_sha384.py        # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 python3 tools/bench_reu_mult.py      # REU multiply-table cost decomposition (row-fetch DMA vs mul_8x8 vs fp_mul; VICE, ~4 min; not CI-gating)
 make check-archives                  # archive linkability contract ratchet (no VICE; pins API.md §8.4.1)

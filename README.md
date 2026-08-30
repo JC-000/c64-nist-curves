@@ -65,6 +65,11 @@ python3 tools/bench_p384.py       # P-384 benchmarks (oracle correctness gate)
 python3 tools/bench_p256_u64.py   # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
 python3 tools/bench_ecdsa_u64.py  # ECDSA verify + variable-base scalar_mul on U64E
+python3 tools/test_reu_mul_u64.py # SPEC §8.2 REU DMA settle probe on U64 hardware
+                                  #   (needs U64_HOST; takes the DeviceLock; reboots the
+                                  #    device and rewrites its REU/turbo config, restoring
+                                  #    what it observed at startup. --self-test / --dry-run
+                                  #    need no device.)
 python3 tools/test_sha384.py      # SHA-384 streaming hash (FIPS 180-4 KAT + boundary lengths)
 python3 tools/bench_sha384.py     # SHA-384 per-block compress cost (VICE 1 MHz, oracle-gated)
 python3 tools/test_ecdsa_verify.py       # ECDSA verify (RFC 6979 + CAVP SigVer, Result codes asserted)
