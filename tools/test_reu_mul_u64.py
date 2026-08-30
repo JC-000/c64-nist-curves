@@ -1078,9 +1078,17 @@ class CellResult:
         self.dma_timeout = 0
         self.error = None
         self.not_run = False
+        self.contaminated = False   # precondition failed: table was not correct
 
     @property
     def verdict(self):
+        if self.contaminated:
+            # NOT "FAIL". A cell whose precondition failed measured something
+            # other than the device, and a FAIL word here would be read as a
+            # result. 2026-08-30: five such cells were reported as FAIL and
+            # relayed to another lane before the identical numbers gave it
+            # away.
+            return "CONTAMINATED"
         if self.not_run:
             return "NOT_RUN"
         if self.error:
@@ -1115,6 +1123,55 @@ class CellResult:
         return " ".join(bits)
 
 
+def assert_table_correct(dev, mhz, rows, where: str) -> bool:
+    """PRECONDITION for every measured cell: the REU multiply table must
+    already hold correct products before we measure anything.
+
+    Why this exists (2026-08-30): leg 3's poison-without-rebuild self-check
+    left the table poisoned and nothing re-ran reu_mul_init, so the whole
+    fetch ladder measured a poisoned table and reported 100/100 FAIL at every
+    settle length. The tell was that five cells returned BIT-IDENTICAL
+    numbers -- a timing hazard cannot do that -- and the mismatches were
+    exactly `want ^ 0x5A`, our own documented poison.
+
+    Asserting the precondition beats inspecting the corruption afterwards:
+    it fires on the first cell rather than the second, it does not depend on
+    the corruption carrying a recognisable pattern, and it also catches a
+    FOREIGN writer -- REU contents survive reboots, PRG loads and lane
+    changes, and this device is shared with lanes whose traffic is invisible
+    to our lock.
+
+    Uses a long settle so that a genuine settle hazard cannot make a correct
+    table look wrong here; this checks the TABLE, not the timing.
+    """
+    mdl, mdh = (dev.labels["nistcurves_mul_dma_lo"],
+                dev.labels["nistcurves_mul_dma_hi"])
+    dev.set_settle("orig", 0)
+    bad = []
+    for a in rows[:4]:
+        want = expected_row(a)
+        pois = poison_row(a)
+        dev.write(mdl, pois[:256]); dev.write(mdh, pois[256:])
+        dev.write(dev.labels["nistcurves_mul_cached_a"], bytes([a]))
+        if dev.call(OP_FETCH_HOST, timeout_for("fetch", mhz)) is None:
+            print(f"    PRECONDITION [{where}]: TIMEOUT fetching row {a}")
+            return False
+        got = dev.read(mdl, 256) + dev.read(mdh, 256)
+        if got != want:
+            n_pois = sum(1 for g, w in zip(got, want)
+                         if g == (w ^ 0x5A) or g == ((w ^ 0x5A) ^ 0xFF))
+            bad.append((a, sum(1 for g, w in zip(got, want) if g != w), n_pois))
+    if bad:
+        print(f"    PRECONDITION FAIL [{where}]: the REU table is NOT correct "
+              f"before measuring. Rows {[b[0] for b in bad]}; "
+              f"wrong/poison-matching bytes {[(b[1], b[2]) for b in bad]}.")
+        print("      A high poison-matching count means WE contaminated it "
+              "(a poison step with no rebuild). Otherwise something outside "
+              "this run wrote the REU.")
+        return False
+    return True
+
+
 def fetch_cell(dev, mhz, reu_size, rows, n_fetches, settle, name,
                host_read=True, table_poison=None) -> CellResult:
     """FETCH-path cell: scrub -> fetch -> cpu-read.
@@ -1131,6 +1188,14 @@ def fetch_cell(dev, mhz, reu_size, rows, n_fetches, settle, name,
     cached_a = dev.labels["nistcurves_mul_cached_a"]
     dev.clear_dma_timeout()
     dev.drain_status()
+    # PRECONDITION: the table must already be correct. A cell that measures a
+    # contaminated table reports a 100% failure that says nothing about the
+    # device -- and it is indistinguishable from a real result unless you
+    # happen to run a second cell and notice the numbers are identical.
+    if not assert_table_correct(dev, mhz, rows, name):
+        cell.error = "PRECONDITION_table_not_correct_before_cell"
+        cell.contaminated = True
+        return cell
     dev.set_settle(form, k)
     i = 0
     while cell.n < n_fetches:
@@ -1982,6 +2047,18 @@ def main(argv=None):
                     "ABORT: the table poison is not reaching the REU, so no "
                     "stash-path cell could assert that ITS rebuild wrote the "
                     "table correctly.")
+                # The self-check leaves the table POISONED. Rebuild it before
+                # anything measures, or every later cell reads our own poison
+                # and reports a 100% failure that has nothing to do with the
+                # device (measured 2026-08-30: five bit-identical FAIL cells).
+                print("    rebuilding the table after the poison self-check "
+                      "(OP_INIT)...", flush=True)
+                if dev.call(OP_INIT, timeout_for("init", 1),
+                            poll_interval=0.2) is None:
+                    raise SystemExit(
+                        "ABORT: could not rebuild the multiply table after the "
+                        "poison self-check; the table is left poisoned and no "
+                        "measurement would mean anything.")
 
             # ---- LEG 4: clock verification ----------------------------
             print("\n  [leg 4] in-band clock verification (CIA Timer A "
