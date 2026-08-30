@@ -767,6 +767,16 @@ def build_trampoline(labels) -> bytes:
     a.imm(LDA_IMM, DONE_SENTINEL_VAL); a.abs(STA_ABS, DONE_SENTINEL_ADDR)
     a.abs(JMP, main_loop)
 
+    # A missing library entry point must resolve to something that RETURNS.
+    # It previously resolved to TRAMPOLINE_ADDR, so on an unmitigated control
+    # build (no nistcurves_reu_dma_wait) the three `jsr _dma_wait` sites became
+    # `jsr $C000` -- a jump back into the trampoline's own entry. That hangs the
+    # machine, and it presented as "REU presence probe: TIMEOUT on stash", which
+    # reads like a dead REU rather than a tool bug. Emit a real `rts` and point
+    # missing symbols at it.
+    a.label("_missing_rts")
+    a.b(RTS)
+
     # resolve library entry points as absolute targets
     for name, sym in (("_reu_mul_init", "reu_mul_init"),
                       ("_fetch", "reu_fetch_mul_row"),
@@ -776,7 +786,7 @@ def build_trampoline(labels) -> bytes:
                       ("_fp_sqr", "fp_sqr")):
         addr = labels.address(sym)
         if addr is None:
-            addr = TRAMPOLINE_ADDR      # unused op; patched to a harmless nop
+            addr = TRAMPOLINE_ADDR + a.labels["_missing_rts"]
         for i, (off, lname, kind) in enumerate(a.fix):
             if lname == name:
                 a.code[off] = addr & 0xFF
