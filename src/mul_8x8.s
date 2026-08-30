@@ -33,7 +33,17 @@
 .import reu_reu_hi, reu_reu_bank, reu_command
 
 ; --- REU layout contract (SPEC §3) ---
+; SPEC §3/§6.2 consumer override (issue #143). CONTRACT_DEFINES reaches
+; EVERY TU, so under `-D LIB_NISTCURVES_REU_BANK_MUL=<v>` ca65 defines the symbol here too and an
+; unconditional `.import` of the same name is "Symbol ... is already defined"
+; -- i.e. the documented override does not assemble at all. Guarding makes
+; both arms work: no override -> import reu_config.s's exported default;
+; override -> use the -D value, which is the same value reu_config.s exports,
+; because the one -D reaches both TUs. Same shape as src/sqtab_base.inc's
+; "included, not imported" note.
+.ifndef LIB_NISTCURVES_REU_BANK_MUL
 .import LIB_NISTCURVES_REU_BANK_MUL
+.endif
 
 .segment "LIB_NISTCURVES_MUL_CODE"
 
@@ -352,8 +362,18 @@ reu_fetch_mul_row:
 ; (b) LIB_NISTCURVES_REU_SETTLE_ITER iterations of `dec abs / bne`
 ;     (9 cycles each) after the confirm. With the default 8 the execute ->
 ;     next-register-write distance through this routine is
-;     jsr 6 + lda/sta/sta 10 + bit/bvs 7 + lda/sta 6 + 8*9 + rts 6 = 107
-;     cycles, 2.2x the measured 48 MHz floor (>= 49 cy, U64E fw 3.15) and
+;     jsr 6 + lda/sta/sta 10 + bit/bvs 7 + lda/sta 6 + (9*8 - 1) + rts 6
+;     = 106 cycles -- the loop is 9*ITER - 1, not 9*ITER, because the FINAL
+;     `bne` falls through at 2 cycles rather than branching at 3. The
+;     general form is 34 + 9*ITER. (This comment said 35 + 9*ITER / 107
+;     through v0.12.0; the error was optimistic, so every margin quoted
+;     against the floor was one cycle smaller than documented.) That is
+;     2.16x the measured 48 MHz floor (>= 49 cy, U64E fw 3.15) and
+;     it is a FLOOR in a second sense too: it omits the caller's own
+;     instructions between this `rts` and its next REU register write, and
+;     it measures execute -> next REGISTER WRITE, which is NOT the axis on
+;     which the hazard has actually been observed (that is execute -> first
+;     read of the landing buffer; see src/reu_dma_done.inc).
 ;     covering a 1 us floor at 64 MHz (~65 cy) should the settle turn out
 ;     to be time-anchored -- 64 MHz is UNBRACKETED as of SPEC v0.13.0; a
 ;     consumer claiming that clock raises the knob (`ca65 -D`) until the
@@ -362,7 +382,18 @@ reu_fetch_mul_row:
 ;   provider surface, and every REU-touching archive (including the
 ;   comb-onchip pair, which still DMAs the anchor table) needs it.
 ; =============================================================================
-.import reu_status, LIB_NISTCURVES_REU_SETTLE_ITER
+.import reu_status
+; SPEC §3/§6.2 consumer override (issue #143). CONTRACT_DEFINES reaches
+; EVERY TU, so under `-D LIB_NISTCURVES_REU_SETTLE_ITER=<v>` ca65 defines the symbol here too and an
+; unconditional `.import` of the same name is "Symbol ... is already defined"
+; -- i.e. the documented override does not assemble at all. Guarding makes
+; both arms work: no override -> import reu_config.s's exported default;
+; override -> use the -D value, which is the same value reu_config.s exports,
+; because the one -D reaches both TUs. Same shape as src/sqtab_base.inc's
+; "included, not imported" note.
+.ifndef LIB_NISTCURVES_REU_SETTLE_ITER
+.import LIB_NISTCURVES_REU_SETTLE_ITER
+.endif
 .import nistcurves_reu_wait_cnt, nistcurves_reu_dma_timeout
 .export nistcurves_reu_dma_wait
 nistcurves_reu_dma_wait:

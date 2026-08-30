@@ -25,14 +25,14 @@ the same build passed at 1 MHz and on firmware 3.14d. Every adopter,
 this library included, had assumed the REU's DMA line halting the CPU
 was the whole story.
 
-All **fourteen** `sta reu_command` execute sites now confirm `$DF00`
+All **thirteen** `sta reu_command` execute sites now confirm `$DF00`
 bit 6 (end-of-block) and observe a post-execute settle before the next
 REU register access, in two forms chosen by how soon that access comes:
 
 | Sites | Form | Cost |
 |---|---|---|
 | 6 hot `fp_mul` / `fp_sqr` row fetches (both curves) | inline `REU_DMA_CONFIRM` (`bit reu_status / bvs`, `src/reu_dma_done.inc`), entering the bounded spin only if bit 6 is clear | 7 cycles/row, A/X/Y preserved |
-| 2 `reu_mul_init` stashes, 4 comb stash/fetch routines, exported `reu_fetch_mul_row` | `jsr nistcurves_reu_dma_wait`: bounded 16-bit spin, then `LIB_NISTCURVES_REU_SETTLE_ITER` × 9-cycle settle | ~107 cycles (default 8), 2.2× the measured floor |
+| 2 `reu_mul_init` stashes, 4 comb stash/fetch routines, exported `reu_fetch_mul_row` | `jsr nistcurves_reu_dma_wait`: bounded 16-bit spin, then `LIB_NISTCURVES_REU_SETTLE_ITER` × 9-cycle settle | ~106 cycles (default 8), 2.16× the measured floor |
 
 At the six hot sites the settle obligation is met **structurally** — the
 next REU register write is a full accumulate body away — and SPEC
@@ -49,9 +49,29 @@ first, at 60–70 B, `fp_mul` at 100–120, `fp_sqr` at 120–140.
 **64 MHz is explicitly unbracketed** in the contract — no C64 Ultimate
 was reachable. For the two tightest sites the hand-counted minimum path
 is 86 cycles (55 + 15 + 16), which clears a time-anchored ~65-cycle
-64 MHz floor; the eight `jsr` sites are covered by the knob instead.
-This library's own §8.2 hardware row (device / firmware / clock /
-result) is **still owed** — see issue #130.
+64 MHz floor; the seven `jsr` sites are covered by the knob instead.
+
+**The §8.2 hardware row has since been measured**, on an Ultimate 64
+Elite (`601A96`, fw 3.15 + local patch, **core 1.4F** read live per run,
+REU 512 KB) at 48 MHz and 16 MHz, both verified in-band:
+**22 of 22 cells, ~2100 fetches, zero wrong bytes** — a bare-metal probe
+reading the landing buffer +4 cycles after the execute (0/200), a stash
+ladder with the settle poked from 12 to 106 cycles (0/1000), and an
+**unmitigated control** built from the pre-fix tag and verified
+unmitigated from its own bytes — zero occurrences of `bit $DF00` in the
+image — which also passed (0/1000). Full row:
+[c64-lib-contract#144](https://github.com/JC-000/c64-lib-contract/issues/144#issuecomment-5468958751).
+
+**That result does not relax anything in this release, and the settle
+ships exactly as described above.** It says the hazard is not observable
+*on core 1.4F*; c64-x25519's core-1.4E pair — the same build failing
+unmitigated and passing mitigated, same device, same day — is untouched,
+as are 1.4E devices, real 17xx REUs and other REU implementations. The
+likely cause is an FPGA core change (GideonZ/1541ultimate `59594060`,
+*"no initial delay on U64/U64E2, because of Turbo Mode"*), but its fix is
+gated on a generic never set true in that repository, so that remains
+consistent-with rather than proof. What is still owed on issue #130 is
+**only the 64 MHz bracket**, which needs a C64 Ultimate.
 
 ## 2. Adversarial test suite (hazmat-oracle audit)
 
@@ -216,3 +236,9 @@ Two things a consumer may want to do deliberately:
 - Tarball reproducible across two independent `make dist` runs, and
   builds standalone from the extracted archive.
 - Worktree-rebuild byte-identity at the tag.
+- **Hardware**: 22/22 cells on a U64 Elite at core 1.4F (see §1) —
+  including an unmitigated control that also passed, which is why this
+  release's claim is scoped to that core rather than to "the REU".
+- Consumer overrides (`CONTRACT_DEFINES`) verified to assemble **and** to
+  change the linked artifact: a `check-archives` leg now hashes the PRG
+  across a knob change and back, negative-tested by reverting the fix.
