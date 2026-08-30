@@ -1,0 +1,189 @@
+{
+  "generated": "2026-08-30",
+  "repo": "c64-nist-curves",
+  "branch": "test/reu-hw-builds",
+  "base_commit": "92ef7bc",
+  "prg_dir": "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/hwmatrix",
+  "device_touched": false,
+  "settle_cycle_formula": {
+    "expression": "34 + 9*ITER",
+    "measured_from": "caller's jsr through the routine's rts, inclusive",
+    "supersedes": "35 + 9*ITER",
+    "at_iter_8": 106,
+    "note": "the final `bne` of the settle loop falls through (2 cy), it does not branch (3 cy); the shipped comment at src/mul_8x8.s:355 says 107 and is one cycle optimistic"
+  },
+  "variants": [
+    {
+      "name": "neg-v0.11.2.prg",
+      "build_command": "git worktree add --detach <path> v0.11.2   # then, in that worktree:\nmake clean && make",
+      "sha256": "1870127499acca7fe9ae3414afc444ac50b03117530c3547943cf67e2fcc1ef1",
+      "size_bytes": 37480,
+      "purpose": "NEGATIVE CONTROL. Genuine pre-fix build from tag v0.11.2: no SPEC v0.13.0 \u00a78.2 completion confirm, no post-execute settle, no issue #132 guards. It is the only artifact that exercises the six hot fp_mul/fp_sqr execute sites with NO confirm at all - those sites' confirm is inlined bit/bvs and is unreachable from any memory poke. MUST produce wrong multiply-table rows at 48 MHz; if it does not, c64-lib-contract#144 has not been reproduced.",
+      "expectation": "Must fail on the device. A PASS here invalidates the run.",
+      "build_seconds": 0.2,
+      "evidence": {
+        "labels_nistcurves_reu_dma_wait": "ABSENT",
+        "bit_DF00_confirm_count": 0,
+        "bit_DF00_confirm_addrs": [],
+        "reu_execute_site_count": 13,
+        "reu_execute_sites": [
+          {
+            "addr": "$0A63",
+            "next_8_bytes": "60 a9 00 8d 1f 0b ad 1f",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$0AC2",
+            "next_8_bytes": "a9 00 8d 02 df a9 7b 8d",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$0AF9",
+            "next_8_bytes": "ee 1f 0b f0 03 4c 6c 0a",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$0BC5",
+            "next_8_bytes": "a9 24 18 65 2c 8d 43 0c",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$0D6F",
+            "next_8_bytes": "a9 24 18 65 2c 8d f8 0d",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$0F0A",
+            "next_8_bytes": "ac 00 7c b9 00 7a 8d 14",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$28A2",
+            "next_8_bytes": "4c f3 28 8d 0e 29 20 de",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$28D8",
+            "next_8_bytes": "4c f3 28 ad 0e 29 0a 0a",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$30FE",
+            "next_8_bytes": "a9 fb 18 65 2c 8d 7c 31",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$32A8",
+            "next_8_bytes": "a9 fb 18 65 2c 8d 31 33",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$3443",
+            "next_8_bytes": "ac 00 7c b9 00 7a 8d 14",
+            "confirm_form": "NONE - falls straight through"
+          },
+          {
+            "addr": "$5040",
+            "next_8_bytes": "20 a5 50 60 8d 5f 8a 20",
+            "confirm_form": "jsr $50A5"
+          },
+          {
+            "addr": "$5066",
+            "next_8_bytes": "20 a5 50 60 ad 5f 8a 0a",
+            "confirm_form": "jsr $50A5"
+          }
+        ]
+      }
+    },
+    {
+      "name": "iter8-default.prg",
+      "build_command": "make clean && make",
+      "sha256": "e070a554056b7fa8c84ed51eadfeb98b9c544b768c0b2c40bc2612f016ba3412",
+      "size_bytes": 37483,
+      "purpose": "The shipped default build (SETTLE_ITER = 8, REU mul banks $00+$01). The PRG the poke experiment patches in place, and the PASS reference against which the negative control is read.",
+      "expectation": "Byte-identical to the v0.12.0 release PRG.",
+      "build_seconds": 0.2,
+      "evidence": {
+        "labels_nistcurves_reu_dma_wait": "$0A6A",
+        "bit_DF00_confirm_count": 7,
+        "bit_DF00_confirm_addrs": [
+          "$0A72",
+          "$0BF8",
+          "$0DAA",
+          "$0F4D",
+          "$3189",
+          "$333B",
+          "$34DE"
+        ],
+        "reu_execute_site_count": 13,
+        "reu_execute_sites": [
+          {
+            "addr": "$0A63",
+            "next_8_bytes": "20 6a 0a 60 a9 00 8d 24",
+            "confirm_form": "jsr $0A6A"
+          },
+          {
+            "addr": "$0AEC",
+            "next_8_bytes": "20 6a 0a a9 00 8d 02 df",
+            "confirm_form": "jsr $0A6A"
+          },
+          {
+            "addr": "$0B26",
+            "next_8_bytes": "20 6a 0a ee 4f 0b f0 03",
+            "confirm_form": "jsr $0A6A"
+          },
+          {
+            "addr": "$0BF5",
+            "next_8_bytes": "2c 00 df 70 03 20 6a 0a",
+            "confirm_form": "inline REU_DMA_CONFIRM (bit $DF00 / bvs)"
+          },
+          {
+            "addr": "$0DA7",
+            "next_8_bytes": "2c 00 df 70 03 20 6a 0a",
+            "confirm_form": "inline REU_DMA_CONFIRM (bit $DF00 / bvs)"
+          },
+          {
+            "addr": "$0F4A",
+            "next_8_bytes": "2c 00 df 70 03 20 6a 0a",
+            "confirm_form": "inline REU_DMA_CONFIRM (bit $DF00 / bvs)"
+          },
+          {
+            "addr": "$2924",
+            "next_8_bytes": "20 6a 0a 4c 7b 29 8d 96",
+            "confirm_form": "jsr $0A6A"
+          },
+          {
+            "addr": "$295D",
+            "next_8_bytes": "20 6a 0a 4c 7b 29 ad 96",
+            "confirm_form": "jsr $0A6A"
+          },
+          {
+            "addr": "$3186",
+            "next_8_bytes": "2c 00 df 70 03 20 6a 0a",
+            "confirm_form": "inline REU_DMA_CONFIRM (bit $DF00 / bvs)"
+          },
+          {
+            "addr": "$3338",
+            "next_8_bytes": "2c 00 df 70 03 20 6a 0a",
+            "confirm_form": "inline REU_DMA_CONFIRM (bit $DF00 / bvs)"
+          },
+          {
+            "addr": "$34DB",
+            "next_8_bytes": "2c 00 df 70 03 20 6a 0a",
+            "confirm_form": "inline REU_DMA_CONFIRM (bit $DF00 / bvs)"
+          },
+          {
+            "addr": "$511A",
+            "next_8_bytes": "20 6a 0a 20 85 51 60 8d",
+            "confirm_form": "jsr $0A6A"
+          },
+          {
+            "addr": "$5143",
+            "next_8_bytes": "20 6a 0a 20 85 51 60 ad",
+            "confirm_form": "jsr $0A6A"
+          }
+        ]
+      }
+    }
+  ]
+}
