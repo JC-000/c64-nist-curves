@@ -748,13 +748,15 @@ Exclusion summary (per minimal archive):
   budgeted separately — see the §8.3 memory map. Worked example for the
   archive most consumers link, measured with `od65 --dump-segments` over
   the extracted members of `build/lib/nistcurves-p256-verify.a`:
-  `P256_CODE` 8348 + `MUL_CODE` 477 + `P256_RODATA` 192 = 9017 code +
+  `P256_CODE` 8406 + `MUL_CODE` 477 + `P256_RODATA` 192 = 9075 code +
   rodata (of which 438 B is the cold block itemized in
   `src/lib_manifest.s` — `sqtab_init` + `ct_mul_8x8` 223,
-  `reu_fetch_mul_row` 23, `reu_mul_init` 192 — leaving 8579 resident
-  against the 8700 equate, §6.6 safe direction; figures after the SPEC
-  v0.13.0 §8.2 completion-confirm adoption, issue #130, which added 24 B
-  to `fp256.o`, 42 B to `mul_8x8.o` and 6 B to `reu_mul_init.o`),
+  `reu_fetch_mul_row` 23, `reu_mul_init` 192 — leaving 8637 resident
+  against the 8700 equate, §6.6 safe direction — **63 B of headroom, the
+  tightest margin of any archive**: re-measure rather than assume when
+  changing the P-256 verify path. Figures as of v0.12.0, after the SPEC
+  v0.13.0 §8.2 completion-confirm adoption (issue #130) and the issue
+  #132 inversion / infinity guards),
   **plus** 1351 B BSS
   (`data_p256.o` 1312 + `data_shared.o` 39) + 512 B DMA landing pages,
   and 1024 B of `sqtab` if no sibling library already owns it. Total RAM

@@ -12,6 +12,8 @@ contract).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-30
+
 ### Changed
 
 - **Adopts c64-lib-contract SPEC v0.13.0 §8.2: REU DMA completion is
@@ -2139,6 +2141,7 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.12.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.12.0
 [0.11.2]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.11.2
 [0.11.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.11.1
 [0.11.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.11.0
