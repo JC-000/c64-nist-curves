@@ -945,6 +945,81 @@ def app_owned_reachability_check(failures):
             print(f"  reachability OK [{label}] (assembles; surface imported, not re-exported)")
 
 
+def app_owned_buffer_ownership_check(failures):
+    """Issue #149: resolving the §8.2 settle state must not drag an APP_OWNED
+    buffer definition into the link.
+
+    ld65 pulls whole archive members. Through v0.12.0 the §8.2 DMA-completion
+    state (nistcurves_reu_wait_cnt / _dma_timeout) shared a translation unit
+    with the multiply-row landing buffers (nistcurves_mul_dma_lo / _hi), which
+    a consumer taking the §8.0/§8.3 APP_OWNED route defines itself. Any
+    reference to the settle state therefore pulled data_shared.o in and ld65
+    refused the link:
+
+        ld65: Error: Duplicate external identifier: 'nistcurves_mul_dma_hi'
+
+    c64-https hit this on all three of its shipped configurations and could not
+    take v0.12.0 at all. The failure is invisible to this library's own build:
+    nothing here defines those buffers twice.
+
+    The probe stands in for that consumer -- an object that defines and exports
+    the two buffers and references the settle state -- and asserts the link
+    still succeeds.
+
+    Negative-tested at introduction: reverting the src/data_reu_wait.s split
+    makes every archive below report Duplicate external identifier."""
+    import tempfile
+    print("\n=== §8.0 APP_OWNED buffer ownership (issue #149) ===")
+    consumer = (
+        '; Stands in for a consumer that owns the multiply-row buffers itself.\n'
+        '.export nistcurves_mul_dma_lo, nistcurves_mul_dma_hi\n'
+        '.import nistcurves_reu_dma_timeout, nistcurves_reu_wait_cnt\n'
+        '.segment "CODE"\n'
+        'entry:\n'
+        '\tlda nistcurves_reu_dma_timeout\n'
+        '\tlda nistcurves_reu_wait_cnt\n'
+        '\trts\n'
+        '.segment "APP_TABLES"\n'
+        'nistcurves_mul_dma_lo:\n\t.res 256, 0\n'
+        'nistcurves_mul_dma_hi:\n\t.res 256, 0\n'
+    )
+    cfg = CONSUMER_CFG.replace(
+        "SEGMENTS {",
+        "SEGMENTS {\n    APP_TABLES:                     load = MAIN, type = rw,  align = $100, optional = yes;",
+    )
+    for name in ("nistcurves-app-owned.a", "nistcurves-p256-verify-onchip.a",
+                 "nistcurves-p256-comb-onchip.a"):
+        archive = Path("build/lib") / name
+        if not archive.exists():
+            failures.append(f"app-owned buffers: {name} not built")
+            print(f"  OWNERSHIP FAIL [{name}]: archive missing")
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / "cfg").write_text(cfg)
+            (td / "c.s").write_text(consumer)
+            rc, out = sh(["ca65", "--cpu", "6502", "-o", str(td / "c.o"),
+                          str(td / "c.s")])
+            if rc:
+                failures.append(f"app-owned buffers: probe does not assemble ({name})")
+                print(f"  OWNERSHIP FAIL [{name}]: probe assemble error")
+                continue
+            rc, out = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "o.prg"),
+                          str(td / "c.o"), str(archive)])
+        if "Duplicate external identifier" in out:
+            dup = sorted(set(re.findall(
+                r"Duplicate external identifier: '([^']+)'", out)))
+            failures.append(
+                f"app-owned buffers: {name} forces its own definition of {dup} "
+                f"on a consumer that owns them (issue #149)")
+            print(f"  OWNERSHIP FAIL [{name}]: duplicate {dup}")
+            continue
+        # Unresolved externals are expected and fine here: the probe links only
+        # the members ld65 pulls, and the documented APP_OWNED gaps stay open.
+        print(f"  ownership OK [{name}] (settle state resolves without "
+              f"duplicating the APP_OWNED buffers)")
+
+
 def defines_staleness_check(failures):
     """§6.3 looks-reachable rule, staleness shape (SPEC v0.10.5): a make
     re-invocation with a changed CONTRACT_*DEFINES value must rebuild --
@@ -1198,6 +1273,7 @@ def main():
     # Runs last by design: its knob-change legs wipe build/*.o via the
     # Makefile stamp, and the final default-build leg restores only the
     # object it exercises.
+    app_owned_buffer_ownership_check(failures)
     defines_staleness_check(failures)
 
     if failures:
