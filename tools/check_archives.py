@@ -800,7 +800,36 @@ BARE_GATED = {
     "LIB_VERSION_MAJOR", "LIB_VERSION_MINOR", "LIB_VERSION_PATCH",
     "LIB_ABI_VERSION",
 }
-GATE_TUS = ["zp_config", "data_shared", "mul_8x8", "lib_version",
+# ...plus the whole bare LIB_PRECALC_<name>_{SIZE,REGION,SHARED} family, which
+# the §8.4 macro GENERATES one triple per table and so cannot be enumerated by
+# hand. Enumerating it by hand is exactly what went wrong: the roster above
+# listed none of the 18 bare LIB_PRECALC_* names precalc_manifest.o exports, so
+# gated_surface_check's `names & BARE_GATED` was the empty set for that TU on
+# every run from issue #113 until the ungated-ownership sentinel added at issue
+# #154 refused to accept it. The leg printed "0 bare names" for a TU it had
+# never actually examined. (LIB_NISTCURVES_PRECALC_* is the prefixed form and
+# must NOT match -- it does not, the prefix differs from the first character.)
+BARE_GATED_RE = re.compile(r"^LIB_PRECALC_")
+
+
+def bare_gated(names):
+    """Subset of `names` that the LIB_NO_BARE_EXPORTS gate is required to
+    suppress: the fixed roster plus the generated bare LIB_PRECALC_* family."""
+    return {n for n in names if n in BARE_GATED or BARE_GATED_RE.match(n)}
+# TUs that OWN at least one deprecated bare name, i.e. whose ungated build
+# exports something in BARE_GATED and whose gated build must export none.
+#
+# `zp_config` is deliberately NOT in this list any more (issue #154): its bare
+# aliases moved to `zp_aliases`. Leaving it here would have been the exact
+# vacuous-pass trap this file is otherwise careful about -- the leg would have
+# gone on printing "0 bare names" for a TU that no longer has any to suppress,
+# reporting green whether the gate worked, the split worked, or the file failed
+# to build. Membership is now SENTINELLED: each listed TU must export >= 1 bare
+# name UNGATED, or the leg fails and says so. `zp_config`'s own obligation --
+# it must export no bare name in either configuration -- is asserted by
+# zp_alias_audit() below, which has the populated-dump sentinel that makes an
+# absence assertion mean something.
+GATE_TUS = ["zp_aliases", "data_shared", "mul_8x8", "lib_version",
             "precalc_manifest"]
 
 
@@ -833,6 +862,39 @@ ZP_ARM_OBJECTS = {   # zp_config variant object -> archives sharing that arm
     "zp_config_p256comb": ["nistcurves-p256-comb.a", "nistcurves-p256-comb-onchip.a"],
     "zp_config_sha384": ["nistcurves-p384-sha384.a"],
 }
+# ca65 switches selecting each arm, hoisted out of zp_alias_audit so the
+# zp_config and zp_aliases builds of an arm are guaranteed to use the same set.
+ZP_ARM_DEFINES = {
+    "zp_config": [],
+    "zp_config_p256verify": ["-D", "LIB_P256_VERIFY_ONLY"],
+    "zp_config_p384verify": ["-D", "LIB_P384_VERIFY_ONLY"],
+    "zp_config_p384curve": ["-D", "LIB_P384_CURVE_ONLY"],
+    "zp_config_p256comb": ["-D", "LIB_P256_COMB_ONLY"],
+    "zp_config_sha384": ["-D", "LIB_SHA384_ONLY"],
+}
+# Issue #154: the alias TU that ships beside each zp_config arm, and the EXACT
+# bare set that arm must export. Both halves are asserted -- the negative one
+# (no bare name in zp_config*.o) and the positive one (exactly these names in
+# zp_aliases*.o) -- because after a TU split an absence assertion alone goes
+# green for the wrong reasons: an empty dump satisfies "must not export X"
+# trivially, so a build failure, a wrong object path or a dropped archive
+# member would all read as success. The positive half is what distinguishes
+# "the alias moved" from "the alias vanished", and a vanished alias is a
+# removed export -- a §6.5 event we must not commit by accident.
+#
+# The SHA arm's expected set is EMPTY on purpose (that archive exports only
+# sha_*, none of which ever had a bare spelling). An empty expectation cannot
+# sentinel itself, so zp_alias_audit additionally requires the union across
+# all arms to be non-empty and every alias object to be od65-readable.
+ZP_ALIAS_ARMS = {
+    "zp_config":            ("zp_aliases",            {"zp_tmp1", "zp_tmp2",
+                                                       "zp_ptr1", "zp_ptr2"}),
+    "zp_config_p256verify": ("zp_aliases_p256verify", {"zp_ptr2"}),
+    "zp_config_p384verify": ("zp_aliases_p384verify", {"zp_ptr2"}),
+    "zp_config_p384curve":  ("zp_aliases_p384curve",  {"zp_ptr2"}),
+    "zp_config_p256comb":   ("zp_aliases_p256comb",   {"zp_ptr1", "zp_ptr2"}),
+    "zp_config_sha384":     ("zp_aliases_sha384",     set()),
+}
 
 
 def od65_zp_exports(obj):
@@ -852,26 +914,144 @@ def od65_zp_exports(obj):
     return got
 
 
+def od65_export_names(obj):
+    """Set of export names for one object, or None if the dump is not
+    trustworthy. Distinguishes "this object exports nothing" from "od65 could
+    not read this", which a bare set() cannot -- and that distinction is the
+    whole sentinel: every absence assertion downstream is meaningless over an
+    unread dump. The declared Count is cross-checked against the number of
+    Name: lines so a truncated dump fails rather than under-reporting."""
+    rc, out = sh(["od65", "--dump-exports", str(obj)])
+    if rc or "(no xo65 object file)" in out:
+        return None
+    m = re.search(r"Exports:\s*\n\s*Count:\s*(\d+)", out)
+    if not m:
+        return None
+    names = set(re.findall(r'Name:\s*"([^"]+)"', out))
+    if len(names) != int(m.group(1)):
+        return None
+    return names
+
+
 def zp_alias_audit(failures):
-    """Issue #113: per variant arm, (1) union exported slot ADDRESSES with
-    canonical widths and compare against the exported ZP_USAGE_BYTES equate;
+    """Issue #113 + #154: per variant arm --
+
+    (1) union the exported slot ADDRESSES of zp_config<arm>.o with canonical
+        widths and compare against the exported ZP_USAGE_BYTES equate;
     (2) account for every address shared by two exported names -- it must be
-    exactly an intended bare->canonical pair. Runs the same audit on a
-    LIB_NO_BARE_EXPORTS build of each arm, where every group must collapse
-    to the canonical name alone."""
+        exactly an intended bare->canonical pair;
+    (3) §6.1: zp_config<arm>.o must export NO bare `zp_` name at all -- they
+        live in zp_aliases<arm>.o since issue #154;
+    (4) zp_aliases<arm>.o must export EXACTLY the arm's expected bare set and
+        nothing else;
+    (5) a LIB_NO_BARE_EXPORTS build of BOTH files must export no bare name,
+        with the canonical union unchanged.
+
+    (3) is an absence assertion and (4)'s SHA arm is an empty expectation, so
+    both are sentinelled: (3) only runs once the zp_config dump is confirmed
+    populated and carrying canonical slots, (4) fails if od65 cannot read the
+    alias object, and the union of alias exports across all six arms must be
+    non-empty before the leg reports OK. Without that, "no bare names here"
+    and "nothing here at all" are the same observation."""
     import tempfile
     print("\n=== R2 ZP audit: exported union vs equate + alias accounting ===")
+    alias_seen = set()
     for arm, archives in ZP_ARM_OBJECTS.items():
+        alias_obj, want_bare = ZP_ALIAS_ARMS[arm]
         exports = od65_zp_exports(BUILD / (arm + ".o"))
         if exports is None:
             failures.append(f"zp-audit: cannot read build/{arm}.o")
             print(f"  AUDIT FAIL: build/{arm}.o unreadable")
             continue
+        # SENTINEL for the absence leg below: an empty or canonical-free dump
+        # would satisfy "exports no bare zp_ name" for the wrong reason.
+        if not (set(exports) & set(ZP_CANONICAL_WIDTHS)):
+            failures.append(
+                f"zp-audit {arm}: build/{arm}.o exports no canonical slot "
+                "-- absence assertions over this dump would be vacuous")
+            print(f"  AUDIT FAIL {arm}: dump carries no canonical slot; "
+                  "refusing to conclude anything from what is missing")
+            continue
+        bad = False
+        # (0) PARTITION RECONCILIATION. The sentinel above proves the dump has
+        # something in it; this proves we have accounted for ALL of it. Every
+        # name in the member must land in exactly one known bucket -- bare
+        # alias / prefixed canonical / other importable slot -- and the buckets
+        # must sum to od65's own declared export Count (od65_export_names fails
+        # closed if they do not). Without it, a name lost by the extraction and
+        # a name genuinely absent look identical, and so do "no bare names
+        # here" and "nothing examined here".
+        allnames = od65_export_names(BUILD / (arm + ".o"))
+        if allnames is None:
+            failures.append(f"zp-audit {arm}: export dump of build/{arm}.o "
+                            "does not reconcile against its declared Count")
+            print(f"  AUDIT FAIL {arm}: build/{arm}.o dump truncated or "
+                  "unreadable -- every conclusion below would be unfounded")
+            continue
+        bare_n = {n for n in allnames if n.startswith("zp_")}
+        pref_n = {n for n in allnames if n.startswith("nistcurves_")}
+        othr_n = allnames - bare_n - pref_n
+        unknown = (pref_n | othr_n) - set(ZP_CANONICAL_WIDTHS)
+        if unknown:
+            failures.append(f"zp-audit {arm}: unaccounted exports {sorted(unknown)}")
+            print(f"  AUDIT FAIL {arm}: exports {sorted(unknown)} fall in no "
+                  "known bucket -- the partition does not cover the dump")
+            bad = True
+        if allnames != set(exports):
+            # every export must also have been visible to the address audit
+            failures.append(
+                f"zp-audit {arm}: {sorted(allnames ^ set(exports))} appear in "
+                "one dump reading but not the other")
+            print(f"  AUDIT FAIL {arm}: address audit saw {len(exports)} of "
+                  f"{len(allnames)} exports -- {sorted(allnames ^ set(exports))} "
+                  "unexamined")
+            bad = True
+        if len(bare_n) + len(pref_n) + len(othr_n) != len(allnames):
+            failures.append(f"zp-audit {arm}: bucket counts do not sum to the "
+                            f"member's {len(allnames)} exports")
+            bad = True
+        # (3) §6.1 absence leg (issue #154), now that the dump is known good.
+        stray = sorted(n for n in exports if n.startswith("zp_"))
+        if stray:
+            failures.append(f"zp-audit {arm}: zp_config exports bare {stray} "
+                            "(§6.1: they belong in src/zp_aliases.s)")
+            print(f"  AUDIT FAIL {arm}: build/{arm}.o exports bare {stray} "
+                  f"beside {len(exports) - len(stray)} importable slots -- "
+                  "the issue #154 defect is back")
+            bad = True
+        # (4) positive leg: the alias TU must carry EXACTLY this arm's bare set.
+        anames = od65_export_names(BUILD / (alias_obj + ".o"))
+        if anames is None:
+            failures.append(f"zp-audit {arm}: cannot read build/{alias_obj}.o")
+            print(f"  AUDIT FAIL {arm}: build/{alias_obj}.o unreadable -- "
+                  "the alias half of this arm is unverified")
+            bad = True
+        else:
+            alias_seen |= anames
+            notbare = sorted(n for n in anames if n not in ZP_INTENDED_ALIASES)
+            if notbare:
+                failures.append(f"zp-audit {arm}: {alias_obj}.o exports "
+                                f"non-alias {notbare} -- §6.1 requires this TU "
+                                "to carry the displaceable names and nothing else")
+                print(f"  AUDIT FAIL {arm}: {alias_obj}.o exports {notbare}, "
+                      "which are not bare aliases")
+                bad = True
+            if anames != want_bare:
+                missing = sorted(want_bare - anames)
+                extra = sorted(anames - want_bare)
+                failures.append(
+                    f"zp-audit {arm}: {alias_obj}.o exports {sorted(anames)}, "
+                    f"want {sorted(want_bare)}")
+                print(f"  AUDIT FAIL {arm}: {alias_obj}.o missing {missing}, "
+                      f"unexpected {extra}")
+                if missing:
+                    print("             a dropped alias is a REMOVED EXPORT "
+                          "(§6.5 window), not a tidy-up")
+                bad = True
         # (2) alias accounting, by address
         by_addr = {}
         for name, addr in exports.items():
             by_addr.setdefault(addr, set()).add(name)
-        bad = False
         covered = set()
         for addr, names in sorted(by_addr.items()):
             canon = [n for n in names if n in ZP_CANONICAL_WIDTHS]
@@ -887,22 +1067,31 @@ def zp_alias_audit(failures):
                     print(f"  AUDIT FAIL {arm}: '{o}' shares ${addr:02x} with '{canon[0]}' but is not an intended pair")
                     bad = True
             covered |= set(range(addr, addr + ZP_CANONICAL_WIDTHS[canon[0]]))
-        # (1) union vs equate, against each archive sharing this arm
+        # (1) union vs equate, against each archive sharing this arm.
+        # A missing equate used to be silently skipped, which made the union
+        # -- this leg's own populated-dump evidence -- assert nothing at all
+        # for that arm. An arm with no equate to compare against is a failure.
         union = len(covered)
+        matched = 0
         for a in archives:
             want = MANIFEST_VALUES.get(a, {}).get("LIB_NISTCURVES_ZP_USAGE_BYTES")
-            if want is not None and want != union:
+            if want is None:
+                continue
+            matched += 1
+            if want != union:
                 failures.append(f"zp-audit {arm}: union {union} != {a} equate {want}")
                 print(f"  AUDIT FAIL {arm}: address-union {union} B != {a}'s ZP_USAGE_BYTES {want}")
                 bad = True
-        # gated build: aliases must vanish, union must not change
+        if not matched:
+            failures.append(f"zp-audit {arm}: no archive pins ZP_USAGE_BYTES "
+                            "-- the union was computed and compared to nothing")
+            print(f"  AUDIT FAIL {arm}: union {union} B compared against no equate")
+            bad = True
+        # (5) gated builds of BOTH files: no bare name survives, and the
+        # canonical union is unmoved (the gate must not drop a real slot).
         with tempfile.TemporaryDirectory() as td:
+            defines = ZP_ARM_DEFINES[arm]
             gobj = Path(td) / "g.o"
-            defines = {"zp_config": [], "zp_config_p256verify": ["-D", "LIB_P256_VERIFY_ONLY"],
-                       "zp_config_p384verify": ["-D", "LIB_P384_VERIFY_ONLY"],
-                       "zp_config_p384curve": ["-D", "LIB_P384_CURVE_ONLY"],
-                       "zp_config_p256comb": ["-D", "LIB_P256_COMB_ONLY"],
-                       "zp_config_sha384": ["-D", "LIB_SHA384_ONLY"]}[arm]
             rc, _ = sh(["ca65", "--cpu", "6502", "-D", "LIB_NO_BARE_EXPORTS=1", *defines,
                         "-I", "src", "-o", str(gobj), "src/zp_config.s"])
             g = od65_zp_exports(gobj) if not rc else None
@@ -921,9 +1110,129 @@ def zp_alias_audit(failures):
                 if len(gunion) != union:
                     failures.append(f"zp-audit {arm}: gated union {len(gunion)} != default union {union}")
                     bad = True
+            aobj = Path(td) / "ga.o"
+            rc, _ = sh(["ca65", "--cpu", "6502", "-D", "LIB_NO_BARE_EXPORTS=1", *defines,
+                        "-I", "src", "-o", str(aobj), "src/zp_aliases.s"])
+            ga = od65_export_names(aobj) if not rc else None
+            if ga is None:
+                failures.append(f"zp-audit {arm}: gated zp_aliases assemble failed")
+                bad = True
+            elif ga:
+                failures.append(f"zp-audit {arm}: gated zp_aliases.o still exports {sorted(ga)}")
+                bad = True
         if not bad:
             names = len(exports)
-            print(f"  {arm:24s} union={union:2d} B  names={names:2d} ({names - len(covered and by_addr)} aliases)  equate match: {', '.join(archives)}")
+            print(f"  {arm:24s} union={union:2d} B  "
+                  f"exports={names:2d} = {len(bare_n)} bare + {len(pref_n)} "
+                  f"prefixed + {len(othr_n)} other  "
+                  f"aliases={len(want_bare)} in {alias_obj}.o  "
+                  f"equate match: {', '.join(archives)}")
+    # Global sentinel: at least one arm must actually have exported a bare
+    # alias. If the split ever leaves every alias object empty, each arm's
+    # per-arm comparison could still pass (the SHA arm expects nothing, and a
+    # global regression would be caught only here).
+    if not alias_seen:
+        failures.append("zp-audit: no arm exported ANY bare alias -- the whole "
+                        "alias surface is missing, not merely relocated")
+        print("  AUDIT FAIL: not one bare alias found across six arms")
+    else:
+        print(f"  alias surface present: {sorted(alias_seen)}")
+
+
+def zp_alias_link_identity(failures):
+    """Issue #154: drive every bare alias through a REAL ld65 link against the
+    archive that is supposed to carry it, and require it to resolve to its
+    canonical slot's address.
+
+    This is the leg that cannot go vacuous, and it is here because the object
+    dumps cannot do this job: `zp_aliases*.o` re-exports each alias as an
+    EXPRESSION over an import (`Type: SYM_EQUATE,SYM_EXPR`, no `Value:`), which
+    is precisely what makes the two spellings undriftable -- and precisely what
+    stops od65 from reporting an address for them. Only the linker knows.
+
+    Three failures are caught in one mechanism:
+      * alias missing from the archive  -> ld65 'Unresolved external' (this is
+        the check that a dropped member is a removed export, not a tidy-up);
+      * alias resolving elsewhere       -> address mismatch;
+      * archive not linkable at all     -> non-zero ld65.
+
+    The SHA archive is checked in the OPPOSITE direction: it must NOT resolve
+    a bare alias. An empty expectation asserted by 'we found nothing' would be
+    satisfied by a broken probe, so it is asserted by 'the link fails with
+    exactly this unresolved external' instead."""
+    import tempfile
+    print("\n=== §6.1 bare-alias link identity (issue #154) ===")
+    for arm, archives in ZP_ARM_OBJECTS.items():
+        _, want_bare = ZP_ALIAS_ARMS[arm]
+        for name in archives:
+            archive = LIBDIR / name
+            if not archive.exists():
+                failures.append(f"zp-alias link: {name} not built")
+                print(f"  LINK FAIL: {name} missing -- run `make lib*` first")
+                continue
+            probe = want_bare or {"zp_ptr2"}   # SHA arm: expect a hard failure
+            pairs = sorted((b, ZP_INTENDED_ALIASES[b]) for b in probe)
+            src = "".join(f".importzp {b}\n.importzp {c}\n" for b, c in pairs)
+            src += '.segment "CODE"\nentry:\n'
+            src += "".join(f"\tlda {b}\n\tlda {c}\n" for b, c in pairs)
+            src += "\trts\n"
+            with tempfile.TemporaryDirectory() as td:
+                td = Path(td)
+                (td / "cfg").write_text(CONSUMER_CFG)
+                (td / "p.s").write_text(src)
+                rc, out = sh(["ca65", "--cpu", "6502", "-o", str(td / "p.o"),
+                              str(td / "p.s")])
+                if rc:
+                    failures.append(f"zp-alias link {name}: probe will not assemble")
+                    print(f"  LINK FAIL {name}: probe will not assemble:\n{out}")
+                    continue
+                rc, out = sh(["ld65", "-C", str(td / "cfg"), "-Ln", str(td / "lbl"),
+                              "-o", str(td / "o.prg"), str(td / "p.o"), str(archive)])
+                unresolved = set(re.findall(r"Unresolved external '([^']+)'", out))
+                if not want_bare:
+                    # SHA arm: the bare name must be absent from this archive.
+                    if rc == 0 or "zp_ptr2" not in unresolved:
+                        failures.append(
+                            f"zp-alias link {name}: bare zp_ptr2 resolved, but "
+                            f"{arm} exports no alias -- an unexpected member "
+                            "is exporting it")
+                        print(f"  LINK FAIL {name}: bare zp_ptr2 unexpectedly resolved")
+                    else:
+                        print(f"  {name:34s} correctly exports NO bare alias "
+                              "(link fails with Unresolved external 'zp_ptr2')")
+                    continue
+                if rc:
+                    failures.append(f"zp-alias link {name}: link failed "
+                                    f"(unresolved {sorted(unresolved)})")
+                    print(f"  LINK FAIL {name}: {sorted(unresolved) or out.strip()}")
+                    if unresolved & set(ZP_INTENDED_ALIASES):
+                        print("             a bare alias no longer resolves from "
+                              "this archive: that is a REMOVED EXPORT (§6.5), "
+                              "not a relocation")
+                    continue
+                labels = {sym: int(addr, 16) for addr, sym in re.findall(
+                    r"^al\s+([0-9A-Fa-f]+)\s+\.(\S+)",
+                    (td / "lbl").read_text(), re.M)}
+                bad = False
+                shown = []
+                for b, c in pairs:
+                    if b not in labels or c not in labels:
+                        failures.append(f"zp-alias link {name}: {b}/{c} absent "
+                                        "from the link map")
+                        print(f"  LINK FAIL {name}: {b} or {c} missing from -Ln map")
+                        bad = True
+                        continue
+                    if labels[b] != labels[c]:
+                        failures.append(
+                            f"zp-alias link {name}: {b}=${labels[b]:02x} != "
+                            f"{c}=${labels[c]:02x} -- the alias has DRIFTED")
+                        print(f"  LINK FAIL {name}: {b} resolves to "
+                              f"${labels[b]:02x}, {c} to ${labels[c]:02x}")
+                        bad = True
+                    else:
+                        shown.append(f"{b}=${labels[b]:02x}")
+                if not bad:
+                    print(f"  {name:34s} {', '.join(shown)} (each == its canonical slot)")
 
 
 def version_identity_check(failures):
@@ -960,8 +1269,37 @@ def gated_surface_check(failures):
     import tempfile
     print("\n=== LIB_NO_BARE_EXPORTS gated surface ===")
     bad = []
+    owned = {}
     with tempfile.TemporaryDirectory() as td:
         for tu in GATE_TUS:
+            # SENTINEL: assemble the TU UNGATED first and require it to export
+            # at least one bare name. Without this the leg is an absence
+            # assertion over a dump it never proved was populated -- it would
+            # print "0 bare names" for a TU that had been emptied, renamed,
+            # or had simply failed to build in a way ca65 exited 0 on. It also
+            # keeps GATE_TUS honest: a TU that stops owning a bare name (as
+            # zp_config did at issue #154) must be removed from the list
+            # rather than left behind as a permanently-green entry.
+            uobj = Path(td) / (tu + "_ungated.o")
+            rc, out = sh(["ca65", "--cpu", "6502",
+                          "-I", "src", "-o", str(uobj), f"src/{tu}.s"])
+            unames = od65_export_names(uobj) if not rc else None
+            if unames is None:
+                failures.append(f"gated surface: {tu}.s does not assemble ungated")
+                print(f"  GATE FAIL: {tu}.s does not assemble ungated: "
+                      f"{out.splitlines()[0] if out else ''}")
+                continue
+            owns = bare_gated(unames)
+            if not owns:
+                failures.append(
+                    f"gated surface: {tu}.o owns no bare name ungated -- its "
+                    "gated result proves nothing; drop it from GATE_TUS or "
+                    "fix the TU")
+                print(f"  GATE FAIL: {tu}.o exports no bare name UNGATED, so "
+                      "'0 bare names under the gate' is vacuous for it")
+                continue
+            owned[tu] = sorted(owns)
+
             obj = Path(td) / (tu + ".o")
             rc, out = sh(["ca65", "--cpu", "6502", "-D", "LIB_NO_BARE_EXPORTS=1",
                           "-I", "src", "-o", str(obj), f"src/{tu}.s"])
@@ -969,14 +1307,18 @@ def gated_surface_check(failures):
                 failures.append(f"gated surface: {tu}.s does not assemble under the gate")
                 print(f"  GATE FAIL: {tu}.s does not assemble: {out.splitlines()[0] if out else ''}")
                 continue
-            leaked = od65_names(obj, "--dump-exports") & BARE_GATED
+            leaked = bare_gated(od65_names(obj, "--dump-exports"))
             if leaked:
                 bad.append((tu, sorted(leaked)))
     for tu, names in bad:
         failures.append(f"gated surface: {tu}.o exports bare {names}")
         print(f"  GATE FAIL: {tu}.o exports bare names under the gate: {names}")
-    if not bad:
-        print(f"  gated surface OK ({len(GATE_TUS)} TUs, 0 bare names)")
+    if not bad and len(owned) == len(GATE_TUS):
+        total = sum(len(v) for v in owned.values())
+        print(f"  gated surface OK ({len(GATE_TUS)} TUs owning {total} bare "
+              "names ungated, 0 under the gate)")
+        for tu in GATE_TUS:
+            print(f"    {tu:20s} suppresses {owned[tu]}")
 
 
 APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",
@@ -1532,6 +1874,61 @@ def defines_staleness_check(failures):
     print("  staleness guard OK (both knobs flip the artifact; revert restores; "
           "no-change is incremental)")
 
+    # --- §6.2 CONTRACT_ZP_DEFINES scoping across the #154 TU split -----------
+    # zp_config.s DEFINES the slots and takes the ZP overrides; zp_aliases.s
+    # IMPORTS them and must not (`-D` of an imported name is a hard ca65
+    # error). That asymmetry is only safe if the alias still MOVES with the
+    # slot -- if it did not, an overriding consumer would get an archive whose
+    # members disagree about an address, which links cleanly and corrupts at
+    # runtime. Nothing else in this file drives a real ZP override through the
+    # Makefile's per-recipe flag wiring and out the other side of a link, so
+    # this leg is what proves the wiring rather than the source intent.
+    print("\n=== §6.2 ZP override reaches slot AND alias together (issue #154) ===")
+    for knob, want in ((["CONTRACT_ZP_DEFINES=-D nistcurves_zp_ptr2=0x60"], 0x60),
+                       ([], 0xfd)):
+        rc, out = sh(["make", "-C", str(REPO), "build/zp_config.o",
+                      "build/zp_aliases.o", *knob])
+        if rc:
+            failures.append(f"zp-override: build failed with {knob or ['(default)']}")
+            print(f"  OVERRIDE FAIL: make failed for {knob or ['(default)']}:\n{out}")
+            return
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / "cfg").write_text(CONSUMER_CFG)
+            (td / "p.s").write_text(
+                ".importzp zp_ptr2\n.importzp nistcurves_zp_ptr2\n"
+                '.segment "CODE"\nentry:\n\tlda zp_ptr2\n'
+                "\tlda nistcurves_zp_ptr2\n\trts\n")
+            rc, out = sh(["ca65", "--cpu", "6502", "-o", str(td / "p.o"),
+                          str(td / "p.s")])
+            if rc:
+                failures.append("zp-override: probe will not assemble")
+                print(f"  OVERRIDE FAIL: probe will not assemble:\n{out}")
+                return
+            rc, out = sh(["ld65", "-C", str(td / "cfg"), "-Ln", str(td / "lbl"),
+                          "-o", str(td / "o.prg"), str(td / "p.o"),
+                          str(BUILD / "zp_config.o"), str(BUILD / "zp_aliases.o")])
+            if rc:
+                failures.append(f"zp-override: link failed at {hex(want)}")
+                print(f"  OVERRIDE FAIL: link failed:\n{out}")
+                return
+            lbl = {s: int(a, 16) for a, s in re.findall(
+                r"^al\s+([0-9A-Fa-f]+)\s+\.(\S+)",
+                (td / "lbl").read_text(), re.M)}
+        got = (lbl.get("nistcurves_zp_ptr2"), lbl.get("zp_ptr2"))
+        if got != (want, want):
+            failures.append(
+                f"zp-override {knob or 'default'}: nistcurves_zp_ptr2="
+                f"{got[0]!r}, zp_ptr2={got[1]!r}, want both {hex(want)}")
+            print(f"  OVERRIDE FAIL: canonical={got[0]!r} alias={got[1]!r}, "
+                  f"want both {hex(want)} -- the two spellings have drifted; "
+                  "check CONTRACT_ZP_DEFINES reaches zp_config.o (and NOT "
+                  "zp_aliases.o)")
+            return
+        label = knob[0].split("=", 1)[1] if knob else "default"
+        print(f"  override OK [{label}]: nistcurves_zp_ptr2 and zp_ptr2 both "
+              f"link at ${want:02x}")
+
 
 def main():
     archives = parse_makefile_archives()
@@ -1553,6 +1950,7 @@ def main():
 
     version_identity_check(failures)
     zp_alias_audit(failures)
+    zp_alias_link_identity(failures)
     gated_surface_check(failures)
     app_owned_reachability_check(failures)
     packaging_check(failures, archives)
