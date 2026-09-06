@@ -326,12 +326,30 @@ curve archive); the `_comb` modules carry the Lim-Lee fixed-base comb
 | `ec_point_double` / `ec_point_double_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Handles Z=0 (infinity) input. Uses curve-specific `a = -3` formula. |
 | `ec_point_add` / `ec_point_add_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (Jacobian), `ec_p2` / `ec384_p2` (affine X in first half, Y in second half; Z ignored) | `ec_p3` / `ec384_p3` (Jacobian) | Mixed Jacobian+affine addition (7M + 4S). Handles both-infinity / same-point cases. The Lim-Lee comb evaluate loop uses this primitive. |
 | `ec_point_add_jj` / `ec_point_add_jj_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (full Jacobian), `ec_p2` / `ec384_p2` (full Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Full Jacobian+Jacobian addition (Bernstein-Lange add-2007-bl, 11M + 5S). Reads Z2 from `ec_p2+64` (or `ec384_p2+96`) — caller must populate it. Handles P1∞, P2∞, both∞, same projective point (tail-calls `ec_point_double`), and P1=-P2 natively. Used by `ecdsa_verify_256/384` at the `u1*G + u2*Q` join. |
-| `ec_scalar_mul` | points256_comb | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. |
-| `ec_scalar_mul_384` | points384_comb | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
+| `ec_scalar_mul` | points256_comb | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian); **C=0** | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. **C=1 with `ec_p3` := 0 when a fetched comb-table slot has `Y = 0`** — the table is corrupt or was never built; see the note below. Issue #148. |
+| `ec_scalar_mul_384` | points384_comb | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian); **C=0** | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** Same **C=1 / zeroed-output** unusable-slot reject. |
 | `ec_jacobian_to_affine` | points256_core | `ec_p3` | `ec_affine_x`, `ec_affine_y`; **C=0** | Sets `fp_misc` to p256 internally. **C=1 with `ec_affine_x` / `ec_affine_y` := 0 when Z ≡ 0 (mod p)** — the point at infinity (the library's own encoding, emitted by `ec_scalar_mul` for k ≡ 0 mod n, `ec_scalar_mul_var` for k ≡ 0, and `ec_point_add[_jj]` for P + (−P)); has no affine form. Issue #132 — this input hung the inversion before. |
 | `ec_jacobian_to_affine_384` | points384_core | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y`; **C=0** | P-384 analogue; same **C=1 / zeroed-output** infinity encoding. |
 | `ec_precompute_256` | points256_comb | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~17 min at 1 MHz, default profile — §8.5, issue #121). |
 | `ec_precompute_384` | points384_comb | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~34 min at 1 MHz, default profile — §8.5). |
+
+**Comb-table integrity (issue #148).** `ec_scalar_mul[_384]` reads its anchor
+table straight out of the REU, where nothing the library controls guarantees
+the bytes are still the ones `ec_precompute_*` wrote — an REU too small for the
+configured bank, a precompute that never ran, or another tenant writing bank 2
+all produce slots the fetch cannot distinguish from points. A slot with `Y = 0`
+is the dangerous shape: seeding `R = (X, 0, 1)` makes the next doubling compute
+`Z3 = 2·Y1·Z1 = 0`, so `R` becomes the infinity encoding, and a verify built on
+that collapsed `u1·G` accepts **any** signature for a known `Q`. The comb
+therefore rejects such a slot with **C=1** and a zeroed output rather than
+returning a point.
+
+Callers that use the comb directly MUST branch on the carry. `ecdsa_verify_256`
+/ `ecdsa_verify_384` already do: an unusable slot yields `C=1` (invalid), never
+an accept. `Y = 0` cannot occur in a healthy table — it denotes a point of order
+2, and both curves have prime group order — so this cannot reject a
+correctly-built table. The `ECDSA_NO_COMB` archive variants route `u1·G`
+through the variable-base ladder and never reach this path.
 
 ### 5.4 Hash functions (`sha384.s`)
 
@@ -429,10 +447,16 @@ k: .res 32   ; a 32-byte big-endian scalar somewhere in RAM
         sta ec_scalar_ptr+1
 
         jsr ec_scalar_mul           ; ec_p3 := k*G (Jacobian)
+        bcs comb_table_unusable     ; C=1: anchor-table slot rejected (#148)
 
         jsr ec_jacobian_to_affine   ; ec_affine_x / ec_affine_y = Q.x / Q.y
 
         ; ec_affine_x and ec_affine_y are 32 bytes each, little-endian.
+
+comb_table_unusable:
+        ; The REU anchor table is corrupt or was never built (issue #148).
+        ; Do NOT fall through to a result: there isn't one.
+        rts
 ```
 
 The same pattern works for P-384 with `ec_scalar_mul_384` /

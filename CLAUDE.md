@@ -604,6 +604,27 @@ keep all library calls on a single thread of control.
 - Windowed scalar_mul fetches table entries via REU DMA during the multiply loop
 
 ### Known issues
+- **Lim-Lee comb accepted an unusable anchor slot — verify failed OPEN
+  (issue #148, reported by c64-https — FIXED).** `sm256_reu_fetch_affine` /
+  `sm384w_fetch_to_p2` DMA 64/96 B out of the REU and validate nothing, so a
+  corrupt or never-written comb slot was consumed as a point. The dangerous
+  shape is `Y = 0`: seeding `R = (X, 0, 1)` makes the next doubling compute
+  `Z3 = 2·Y1·Z1 = 0`, so `R` becomes the infinity encoding;
+  `ecdsa_verify_*` then took `ec_point_add_jj`'s P1-infinity branch,
+  `R := u2·Q`, and the check no longer involved `G` or the message — the
+  textbook `u1·G = O` forgery, satisfiable by anyone holding `Q`. **Both
+  curves were affected; the report covered P-256 only.**
+  `ec_scalar_mul[_384]` now OR-scans the fetched `Y` and returns **C=1 with
+  the output zeroed**, **C=0** on every normal path (including `k ≡ 0`, which
+  keeps its all-zero Jacobian — the two are distinguished by carry, not by the
+  buffer); `ecdsa_verify_256/384` reject on C=1. `Y = 0` is the exact collapse
+  condition and cannot occur in a healthy table (it denotes a point of order 2;
+  both curves have prime order), so there are no false positives. The
+  `ECDSA_NO_COMB` variants route `u1·G` through the variable-base ladder and
+  never reach this path. Cost ~18 kcy per scalar mul (~0.1%). Giving these two
+  entry points a defined carry where none was documented is a SPEC v1.1.0 §7
+  ABI-counter event — `LIB_NISTCURVES_ABI_VERSION` moved 2 → 3. Contract:
+  API.md §5.3 and the comb-table-integrity note below it.
 - **`fp_mod_inv` residue-class-0 guard / `ec_jacobian_to_affine` Z=0
   guard (issue #132, adversarial audit F-1 — FIXED).** The binary
   extended GCD in `fp_mod_inv[_384]` only exits through `u == 1` /
