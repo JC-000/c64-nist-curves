@@ -382,8 +382,30 @@ ct_sign_mask:   .byte 0
 ; src/lib_manifest.s. Deferring init while still exporting the canonical fetch
 ; would make this build an owner of the fetch that is not an owner of the
 ; primitive, a state §8.0's three-state table has no row for.
+; FP_ONCHIP_MUL (issue #155-adjacent, found by adversarial review): the onchip
+; profile does not consume §8.2 at all -- lib_manifest_onchip.o publishes
+; LIB_NISTCURVES_SHARED_PRIMITIVES = $0005 with no reu_mul bit, and
+; LIB_NISTCURVES_REU_BANKS_USED = $04 or $00. But this object still EXPORTED
+; the canonical fetch, and §8.0 is explicit that "exporting a primitive's
+; canonical body or init counts as consuming it". So the mask disclaimed a
+; primitive the archive advertised, and the two disagreed in the direction that
+; breaks a composed link: a consumer importing only ct_mul_8x8, plus a sibling
+; exporting reu_fetch_mul_row, plus nistcurves-onchip.a gives
+;
+;   ld65: Error: Duplicate external identifier: 'reu_fetch_mul_row'
+;
+; while §8.0's own disjointness assert passes first, because our mask says we
+; do not own it. The contract's collision check green-lights a link ld65
+; rejects. Three of the twelve shipped archives were in that state, which also
+; made the §8.2 fetch deferral #153 argues for impossible against them.
+;
+; Nothing needs the body here: the onchip field layer generates rows via
+; og_common/ct_mul_8x8 and never DMAs a multiply row, and no ca65 source in
+; this tree calls the fetch at any profile.
+.if .defined(SHARED_REU_MUL_FETCH) .or .defined(FP_ONCHIP_MUL)
 .ifdef SHARED_REU_MUL_FETCH
 .import reu_fetch_mul_row
+.endif
 .else
 .export reu_fetch_mul_row
 reu_fetch_mul_row:

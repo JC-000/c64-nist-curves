@@ -618,6 +618,16 @@ def od65_value(objs, sym):
     return None
 
 
+class _CountMismatch:
+    """od65_export_names() read the dump but extraction disagreed with od65's
+    declared export Count. Distinct from None ("could not read it at all")."""
+    def __repr__(self):
+        return "<extraction dropped names vs od65 Count>"
+
+
+COUNT_MISMATCH = _CountMismatch()
+
+
 # --- §5 footprint measurement (issue #142) -----------------------------------
 # Which segments count as the "code+rodata footprint" §5's RESIDENT/COLD pair
 # describes. Stated as an explicit classification rather than a name pattern so
@@ -923,13 +933,17 @@ def od65_export_names(obj):
     Name: lines so a truncated dump fails rather than under-reporting."""
     rc, out = sh(["od65", "--dump-exports", str(obj)])
     if rc or "(no xo65 object file)" in out:
-        return None
+        return None                       # unreadable: no dump at all
     m = re.search(r"Exports:\s*\n\s*Count:\s*(\d+)", out)
     if not m:
-        return None
+        return None                       # unreadable: no Count record
     names = set(re.findall(r'Name:\s*"([^"]+)"', out))
     if len(names) != int(m.group(1)):
-        return None
+        # Readable, but the extraction disagrees with od65's own declared
+        # Count -- names were dropped. Distinct from "unreadable", and callers
+        # conflating the two report a file that assembles fine as one that does
+        # not. Sentinel rather than None so they cannot.
+        return COUNT_MISMATCH
     return names
 
 
@@ -1284,6 +1298,12 @@ def gated_surface_check(failures):
             rc, out = sh(["ca65", "--cpu", "6502",
                           "-I", "src", "-o", str(uobj), f"src/{tu}.s"])
             unames = od65_export_names(uobj) if not rc else None
+            if unames is COUNT_MISMATCH:
+                failures.append(f"gated surface: {tu}.s -- name extraction "
+                                "disagrees with od65's declared export Count; "
+                                "the file assembles, the reader is broken")
+                print(f"  GATE FAIL: {tu}.s extraction dropped names vs Count")
+                continue
             if unames is None:
                 failures.append(f"gated surface: {tu}.s does not assemble ungated")
                 print(f"  GATE FAIL: {tu}.s does not assemble ungated: "
@@ -1649,6 +1669,51 @@ def packaging_check(failures, archives):
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
 
 
+def zp_roster_reconciliation_check(failures):
+    """The ZP legs iterate over hand-maintained rosters. Reconcile them against
+    the Makefile, or a seventh variant is silently unaudited by all four.
+
+    ZP_ARM_OBJECTS, ZP_ARM_DEFINES and ZP_ALIAS_ARMS are each iterated over
+    themselves, and nothing cross-checks them against the archives that
+    actually exist. Adding a variant to the Makefile and to none of them leaves
+    every ZP leg quietly not covering it: the half-updated case raises
+    KeyError, the not-updated-at-all case says nothing.
+
+    Same mechanism as BARE_GATED, which listed none of the 18 bare
+    LIB_PRECALC_* names the §8.4 macro emits and so reported "0 bare names" for
+    a TU it had never examined, since issue #113. A roster and a predicate look
+    equally reasonable in review; only one survives its subject growing."""
+    print("\n=== ZP roster reconciliation (rosters vs the real archive set) ===")
+    archives = set(parse_makefile_archives())
+    if not archives:
+        failures.append("zp rosters: parsed no archives, so this reconciliation "
+                        "is vacuous rather than passing")
+        print("  ROSTER FAIL: no archives parsed")
+        return
+    covered = {a for arms in ZP_ARM_OBJECTS.values() for a in arms}
+    missing = sorted(archives - covered)
+    phantom = sorted(covered - archives)
+    keys = set(ZP_ARM_OBJECTS) | set(ZP_ARM_DEFINES) | set(ZP_ALIAS_ARMS)
+    ragged = sorted(k for k in keys
+                    if not (k in ZP_ARM_OBJECTS and k in ZP_ARM_DEFINES
+                            and k in ZP_ALIAS_ARMS))
+    if missing:
+        failures.append(f"zp rosters: {missing} exist as archives but no ZP arm "
+                        f"covers them -- every ZP leg silently skips them")
+        print(f"  ROSTER FAIL: uncovered archives {missing}")
+    if phantom:
+        failures.append(f"zp rosters: {phantom} named by an arm but built by no "
+                        f"recipe")
+        print(f"  ROSTER FAIL: phantom archives {phantom}")
+    if ragged:
+        failures.append(f"zp rosters: {ragged} present in some of the three "
+                        f"rosters and not others")
+        print(f"  ROSTER FAIL: ragged arms {ragged}")
+    if not (missing or phantom or ragged):
+        print(f"  rosters OK ({len(keys)} arms cover all {len(archives)} "
+              f"archives, all three rosters agree)")
+
+
 def footprint_basis_check(failures):
     """The §5 measurement basis is od65 segment sums. Pin that it equals a real
     link, because if it stops doing so the footprint leg understates SILENTLY.
@@ -1884,7 +1949,11 @@ def od65_extraction_canary(failures):
     looks plausible.
 
     Our extractors use `\s*` (zero-or-more) and are verified immune. This leg
-    exists so they stay that way: it finds the no-space names by substring,
+    exercises the ones that feed a comparison -- od65_names, _SEG_RE,
+    od65_value, od65_export_names and od65_zp_exports. It does NOT prove every
+    reader in the file, and it asserts only that no-space names ARE extracted:
+    an extractor dropping every SPACED name would pass it. Stated rather than
+    papered over. It works by: it finds the no-space names by substring,
     which cannot tokenise and so cannot be fooled, and asserts our real
     extractors return each one.
 
@@ -1939,6 +2008,14 @@ def od65_extraction_canary(failures):
             print(f"  CANARY FAIL [od65_value]: {HARD} unreadable")
         else:
             print(f"  canary OK [od65_value] ({HARD})")
+        zpo = BUILD / "zp_config.o"
+        zp = od65_zp_exports(zpo) if zpo.exists() else None
+        if zp is None:
+            failures.append("od65 canary: od65_zp_exports() could not read "
+                            "zp_config.o, so the ZP audits' reader is unexercised")
+            print("  CANARY FAIL [od65_zp_exports]: unreadable")
+        else:
+            print(f"  canary OK [od65_zp_exports] ({len(zp)} slots read)")
         exp = od65_export_names(probe_obj)
         if exp is None or HARD not in exp:
             failures.append("od65 canary: od65_export_names() drops the "
@@ -2442,6 +2519,7 @@ def main():
     # Runs last by design: its knob-change legs wipe build/*.o via the
     # Makefile stamp, and the final default-build leg restores only the
     # object it exercises.
+    zp_roster_reconciliation_check(failures)
     footprint_basis_check(failures)
     sibling_bare_collision_check(failures)
     od65_extraction_canary(failures)
