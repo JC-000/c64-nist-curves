@@ -326,12 +326,66 @@ curve archive); the `_comb` modules carry the Lim-Lee fixed-base comb
 | `ec_point_double` / `ec_point_double_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Handles Z=0 (infinity) input. Uses curve-specific `a = -3` formula. |
 | `ec_point_add` / `ec_point_add_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (Jacobian), `ec_p2` / `ec384_p2` (affine X in first half, Y in second half; Z ignored) | `ec_p3` / `ec384_p3` (Jacobian) | Mixed Jacobian+affine addition (7M + 4S). Handles both-infinity / same-point cases. The Lim-Lee comb evaluate loop uses this primitive. |
 | `ec_point_add_jj` / `ec_point_add_jj_384` | points256_core/points384_core | `ec_p1` / `ec384_p1` (full Jacobian), `ec_p2` / `ec384_p2` (full Jacobian) | `ec_p3` / `ec384_p3` (Jacobian) | Full Jacobian+Jacobian addition (Bernstein-Lange add-2007-bl, 11M + 5S). Reads Z2 from `ec_p2+64` (or `ec384_p2+96`) — caller must populate it. Handles P1∞, P2∞, both∞, same projective point (tail-calls `ec_point_double`), and P1=-P2 natively. Used by `ecdsa_verify_256/384` at the `u1*G + u2*Q` join. |
-| `ec_scalar_mul` | points256_comb | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. |
-| `ec_scalar_mul_384` | points384_comb | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian) | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** |
-| `ec_jacobian_to_affine` | points256_core | `ec_p3` | `ec_affine_x`, `ec_affine_y`; **C=0** | Sets `fp_misc` to p256 internally. **C=1 with `ec_affine_x` / `ec_affine_y` := 0 when Z ≡ 0 (mod p)** — the point at infinity (the library's own encoding, emitted by `ec_scalar_mul` for k ≡ 0 mod n, `ec_scalar_mul_var` for k ≡ 0, and `ec_point_add[_jj]` for P + (−P)); has no affine form. Issue #132 — this input hung the inversion before. |
+| `ec_scalar_mul` | points256_comb | `ec_scalar_ptr` (ZP pointer to 32-byte BE scalar) | `ec_p3` (Jacobian); **C=0** (note: C=0 does *not* imply an affine-convertible point — k = 0 returns C=0 with the infinity encoding) | Computes `k * G` for fixed generator G using an 8-way Lim-Lee comb over the 256-entry P-256 precompute table (Wave 7a h=8). **Requires `ec_precompute_256`.** Base-point only. **C=1 with `ec_p3` := 0 when the evaluation ends at the point at infinity having seeded from a table slot** — the anchor table is unusable, or the scalar is a non-zero multiple of `n`; either way there is no result. See the note below. Issue #148. |
+| `ec_scalar_mul_384` | points384_comb | `ec_scalar_ptr` (ZP pointer to 48-byte BE scalar) | `ec384_p3` (Jacobian); **C=0** | P-384 analogue (Wave 7a h=8). **Requires `ec_precompute_384`.** Same **C=1 / zeroed-output** unusable-slot reject. |
+| `ec_jacobian_to_affine` | points256_core | `ec_p3` | `ec_affine_x`, `ec_affine_y`; **C=0** | Sets `fp_misc` to p256 internally. **C=1 with `ec_affine_x` / `ec_affine_y` := 0 when Z ≡ 0 (mod p)** — the point at infinity (the library's own encoding, emitted by `ec_scalar_mul` for k = 0 (a non-zero multiple of n returns **C=1** instead — issue #148), `ec_scalar_mul_var` for k ≡ 0, and `ec_point_add[_jj]` for P + (−P)); has no affine form. Issue #132 — this input hung the inversion before. |
 | `ec_jacobian_to_affine_384` | points384_core | `ec384_p3` | `ec384_affine_x`, `ec384_affine_y`; **C=0** | P-384 analogue; same **C=1 / zeroed-output** infinity encoding. |
 | `ec_precompute_256` | points256_comb | — | REU bank 2 @ `$0000`..`$3FFF`, `ec_anchor1..8_x/y` | Builds the 16 KB h=8 Lim-Lee comb table. Run once at boot (~17 min at 1 MHz, default profile — §8.5, issue #121). |
 | `ec_precompute_384` | points384_comb | — | REU bank 2 @ `$4000`..`$9F9F`, `ec_anchor1..8_384_x/y` | P-384 analogue, 24 KB table (~34 min at 1 MHz, default profile — §8.5). |
+
+**Comb-table integrity (issue #148).** `ec_scalar_mul[_384]` reads its anchor
+table straight out of the REU, where nothing the library controls guarantees
+the bytes are still the ones `ec_precompute_*` wrote — an REU too small for the
+configured bank, a precompute that never ran, or another tenant writing bank 2
+all produce slots the fetch cannot distinguish from points. The dangerous
+outcome is that the accumulator collapses to the point at infinity: a verify
+built on a collapsed `u1·G` no longer involves `G` or the message and accepts
+**any** signature for a known `Q`.
+
+The routines therefore check a **post-condition**, not each slot: having seeded
+from at least one anchor, the result must not be the point at infinity. It is
+checked once, on `Z`, and returns **C=1 with the output zeroed** when it fails.
+Checking the result rather than the slots is what makes it cover more than one
+entry shape — a bad slot reaches infinity by several routes (`Y = 0`; `Y = p`,
+which a byte-wise zero test misses by exactly one representable value, because
+the raw `Y` is never reduced before seeding; a slot that is the negation of the
+accumulator, where `ec_point_add` zeroes the output with every fetched `Y`
+non-zero; a stale buffer left by a timed-out DMA) and a persisting collapse
+from any of them lands on the same test.
+
+**Scope, stated precisely, because the useful version of this is narrow.**
+The guard closes **collapse to infinity that persists to the end of the
+evaluation**. That is the shape *accidental* corruption produces — an REU too
+small for the configured bank, a precompute that never ran, a half-written
+table — and it is what makes the difference between failing open and failing
+closed for those. It is **not** a defence against an adversary who can write
+the comb bank, and no post-condition on the result can be:
+
+- A collapse mid-evaluation is *erased* by the next non-zero column, because
+  `ec_point_add`'s P1-infinity branch re-seeds `R` from the fetched slot with
+  `Z = 1`. Only a collapse that survives to the last column is visible here.
+- An attacker who chooses the planted point does not need a collapse at all.
+  Given the victim's `Q`, they can pick `R'`, set `r = x(R') mod n` and
+  `s = h`, plant the single slot `T[1] = R' − (r·h⁻¹)·Q`, and the verify
+  arrives at `R'` through entirely well-formed arithmetic with `Z ≠ 0`
+  throughout.
+
+Anyone who can write REU bank 2 on this machine can also write the code that
+reads it, so this is outside the library's threat model rather than a hole in
+the guard. Closing it would need table *integrity* — a tag over the table
+checked at use, or recomputation — not a check on the result. Also not covered,
+and for the same reason: a corrupt table that yields a wrong but non-zero
+point. Accidentally, that fails closed (verify compares `r` against the wrong
+`x` and rejects); deliberately, it is the construction above.
+
+Callers that use the comb directly MUST branch on the carry. `ecdsa_verify_256`
+/ `ecdsa_verify_384` already do. On a healthy table the check fires only for a
+scalar that is a non-zero multiple of `n`, which has no usable result either
+(`k·G = O` has no affine form — the contract `ec_jacobian_to_affine` adopted
+for issue #132); the verifiers cannot reach even that, since they pass
+`u1 = h·w mod n < n`, and `u1 = 0` returns the infinity encoding with **C=0**
+as before, which is correct. The `ECDSA_NO_COMB` archive variants route `u1·G`
+through the variable-base ladder and never reach this path.
 
 ### 5.4 Hash functions (`sha384.s`)
 
@@ -429,10 +483,19 @@ k: .res 32   ; a 32-byte big-endian scalar somewhere in RAM
         sta ec_scalar_ptr+1
 
         jsr ec_scalar_mul           ; ec_p3 := k*G (Jacobian)
+        bcs no_result               ; C=1: k*G is infinity — no result (#148)
 
         jsr ec_jacobian_to_affine   ; ec_affine_x / ec_affine_y = Q.x / Q.y
+        bcs no_result               ; C=1: Z ≡ 0, no affine form (#132)
 
         ; ec_affine_x and ec_affine_y are 32 bytes each, little-endian.
+        rts                         ; success — must not reach the handler
+
+no_result:
+        ; Either the comb ended at infinity (a collapsed anchor table, or a
+        ; scalar that is a non-zero multiple of n), or the result had no
+        ; affine form. There is no coordinate pair to read.
+        rts
 ```
 
 The same pattern works for P-384 with `ec_scalar_mul_384` /

@@ -660,10 +660,41 @@ ec_scalar_mul_384:
         beq @cm384_done
         jmp @cm384_loop
 
+@cm384_bad_slot:
+        ; Issue #148. Zero the output and report the failure in C; same
+        ; all-zero 144-byte Jacobian as the k = 0 path, distinguished by carry.
+        ldy #0
+        lda #0
+@cm384_bs_zero:
+        sta ec384_p3,y
+        iny
+        cpy #144
+        bne @cm384_bs_zero
+        sec                     ; C=1: no usable result (see @cm384_check_z)
+        rts
+
+@cm384_check_z:
+        ; --- Issue #148: fail closed when the accumulator collapsed ---
+        ; P-384 mirror of the points256_comb.s postcondition; see that file for
+        ; the full rationale and the routes it closes (Y = 0, Y = p, a slot
+        ; that is the negation of the accumulator, a stale ec384_p2 from a
+        ; timed-out DMA). cm384_r_inf is clear here, so on a healthy table R is
+        ; a non-zero multiple of G and Z is non-zero; a zero Z means there is
+        ; no usable result to return.
+        ldy #47
+        lda #0
+@cm384_zscan:
+        ora ec384_p1+96,y
+        dey
+        bpl @cm384_zscan
+        cmp #0
+        beq @cm384_bad_slot
+        jmp @cm384_copy_out
+
 @cm384_done:
         ; --- If R is still infinity, return all-zero point. ---
         lda cm384_r_inf
-        beq @cm384_copy_out
+        beq @cm384_check_z
         ldy #0
         lda #0
 @cm384_zinf:
@@ -671,6 +702,7 @@ ec_scalar_mul_384:
         iny
         cpy #144
         bne @cm384_zinf
+        clc                     ; C=0: k ≡ 0 mod n is a normal result
         rts
 
 @cm384_copy_out:
@@ -681,6 +713,7 @@ ec_scalar_mul_384:
         iny
         cpy #144
         bne @cm384_finc
+        clc                     ; C=0: success
         rts
 
 ; --- Comb scalar-mul state vars (384-specific to avoid linker clash with points256) ---
