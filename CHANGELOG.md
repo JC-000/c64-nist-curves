@@ -12,55 +12,97 @@ contract).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-06
+
+MINOR, and the settling release against the frozen c64-lib-contract **SPEC
+v1.2.2**. `LIB_NISTCURVES_ABI_VERSION` **3 → 4** — consumers with an ABI gate
+must update it.
+
 ### Changed
 
-- **§6.1 member isolation: the bare `zp_*` aliases move to their own
-  archived translation unit (issue #154, upstream contract#188, ruled at
-  SPEC v1.2.2).** `zp_config.o` exported `zp_tmp1` / `zp_tmp2` / `zp_ptr1` /
-  `zp_ptr2` — displaceable names, gated under `LIB_NO_BARE_EXPORTS` — from
-  the same member as sixteen importable slots (`fp_src1`, `fp_dst`,
-  `ec_scalar_ptr`, `sha_src`, …). ld65 links whole members, so a consumer
-  importing `fp_src1` pulled all four bare names in with it and collided
-  with any sibling library exporting the same spelling. They now live in
-  `src/zp_aliases.s`, built the same six ways as `zp_config.s` and added
-  wherever the matching `zp_config*.o` appears — so all twelve archives
-  still export them.
+- **`reu_fetch_mul_row` now takes the row index in `A`, per SPEC §8.2 (issue
+  #153).** It previously ignored `A` and read `nistcurves_mul_cached_a`, while
+  §8.2 had documented `A = a` since the clause existed — so a consumer who
+  followed the contract got whatever row was last cached, for any value of `A`,
+  silently. `A` is now stored into that byte, so the cache and the row fetched
+  cannot disagree.
 
-  **No name, value, address or archive changed, so no §6.5 deprecation
-  window is owed** — that is contingent on the new TU staying *archived*,
-  and it must stay that way: moving these to a never-archived TU would be a
-  removed export and would owe the window plus a gate. The four aliases are
-  `.importzp`ed from their canonical `nistcurves_zp_*` slots and re-exported
-  bare rather than restated, so they have no address of their own and cannot
-  drift; `CONTRACT_ZP_DEFINES` consequently reaches `zp_config.s` alone (a
-  `-D` of an imported name is a hard ca65 error) and the alias follows
-  through the link. `LIB_NISTCURVES_ZP_USAGE_BYTES` is unchanged in every
-  variant (27 / 15 / 15 / 23 / 17 / 8) and `build/nist-curves.prg` is
-  byte-identical.
+  The fleet consequence was worse than the local one: c64-x25519, the other
+  §8.2 provider, diverged the same way and reads a byte with a **different**
+  name. §8.2 fetch deferral could not work between the two adopters at all —
+  both symbols resolved, the link was clean, and the fetch returned the
+  provider's last-cached row. Raised as contract#182 rather than fixed
+  one-sidedly; upstream ruled both providers implement `A`, with no ordering
+  between them.
+
+  **`LIB_NISTCURVES_ABI_VERSION` 3 → 4.** Ruled MINOR, not MAJOR: §7's "changed
+  calling conventions" bullet governs the *documented* convention, which §8.2
+  states identically before and after — what changed is our conformance to it —
+  and no consumer conforming to the documented contract can be broken, since
+  one passing `A` is broken today and this fixes them. The counter still moves
+  because a consumer who reverse-engineered the cached-byte behaviour **does**
+  break, and the counter is the gate that tells them to look.
+
+  **Action:** update any `.assert LIB_NISTCURVES_ABI_VERSION = 3`. If you call
+  `reu_fetch_mul_row` directly, pass the row index in `A`; if you relied on
+  presetting `nistcurves_mul_cached_a`, switch.
+
+- **§6.1 member isolation: the bare `zp_*` aliases move to their own archived
+  translation unit (issue #154, upstream contract#188, ruled at SPEC v1.2.2).**
+  `zp_config.o` exported the four displaceable `zp_*` names beside sixteen
+  importable `fp_*` / `ec_*` / `sha_*` slots, so a consumer importing `fp_src1`
+  pulled the member and collided with any sibling exporting the same four.
+  `src/zp_aliases.s` now holds them alone, across all six variant arms. No name,
+  value or archive changes, so no §6.5 window is owed.
+
+- **The bare `mul_dma_*` aliases likewise (`src/mul_aliases.s`).** They shared a
+  TU with `LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO`/`_HI` — §8.2 output equates a
+  consumer is told to import — which are not prefixed counterparts of anything
+  displaceable. Importing one pulled the member and its bare names, and against
+  c64-x25519 ld65 refused the link outright. Found by adversarial review.
+
+- **Onchip archives no longer export `reu_fetch_mul_row`.** Three of the twelve
+  published `SHARED_PRIMITIVES = $0005` (no reu_mul bit) while exporting the
+  canonical fetch, which §8.0 says counts as consuming it. A composed link then
+  failed on a duplicate external *while §8.0's own disjointness assert passed*,
+  because our mask disclaimed ownership.
 
 ### Fixed
 
-- **`make check-archives`: the `LIB_NO_BARE_EXPORTS` gated-surface leg had
-  never examined `precalc_manifest.o`.** `BARE_GATED` was a hand-written
-  roster and listed none of the 18 bare `LIB_PRECALC_*` names that TU
-  exports (the §8.4 macro generates a triple per table, so the family cannot
-  be enumerated by hand), making `names & BARE_GATED` the empty set and the
-  leg's "0 bare names" report vacuous for that TU from issue #113 onward.
-  The membership test is now a predicate covering the generated family, and
-  each gate-owning TU must export at least one bare name *ungated* before its
-  gated result is believed — which is what surfaced this. Negative-tested by
-  un-gating the bare triple in `precalc_table.inc`: the leg now names all 18.
+- **The §8.2 hardware settle probe was silently broken by #153** and would have
+  reported ~100% corruption at every settle length — an instrument with no
+  discrimination, failing in the direction that looks like a finding. Its device
+  trampoline reached the fetch with `A = 2` while the host still selected rows
+  through the byte #153 overwrites. This is the only instrument for the 64 MHz
+  floor, and none of its three offline modes can see the fault because none runs
+  6502 code. `tools/bench_reu_mult.py` had the same miss.
 
-- **The same class in the ZP legs, pre-empted rather than discovered.** After
-  a TU split, any check asserting a name is *absent* passes trivially over an
-  empty dump. The R2 ZP audit now reconciles the whole export partition
-  (bare + prefixed + other, against od65's own declared Count) before
-  concluding anything from what is missing, asserts the *positive* half (each
-  alias object exports exactly its variant's expected set), link-resolves
-  every alias from every archive to its canonical slot's address, and drives
-  a real `CONTRACT_ZP_DEFINES` override through the make recipes and out of a
-  link to prove slot and alias move together. Each leg was made to fail
-  deliberately and observed reporting.
+- Twelve `lderror` invariants pin the page alignment of the SHA-384 rotate LUTs.
+  Eleven of the twelve were aligned only *by derivation* — each table exactly
+  256 bytes and contiguous — while the block's own comment asserted the property
+  for all twelve. A sibling library measured a real constant-time regression
+  from exactly this shape: a data-TU split moved the neighbour, cycle spread
+  went 0 → 83,342, and every functional test stayed green.
+
+### Testing
+
+Eight check-archives legs added or repaired, each negative-tested at
+introduction with the observed output recorded in-file. Several existed but
+could not fail:
+
+- the §6.2 override leg proved **2 of 12** recipes while claiming to prove the
+  wiring; two real mis-wirings stayed green, one of them §6.2's named silent
+  runtime corruption;
+- `GATE_TUS` was a roster and had **already gone stale in this release** —
+  deriving it from source immediately found `mul_aliases`, added hours earlier,
+  which the gated-surface leg had never examined while printing a clean "0 bare
+  names";
+- `od65` drops symbols of length exactly 24 from whitespace-splitting
+  extractors, and the names it drops here are precisely the class a "0 bare
+  names" gate counts. A canary now exercises every comparison-feeding extractor
+  against a known-hard input;
+- the §5 footprint basis is now measured against a real link map rather than
+  argued, after a sibling found the same basis under-reporting by up to 295 B.
 
 ## [0.13.0] — 2026-09-06
 

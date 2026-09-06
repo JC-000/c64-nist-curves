@@ -67,7 +67,7 @@
 ; what makes these importable alongside a sibling library's manifest.
 ; -----------------------------------------------------------------------------
 LIB_NISTCURVES_VERSION_MAJOR = 0
-LIB_NISTCURVES_VERSION_MINOR = 13
+LIB_NISTCURVES_VERSION_MINOR = 14
 LIB_NISTCURVES_VERSION_PATCH = 0
 ; 2 -> 3 (issue #148). `ec_scalar_mul` / `ec_scalar_mul_384` documented no
 ; carry and now return one: C=1 with a zeroed output when the evaluation ends
