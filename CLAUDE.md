@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v1.2.0**, verified clause-by-clause from built
+— conformant through **SPEC v1.2.1**, verified clause-by-clause from built
 objects rather than from source comments (the alignment baseline lives in the
 session memory's lib-contract-alignment-monitor note).
 
@@ -60,14 +60,20 @@ Three later releases matter here:
   header that exists, so every guarded `.import` carries an `.else` assert
   against the library's exported value, both directions pinned by
   `check-archives`.
-- **1.2.0 §6.1 member isolation** — a symbol a consumer may displace (gated
+- **1.2.0 §6.1 member isolation** (as corrected by **1.2.1**) — a symbol a consumer may displace (gated
   under `LIB_NO_BARE_EXPORTS`, or defined by the consumer under `APP_OWNED`)
   must not share a translation unit with anything else a consumer may import or
   the library's own code references. This library is recorded upstream as
   already conformant: it is our issue #179, filed after the same defect cost
   c64-https every shipped configuration on v0.12.0, and `src/data_reu_wait.s`
   exists precisely to keep the §8.2 settle state out of the TU holding the
-  APP_OWNED multiply buffers. **Do not merge them back.**
+  APP_OWNED multiply buffers, and `src/data_mul_stage.s` keeps the multiply
+  operand cache out of it too — the settle split alone was half a fix, since
+  `fp256.o`/`fp384.o`/`mul_8x8.o` import that cache, so a consumer owning the
+  buffers *and* calling a field op still collided. **Do not merge any of the
+  three back.** 1.2.1 then carved out the over-literal reading: a displaceable
+  name MAY sit beside its own prefixed counterparts (which is what §1's own
+  `lib_version.s` block and §8.4's macro both require), and nothing else.
 
 §13 (network ABI) was never adopted and is now retired outright. The remaining
 core is §1–§7 plus §8.0–§8.4 crypto: prefixed version equates with gated bare

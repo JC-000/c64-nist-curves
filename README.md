@@ -379,6 +379,19 @@ The precompute table grows from 16 entries to 256 entries in REU bank 2:
 
 ## Releases
 
+- **v0.13.0** (2026-09-06) — MINOR, **ABI 2 → 3**, PRG 37483 → 37739 B.
+  **Security:** the Lim-Lee comb accepted an anchor table that collapsed
+  `u1·G` to infinity, and ECDSA verify then **failed open** — the textbook
+  `u1·G = O` forgery, satisfiable by anyone holding the public key
+  (issue #148, reported by c64-https; both curves affected). `ec_scalar_mul[_384]`
+  now return **C=1 with a zeroed output** when the evaluation ends at infinity
+  having seeded from a slot, and the verifiers reject on it. The guard covers
+  *accidental* corruption, not an adversary who can write REU bank 2 — see the
+  release notes for the precise scope. **v0.12.0 could not be linked at all by
+  an APP_OWNED consumer** (issue #149); fixed, and the rule is now normative
+  upstream as SPEC 1.2.0 §6.1. Conformance baseline **SPEC v1.2.1**; six of
+  twelve archives' §5 footprint figures were understating and are corrected.
+  See [`docs/RELEASE_NOTES_v0.13.0.md`](docs/RELEASE_NOTES_v0.13.0.md).
 - **v0.12.0** (2026-08-30) — MINOR, four additive exports, ABI stays 2, PRG 37480 → 37483 B. Adopts **SPEC v0.13.0 §8.2** (REU DMA completion confirm + post-execute settle at all fourteen execute sites — on U64E firmware 3.15 at 48 MHz the pre-fix path produces silently wrong field products), with the structural settles asserted at assembly time per v0.14.1. Ships an **adversarial test suite** (hazmat oracle, 382 cases + per-case hang recovery) and **fixes two machine-locking hangs it found**: `fp_mod_inv[_384]` on input ≡ 0 mod the modulus, and `ec_jacobian_to_affine[_384]` on the library's own point-at-infinity encoding — both now return C=1 with a zeroed output. Conformance baseline **SPEC v0.15.0**. See [`docs/RELEASE_NOTES_v0.12.0.md`](docs/RELEASE_NOTES_v0.12.0.md).
 - **v0.11.2** (2026-08-15) — PATCH, PRG byte-identical, ABI stays 2. SPEC v0.10.4–v0.10.6 alignment: the `CONTRACT_*DEFINES` knob-staleness guard (a changed define set now rebuilds instead of silently reusing stale objects — the §6.3 "looks-reachable" shape-3 no-op, SPEC v0.10.5) plus a check-archives leg pinning it; conformance baseline verified clause-by-clause through **SPEC v0.10.6** (whose §8.3 provider-surface clause v0.11.1 already implements). See [`docs/RELEASE_NOTES_v0.11.2.md`](docs/RELEASE_NOTES_v0.11.2.md).
 - **v0.11.1** (2026-08-15) — PATCH, PRG byte-identical, ABI stays 2. Two consumer-reported fixes: `-D SHARED_CT_MUL_8X8` now assembles against the on-chip TU (issue #123 — the deferring arm imports the five-symbol §8.3 provider surface, making APP_OWNED × onchip reachable per §6.3; `nistcurves-app-owned.a` documents `poly_prod_lo/hi` as unresolved externals the app's provider supplies), and the `ec_precompute_*` boot-cost docs corrected ~40-86× (issue #121 — measured 17/34 min @1 MHz default, 34/78 min onchip; only onchip scales with clock). See [`docs/RELEASE_NOTES_v0.11.1.md`](docs/RELEASE_NOTES_v0.11.1.md).

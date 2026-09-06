@@ -12,54 +12,128 @@ contract).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-06
+
+MINOR. `LIB_NISTCURVES_ABI_VERSION` **2 → 3**. Conformance baseline moves
+from SPEC v0.15.0 to **v1.2.1**, across a contract that was cut by seven
+eighths in between.
+
+### Security
+
+- **The Lim-Lee comb accepted an unusable anchor slot, and ECDSA verify
+  failed OPEN (issue #148, reported by c64-https).** The comb reads its
+  anchor table straight out of the REU and validated nothing. If a slot
+  drove the accumulator to the point at infinity, `ecdsa_verify_*` took
+  `ec_point_add_jj`'s P1-infinity branch, `R := u2·Q`, and the check no
+  longer involved `G` or the message — the textbook `u1·G = O` forgery,
+  satisfiable by anyone holding `Q` without the private key. **Both curves
+  were affected**; the report covered P-256 only.
+
+  `ec_scalar_mul` / `ec_scalar_mul_384` now check a **post-condition**:
+  having seeded from at least one anchor, the result must not be infinity.
+  **C=1 with the output zeroed** when it is; C=0 on every normal path.
+  `ecdsa_verify_256` / `_384` reject on C=1.
+
+  The first fix tested each fetched `Y` for zero bytes and was wrong: the
+  collapse condition is `Y ≡ 0 (mod p)`, and `Y = p` is representable and
+  never reduced before seeding, so it missed the forgery by one value. Two
+  further routes also walked past it. Checking the result covers what
+  checking the slots could not, and costs one 32/48-byte scan per call
+  instead of one per comb column.
+
+  **Scope, stated narrowly:** this covers collapse-to-infinity that
+  persists to the last column — the shape *accidental* corruption produces
+  (an REU too small for the bank, a precompute that never ran, a
+  half-written table). It is **not** a defence against an adversary who can
+  write the comb bank, and no post-condition on the result could be: a
+  mid-loop collapse is erased by the next column's re-seed, and an attacker
+  who picks the planted point needs no collapse at all. Anyone able to write
+  REU bank 2 can write the code that reads it. Closing that needs table
+  integrity, not a result check. Do not restate this as "fails closed on a
+  corrupt table" — it fails closed on a *collapsed* one.
+
+  No false positives: `Y = 0` cannot occur in a healthy table, and on one
+  the guard fires only for a scalar that is a non-zero multiple of `n`,
+  which has no usable result either. The verifiers cannot reach even that.
+  `u1 = 0` still returns the infinity encoding with **C=0**, which valid
+  signatures depend on.
+
+### Fixed
+
+- **v0.12.0 could not be linked by an APP_OWNED consumer at all (issue
+  #149).** ld65 links whole archive members, and the §8.2 settle state
+  shared a translation unit with the multiply-row landing buffers, which a
+  consumer providing the multiply tables defines itself. Any reference to
+  the settle state dragged the member in and ld65 refused:
+  `Duplicate external identifier: 'nistcurves_mul_dma_hi'`. c64-https hit
+  this on all three of its shipped configurations. `src/data_reu_wait.s`
+  and `src/data_mul_stage.s` now separate the three concerns; a standing
+  `check-archives` leg links an APP_OWNED stand-in — one that owns the
+  buffers *and* calls a field op — against three archives.
+
+  This is now normative upstream as **SPEC 1.2.0 §6.1 member isolation**,
+  from our contract issue #179 (refined by 1.2.1's counterpart carve-out).
+
+- **§5 footprint equates understated six of twelve archives.** The
+  "manifest value pins" compared each manifest against a hard-coded copy of
+  the same numbers inside the checker, so both sides were the table and the
+  leg checked nothing about the archive (issue #142). It now measures each
+  archive's real code+rodata, charges worst-case page-alignment padding,
+  and requires SPEC §5's safe direction. `RESIDENT_BYTES` refreshed per
+  variant; all twelve carry 0.4–2.1% headroom.
+
+- **The §3 bank-collision assert passed falsely for any bank override.**
+  `LIB_NISTCURVES_REU_BANKS_USED` — the symbol §3 tells consumers to
+  compose — was a per-variant literal that ignored the bank knobs, so two
+  libraries relocated onto the same banks compared as disjoint. It is now
+  computed from the values the code reads, via `src/reu_banks.inc`.
+
+- The release notes' tarball SHA256 could never be correct: they ship
+  inside the tarball they describe (issue #147). `make dist` now writes a
+  `<tarball>.sha256` sidecar and `make check-release-notes` keeps the
+  self-referential claim out of the notes, so the fill-in step that was
+  dropped at v0.12.0 no longer exists. v0.12.0's notes gain an erratum.
+
+- `make CONTRACT_DEFINES=<changed>` reassembled but skipped `ld65`, leaving
+  the PRG on the previous knob's value at exit 0 (issue #144) — verified
+  fixed against the reporter's repro, including the archives they had not
+  been able to check.
+
 ### Added
 
-- **`make lib` now ships the consumer-facing header and an example
-  linker config alongside the archive** — the c64-lib-contract SPEC
-  v1.1.0 §6.1 MUST ("producing `build/lib/<shortname>.a` **plus the
-  consumer-facing `.inc` header and an example `.cfg`**"), which this
-  library did not meet: consumers were told to transcribe imports and a
-  `SEGMENTS{}` block out of prose in `API.md` §8. All twelve `make lib*`
-  targets now emit `build/lib/nistcurves.inc` (from `src/nistcurves.inc`)
-  and `build/lib/cfg/nistcurves-example.cfg` (from
-  `cfg/nistcurves-example.cfg`) next to the archive; both are checked-in
-  sources copied verbatim, so there is one canonical copy of each and a
-  stale copy in `build/lib` is a ratchet failure.
+- **SPEC v1.2.0 conformance.** §8.2's base-bank bound tightened `< $FE` →
+  `< 31` (the old bound let `1 .shl 32` export 0 and a collision assert
+  pass falsely); §8.1's canonical `mul_tables_init` exported, which every
+  non-SHA archive's manifest already claimed to provide; §8.2's staging
+  knobs `LIB_SHARED_REU_MUL_STAGE_LO`/`_HI` honoured for real, so an
+  override moves the buffers the code reads rather than an exported number,
+  with prefixed outputs published; §8.4 gains the 3072 B `sha384_rotr_lut`
+  row, which was unenumerated.
 
-  `cfg/nistcurves-example.cfg` maps all twenty `LIB_NISTCURVES_*`
-  segments and carries the SPEC §4 **load-bearing placement attribute
-  declarations** across from `src/c64.cfg` — `align = $100` on the two
-  table segments, `type = rw` (never `bss`) on the self-modified code
-  segments and the REU DMA landing pages, and the `$9C00..$9FFF` sqtab
-  window that is an equate rather than a segment and so is invisible to
-  ld65 — each stating the consequence, because a clean link is not
-  evidence: measured on ld65 V2.18 a dropped `align` and a zero-filled
-  `rw`→`bss` flip both link with no diagnostic at all.
+- `LIB_NISTCURVES_SHA384_UPDATE_MAX` (65535) publishes `sha384_update`'s
+  per-call ceiling as a referenceable symbol per §5 (issue #141). It was
+  the only bound in the library that fits an equate and was prose-only.
 
-  `src/nistcurves.inc` implements the SPEC §3 header-import rule
-  per-symbol: an import is `.ifndef`-guarded **iff** its defining TU
-  guards the definition, and every such guard carries an `.else` branch
-  asserting the consumer's override against the archive's exported
-  value. A bare guard alone would convert a compile error into silent
-  divergence — a consumer at REU bank 5 linking clean against a bank-2
-  archive. Twelve equates are guarded (the five §3 REU placement knobs in
-  `src/reu_config.s`, the seven §5/§8.0 manifest equates in
-  `src/lib_manifest.s`); everything whose defining TU assigns
-  unconditionally — the §1 version equates, the §8.2 prefixed outputs,
-  the §8.4 precalc triples — keeps a bare import so a `-D` on it collides
-  loudly, which is the deliberate rejection §3 asks for. The `.else`
-  asserts compare against the library's exported symbol *of the same
-  name*, imported into a private `.scope`, so no duplicate "output alias"
-  export was added and the ABI surface is unchanged.
+- A consumer-facing `src/nistcurves.inc` and `cfg/nistcurves-example.cfg`,
+  shipped by every `make lib*` target. **Not contract-required** — SPEC
+  1.0.0 briefly demanded them and 1.1.1 withdrew that — but consumers were
+  otherwise transcribing imports and a `SEGMENTS{}` block out of prose.
+  §3's header-import rule binds any header that exists, so every guarded
+  `.import` carries an `.else` asserting the override against the archive's
+  exported value; `check-archives` drives all twelve archives with their
+  own switch sets, both directions.
 
-  Pinned by a new leg in `make check-archives`, which drives the shipped
-  header the way a consumer does — the plain include, then each guarded
-  symbol at the archive's real value (must link) and at that value XOR 1
-  (must be rejected at link by the `.else`), plus the bare-import symbols
-  in the opposite direction — and checks that every segment `src/*.s`
-  emits is mapped by the example cfg with its load-bearing attributes
-  intact. `build/nist-curves.prg` is byte-identical (37483 B); no source
-  module changed.
+### Changed
+
+- `LIB_NISTCURVES_ABI_VERSION` 2 → 3. `ec_scalar_mul[_384]` documented no
+  carry and now return one. SPEC v1.1.0 §7: a return set gaining a value
+  moves the counter; it is not thereby MAJOR and owes no deprecation cycle.
+  **Consumers with an ABI gate must update it**, and callers of
+  `ec_scalar_mul[_384]` should branch on the carry.
+
+- PRG 37483 → 37739 B. ~64 B of code, rounded up by the page-aligned table
+  segment. Slack under the `__MAIN_LAST__ <= sqtab_lo` link guard is now
+  **150 bytes**, down from 406.
 
 ## [0.12.0] — 2026-08-30
 
