@@ -945,6 +945,244 @@ def app_owned_reachability_check(failures):
             print(f"  reachability OK [{label}] (assembles; surface imported, not re-exported)")
 
 
+# --- SPEC §6.1 packaging + §3 header-guard leg --------------------------------
+#
+# §6.1 (contract v1.1.0): "Every library MUST provide `make lib`, producing
+# build/lib/<shortname>.a PLUS the consumer-facing .inc header and an example
+# .cfg." Presence alone is a weak pin, so this leg also drives the header the
+# way a consumer does, against the SHIPPED copy under build/lib/ rather than
+# the source, and asserts BOTH halves of the §3 rule that governs it:
+#
+#   "Guard the .import with .ifndef iff the defining TU guards the definition,
+#    and pair every such guard with an .else branch asserting the override
+#    against the library's exported value -- a bare guard alone converts a
+#    compile error into silent divergence."
+#
+# Half one (the .ifndef): a `-D` of a guarded equate must ASSEMBLE against the
+# header. Without the guard it is `Symbol already defined`, i.e. the header
+# breaks exactly the consumers following the documented override path.
+#
+# Half two (the .else): a WRONG `-D` must FAIL AT LINK. This is the half that
+# makes the leg capable of failing: drop any one `.else` branch from
+# src/nistcurves.inc and that symbol's wrong-value row links clean and is
+# reported here. Verified by doing it -- see the docstring below.
+#
+# Each symbol is driven at its REAL archive value (must link) and at that
+# value XOR 1 (must not). XOR rather than +1 so the wrong value stays in range
+# for the 16-bit maximum (LIB_NISTCURVES_SHA384_UPDATE_MAX = 65535) as well as
+# for the zero-valued offsets.
+HEADER_GUARDED_SYMS = [
+    # §3 REU placement -- src/reu_config.s guards all five with .ifndef.
+    "LIB_NISTCURVES_REU_BANK_MUL",
+    "LIB_NISTCURVES_REU_BANK_COMB",
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P256",
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P384",
+    "LIB_NISTCURVES_REU_SETTLE_ITER",
+    # §5 aggregate manifest + §8.0 masks -- src/lib_manifest.s guards all seven.
+    "LIB_NISTCURVES_REU_BANKS_USED",
+    "LIB_NISTCURVES_ZP_USAGE_BYTES",
+    "LIB_NISTCURVES_RESIDENT_BYTES",
+    "LIB_NISTCURVES_COLD_BYTES",
+    "LIB_NISTCURVES_SHARED_PRIMITIVES",
+    "LIB_NISTCURVES_SHARED_CONSUMES",
+    "LIB_NISTCURVES_SHA384_UPDATE_MAX",
+]
+
+# Symbols whose defining TU assigns UNCONDITIONALLY. §3 says leave those
+# imports bare so a `-D` collides loudly; a guard there would mask a
+# deliberate parse-time rejection. Pinned in the opposite direction: a `-D` of
+# one of these must FAIL TO ASSEMBLE against the header.
+HEADER_BARE_SYMS = [
+    "LIB_NISTCURVES_ABI_VERSION",                # src/lib_version.s:71
+    "LIB_NISTCURVES_SHARED_REU_MUL_BANK",        # src/reu_config.s:205
+    "LIB_NISTCURVES_PRECALC_sqtab_SIZE",         # src/precalc_table.inc:86
+]
+
+# A consumer TU: includes the shipped header, emits the 2-byte PRG load
+# address the example cfg expects, and nothing else. Every import the header
+# makes must resolve against the archive for this to link.
+HEADER_STUB = """\
+.include "nistcurves.inc"
+
+.segment "LOADADDR"
+    .import __LOADADDR__
+    .word   __LOADADDR__
+
+.segment "CODE"
+entry:
+    rts
+"""
+
+
+def _header_link(td, incdir, cfg, archive, defines):
+    """Assemble HEADER_STUB (+ defines) against `incdir`, link vs `archive`.
+
+    Returns (asm_rc, asm_out, link_rc, link_out); link_* are (None, "") when
+    the assemble failed.
+    """
+    src = td / "hdr_consumer.s"
+    src.write_text(HEADER_STUB)
+    obj = td / "hdr_consumer.o"
+    arc, aout = sh(["ca65", "--cpu", "6502", *defines, "-I", str(incdir),
+                    "-o", str(obj), str(src)])
+    if arc != 0:
+        return arc, aout, None, ""
+    lrc, lout = sh(["ld65", "-C", str(cfg), "-o", str(td / "hdr_consumer.prg"),
+                    str(obj), str(archive)])
+    return arc, aout, lrc, lout
+
+
+def packaging_check(failures, archives):
+    """SPEC §6.1 packaging artifacts + SPEC §3 header-import guard rule.
+
+    NEGATIVE-TEST PROVENANCE. This leg was confirmed capable of failing by
+    deleting the `.else` branch of the LIB_NISTCURVES_REU_BANK_COMB guard in
+    src/nistcurves.inc (leaving the bare `.ifndef` guard), rebuilding, and
+    re-running: the wrong-value row for that symbol linked clean and the leg
+    reported
+
+        GUARD FAIL [LIB_NISTCURVES_REU_BANK_COMB]: wrong -D value linked
+        clean -- the .else assert is missing or does not compare against the
+        archive
+
+    A second confirmation removed the `.ifndef` entirely (bare `.import`),
+    which trips the other direction: the matching-value row fails to assemble
+    with `Symbol 'LIB_NISTCURVES_REU_BANK_COMB' is already defined`.
+    """
+    print("\n=== §6.1 consumer packaging + §3 header guards ===")
+
+    src_inc = REPO / "src" / "nistcurves.inc"
+    src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
+    shipped_inc = LIBDIR / "nistcurves.inc"
+    shipped_cfg = LIBDIR / "cfg" / "nistcurves-example.cfg"
+    archive = LIBDIR / "nistcurves.a"
+
+    # (1) `make lib` produced all three artifacts, and the shipped header/cfg
+    # are byte-identical to the in-tree sources (a stale copy in build/lib is
+    # exactly the drift this pin exists to catch).
+    ok = True
+    for label, p in (("archive", archive), ("header", shipped_inc),
+                     ("example cfg", shipped_cfg)):
+        if not p.exists():
+            failures.append(f"packaging: `make lib` did not produce the {label} ({p})")
+            print(f"  PACKAGING FAIL: missing {label}: {p}")
+            ok = False
+    for label, s, d in (("header", src_inc, shipped_inc),
+                        ("example cfg", src_cfg, shipped_cfg)):
+        if s.exists() and d.exists() and s.read_bytes() != d.read_bytes():
+            failures.append(f"packaging: shipped {label} differs from {s}")
+            print(f"  PACKAGING FAIL: build/lib copy of the {label} is stale")
+            ok = False
+    if not ok:
+        return
+    print("  artifacts OK (.a + .inc + example .cfg, shipped copies match src/)")
+
+    # (2) Every LIB_NISTCURVES_* segment the sources emit must be mapped by the
+    # example cfg. A consumer copies that SEGMENTS block; an unmapped segment
+    # is a hard ld65 error for them and a silently-rotted example for us.
+    emitted = set()
+    for s in sorted((REPO / "src").glob("*.s")):
+        emitted |= set(re.findall(r'\.segment\s+"(LIB_NISTCURVES_[A-Z0-9_]+)"',
+                                  s.read_text()))
+    cfg_text = src_cfg.read_text()
+    m = re.search(r"^SEGMENTS\s*\{(.*?)^\}", cfg_text, re.S | re.M)
+    mapped = set(re.findall(r"^\s*(LIB_NISTCURVES_[A-Z0-9_]+)\s*:",
+                            m.group(1) if m else "", re.M))
+    unmapped = sorted(emitted - mapped)
+    if unmapped:
+        failures.append(f"packaging: example cfg does not map {unmapped}")
+        print(f"  CFG FAIL: segments emitted by src/*.s but absent from the example cfg: {unmapped}")
+    else:
+        print(f"  cfg segment coverage OK ({len(emitted)} LIB_NISTCURVES_* segments mapped)")
+
+    # (3) SPEC §4 load-bearing attributes must travel with the example cfg,
+    # not just with src/c64.cfg -- the example is the file consumers copy.
+    for seg, attr in (("LIB_NISTCURVES_SHA384_TABLES", r"align\s*=\s*\$100"),
+                      ("LIB_NISTCURVES_TABLES", r"align\s*=\s*\$100"),
+                      ("LIB_NISTCURVES_TABLES", r"type\s*=\s*rw"),
+                      ("LIB_NISTCURVES_MUL_CODE", r"type\s*=\s*rw"),
+                      ("LIB_NISTCURVES_P256_CODE", r"type\s*=\s*rw"),
+                      ("LIB_NISTCURVES_P384_CODE", r"type\s*=\s*rw")):
+        line = re.search(rf"^\s*{seg}\s*:(.*)$", cfg_text, re.M)
+        if not line or not re.search(attr, line.group(1)):
+            failures.append(f"packaging: example cfg {seg} is missing `{attr}`")
+            print(f"  CFG FAIL: {seg} lacks the load-bearing attribute {attr}")
+    print("  cfg §4 load-bearing attributes OK (align/rw declared where they matter)")
+
+    # (4) + (5) drive the shipped header the way a consumer does.
+    full_mods = archives.get("nistcurves.a", [])
+    obj_paths = [BUILD / (mo + ".o") for mo in full_mods]
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+
+        arc, aout, lrc, lout = _header_link(td, LIBDIR, src_cfg, archive, [])
+        if arc != 0:
+            failures.append("header: the shipped .inc does not assemble")
+            print(f"  HEADER FAIL: plain include does not assemble:\n{aout}")
+            return
+        if lrc != 0:
+            failures.append("header: a consumer including the shipped .inc does not link")
+            print(f"  HEADER FAIL: plain include does not link vs nistcurves.a:\n{lout}")
+            return
+        print("  header OK (plain .include assembles and links against nistcurves.a)")
+
+        # (4) Guarded symbols: right value assembles AND links; wrong value
+        # assembles but MUST be rejected at link by the .else assert.
+        for sym in HEADER_GUARDED_SYMS:
+            real = od65_value(obj_paths, sym)
+            if real is None:
+                failures.append(f"header: guarded symbol {sym} is not exported by nistcurves.a")
+                print(f"  GUARD FAIL [{sym}]: not exported by the archive")
+                continue
+
+            arc, aout, lrc, lout = _header_link(
+                td, LIBDIR, src_cfg, archive, ["-D", f"{sym}={real}"])
+            if arc != 0:
+                failures.append(f"header: -D {sym}={real} does not assemble ({sym} import is not .ifndef-guarded)")
+                print(f"  GUARD FAIL [{sym}]: documented override does not assemble "
+                      f"-- expected the .ifndef guard, got:\n{aout.strip()}")
+                continue
+            if lrc != 0:
+                failures.append(f"header: -D {sym}={real} (the archive's own value) fails to link")
+                print(f"  GUARD FAIL [{sym}]: matching override rejected at link:\n{lout.strip()}")
+                continue
+
+            wrong = real ^ 1
+            arc, aout, lrc, lout = _header_link(
+                td, LIBDIR, src_cfg, archive, ["-D", f"{sym}={wrong}"])
+            if arc != 0:
+                failures.append(f"header: -D {sym}={wrong} does not assemble")
+                print(f"  GUARD FAIL [{sym}]: wrong override does not assemble:\n{aout.strip()}")
+                continue
+            if lrc == 0:
+                failures.append(f"header: -D {sym}={wrong} linked clean against an archive at {real} "
+                                "-- the .else assert is missing or does not compare against the archive")
+                print(f"  GUARD FAIL [{sym}]: wrong -D value linked clean -- the .else assert "
+                      "is missing or does not compare against the archive")
+                continue
+            if "override disagrees" not in lout:
+                failures.append(f"header: -D {sym}={wrong} failed at link, but not on the override assert")
+                print(f"  GUARD FAIL [{sym}]: link failed for some other reason:\n{lout.strip()}")
+                continue
+            print(f"  guard OK [{sym}] = {real}: matching -D links, {wrong} trips the .else assert")
+
+        # (5) Bare-import symbols: their defining TU assigns unconditionally,
+        # so §3 says the -D must collide loudly rather than be absorbed.
+        for sym in HEADER_BARE_SYMS:
+            arc, aout, _, _ = _header_link(td, LIBDIR, src_cfg, archive,
+                                           ["-D", f"{sym}=1"])
+            if arc == 0:
+                failures.append(f"header: -D {sym}=1 assembled -- a derived equate's import "
+                                "must stay bare so the override collides")
+                print(f"  BARE FAIL [{sym}]: -D absorbed by a guard; §3 requires a bare import here")
+            elif "already defined" not in aout:
+                failures.append(f"header: -D {sym}=1 failed to assemble for the wrong reason")
+                print(f"  BARE FAIL [{sym}]: assemble failed, but not on redefinition:\n{aout.strip()}")
+            else:
+                print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
+
+
 def defines_staleness_check(failures):
     """§6.3 looks-reachable rule, staleness shape (SPEC v0.10.5): a make
     re-invocation with a changed CONTRACT_*DEFINES value must rebuild --
@@ -1109,6 +1347,7 @@ def main():
     zp_alias_audit(failures)
     gated_surface_check(failures)
     app_owned_reachability_check(failures)
+    packaging_check(failures, archives)
 
     for name in sorted(KNOWN_EXTERNAL):
         allow = KNOWN_EXTERNAL[name]

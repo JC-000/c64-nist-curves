@@ -34,6 +34,14 @@
 # you add a new src/*.s file, add it both to MODULES (Makefile:19)
 # AND to the git-archive call below.
 #
+# SPEC v1.1.0 §6.1 file-list refresh: src/nistcurves.inc (the consumer-facing
+# header) and cfg/nistcurves-example.cfg (the example consumer linker config).
+# `make lib` copies both into build/lib/ alongside the archive, so an extracted
+# tarball that cannot see them produces a §6.1-nonconformant `make lib` --
+# and, unlike a missing .s, the failure is a `cp: No such file` at package
+# time, not a build error. Neither belongs in Makefile MODULES: MODULES is the
+# ca65 compilation-unit list, and these two are not translation units.
+#
 # Issue #81 file-list refresh: src/reu_mul_init.s (SPEC §8.2 reu_mul
 # provider moved out of src/main.s so the default-profile archives ship it).
 # Issue #130 file-list refresh: src/reu_dma_done.inc (SPEC v0.13.0 §8.2
@@ -79,6 +87,7 @@ git archive \
   --format=tar \
   "$TAG" \
   src/c64.cfg src/exports.inc \
+  src/nistcurves.inc cfg/nistcurves-example.cfg \
   src/constants.s src/zp_config.s \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
   src/precalc_manifest.s src/precalc_table.inc src/sqtab_base.inc \

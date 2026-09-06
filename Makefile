@@ -558,21 +558,55 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
                 $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
                 $(BUILD_DIR)/ecdsa384_msg.o
 
-lib:             $(LIB_DIR)/nistcurves.a
-lib-p256-comb:   $(LIB_DIR)/nistcurves-p256-comb.a
-lib-p256-comb-onchip: $(LIB_DIR)/nistcurves-p256-comb-onchip.a
-lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a
-lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a
-lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a
-lib-p384-curve:  $(LIB_DIR)/nistcurves-p384-curve.a
-lib-app-owned:           $(LIB_DIR)/nistcurves-app-owned.a
-lib-onchip:              $(LIB_DIR)/nistcurves-onchip.a
-lib-p256-verify-onchip:  $(LIB_DIR)/nistcurves-p256-verify-onchip.a
-lib-p384-verify-onchip:  $(LIB_DIR)/nistcurves-p384-verify-onchip.a
-lib-p384-curve-onchip:   $(LIB_DIR)/nistcurves-p384-curve-onchip.a
+# --- SPEC §6.1 consumer packaging --------------------------------------------
+# §6.1 (contract v1.1.0) requires `make lib` to produce the archive PLUS the
+# consumer-facing `.inc` header and an example `.cfg`. Both are checked-in
+# sources copied verbatim into build/lib/ -- they are not generated, so there
+# is exactly one canonical copy of each and no chance of the shipped artifact
+# drifting from the one in the tree:
+#
+#   build/lib/nistcurves.a                    the archive (per-variant name)
+#   build/lib/nistcurves.inc                  <- src/nistcurves.inc
+#   build/lib/cfg/nistcurves-example.cfg      <- cfg/nistcurves-example.cfg
+#
+# EVERY `lib*` target carries $(LIB_PACKAGING), not just `lib`: a consumer who
+# runs `make lib-p256-verify` gets an archive whose header and cfg they need
+# just as much, and the header's own variant switches (see src/nistcurves.inc
+# §1) are what make it usable against the minimal archives at all.
+#
+# `build/lib/cfg` gets its OWN order-only prerequisite rather than riding on
+# $(LIB_DIR): `mkdir -p $(LIB_DIR)` does not create the subdirectory, so a
+# rule that depends only on $(LIB_DIR) existing would die in `cp` the first
+# time it ran into a build/lib created by some other path.
+LIB_INC         = $(LIB_DIR)/nistcurves.inc
+LIB_CFG_DIR     = $(LIB_DIR)/cfg
+LIB_EXAMPLE_CFG = $(LIB_CFG_DIR)/nistcurves-example.cfg
+LIB_PACKAGING   = $(LIB_INC) $(LIB_EXAMPLE_CFG)
+
+lib:             $(LIB_DIR)/nistcurves.a $(LIB_PACKAGING)
+lib-p256-comb:   $(LIB_DIR)/nistcurves-p256-comb.a $(LIB_PACKAGING)
+lib-p256-comb-onchip: $(LIB_DIR)/nistcurves-p256-comb-onchip.a $(LIB_PACKAGING)
+lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a $(LIB_PACKAGING)
+lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a $(LIB_PACKAGING)
+lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a $(LIB_PACKAGING)
+lib-p384-curve:  $(LIB_DIR)/nistcurves-p384-curve.a $(LIB_PACKAGING)
+lib-app-owned:           $(LIB_DIR)/nistcurves-app-owned.a $(LIB_PACKAGING)
+lib-onchip:              $(LIB_DIR)/nistcurves-onchip.a $(LIB_PACKAGING)
+lib-p256-verify-onchip:  $(LIB_DIR)/nistcurves-p256-verify-onchip.a $(LIB_PACKAGING)
+lib-p384-verify-onchip:  $(LIB_DIR)/nistcurves-p384-verify-onchip.a $(LIB_PACKAGING)
+lib-p384-curve-onchip:   $(LIB_DIR)/nistcurves-p384-curve-onchip.a $(LIB_PACKAGING)
 
 $(LIB_DIR):
 	mkdir -p $(LIB_DIR)
+
+$(LIB_CFG_DIR):
+	mkdir -p $(LIB_CFG_DIR)
+
+$(LIB_INC): $(SRC_DIR)/nistcurves.inc | $(LIB_DIR)
+	cp $< $@
+
+$(LIB_EXAMPLE_CFG): cfg/nistcurves-example.cfg | $(LIB_CFG_DIR)
+	cp $< $@
 
 # ar65 a <archive> <objs>... creates / appends; we rm -f first so each rebuild
 # starts from an empty archive (ar65 has no replace-all flag).

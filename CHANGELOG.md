@@ -12,6 +12,55 @@ contract).
 
 ## [Unreleased]
 
+### Added
+
+- **`make lib` now ships the consumer-facing header and an example
+  linker config alongside the archive** — the c64-lib-contract SPEC
+  v1.1.0 §6.1 MUST ("producing `build/lib/<shortname>.a` **plus the
+  consumer-facing `.inc` header and an example `.cfg`**"), which this
+  library did not meet: consumers were told to transcribe imports and a
+  `SEGMENTS{}` block out of prose in `API.md` §8. All twelve `make lib*`
+  targets now emit `build/lib/nistcurves.inc` (from `src/nistcurves.inc`)
+  and `build/lib/cfg/nistcurves-example.cfg` (from
+  `cfg/nistcurves-example.cfg`) next to the archive; both are checked-in
+  sources copied verbatim, so there is one canonical copy of each and a
+  stale copy in `build/lib` is a ratchet failure.
+
+  `cfg/nistcurves-example.cfg` maps all twenty `LIB_NISTCURVES_*`
+  segments and carries the SPEC §4 **load-bearing placement attribute
+  declarations** across from `src/c64.cfg` — `align = $100` on the two
+  table segments, `type = rw` (never `bss`) on the self-modified code
+  segments and the REU DMA landing pages, and the `$9C00..$9FFF` sqtab
+  window that is an equate rather than a segment and so is invisible to
+  ld65 — each stating the consequence, because a clean link is not
+  evidence: measured on ld65 V2.18 a dropped `align` and a zero-filled
+  `rw`→`bss` flip both link with no diagnostic at all.
+
+  `src/nistcurves.inc` implements the SPEC §3 header-import rule
+  per-symbol: an import is `.ifndef`-guarded **iff** its defining TU
+  guards the definition, and every such guard carries an `.else` branch
+  asserting the consumer's override against the archive's exported
+  value. A bare guard alone would convert a compile error into silent
+  divergence — a consumer at REU bank 5 linking clean against a bank-2
+  archive. Twelve equates are guarded (the five §3 REU placement knobs in
+  `src/reu_config.s`, the seven §5/§8.0 manifest equates in
+  `src/lib_manifest.s`); everything whose defining TU assigns
+  unconditionally — the §1 version equates, the §8.2 prefixed outputs,
+  the §8.4 precalc triples — keeps a bare import so a `-D` on it collides
+  loudly, which is the deliberate rejection §3 asks for. The `.else`
+  asserts compare against the library's exported symbol *of the same
+  name*, imported into a private `.scope`, so no duplicate "output alias"
+  export was added and the ABI surface is unchanged.
+
+  Pinned by a new leg in `make check-archives`, which drives the shipped
+  header the way a consumer does — the plain include, then each guarded
+  symbol at the archive's real value (must link) and at that value XOR 1
+  (must be rejected at link by the `.else`), plus the bare-import symbols
+  in the opposite direction — and checks that every segment `src/*.s`
+  emits is mapped by the example cfg with its load-bearing attributes
+  intact. `build/nist-curves.prg` is byte-identical (37483 B); no source
+  module changed.
+
 ## [0.12.0] — 2026-08-30
 
 ### Changed

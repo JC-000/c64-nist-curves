@@ -561,6 +561,45 @@ git commit -m "Bump c64-nist-curves to v0.9.1"
 Consumers should pin to a specific tag rather than tracking `master`
 or any wave branch — see §8.5 for the version-stability policy.
 
+#### 8.1.1 The shipped header and example cfg (SPEC §6.1)
+
+`make lib` — and every `make lib-*` variant target — produces three
+artifacts, not one:
+
+```text
+build/lib/nistcurves.a                  the archive (per-variant basename)
+build/lib/nistcurves.inc                consumer-facing header
+build/lib/cfg/nistcurves-example.cfg    example consumer linker config
+```
+
+**Use the header rather than transcribing imports out of the sections
+below.** `.include "nistcurves.inc"` gives you the §1 version equates,
+the §5 manifest equates, the §3 REU placement equates, the §8.2
+prefixed placement outputs, the §8.4 precalc enumeration and the public
+entry points, each annotated with the rule that governs it. Sections
+§5, §8.4 and §8.6 here remain the prose reference; the header is the
+machine-checkable copy, and `make check-archives` links it against
+every archive on every run so it cannot drift from reality.
+
+Two things the header needs from you:
+
+- **Tell it which archive you linked.** Twelve archives ship, with
+  different member sets, so define the matching switch (`-D
+  LIB_P256_VERIFY_ONLY`, `-D FP_ONCHIP_MUL`, …) before including it.
+  The full table is in the header's own preamble. Getting it wrong is
+  a link error naming the symbol, never a silent wrong build.
+- **Add `-D LIB_NO_BARE_EXPORTS=1` on both sides** if you compose two
+  or more c64-lib-contract libraries — to `make lib
+  CONTRACT_DEFINES=…` and to your own TUs. It gates the deprecated
+  unprefixed names symmetrically.
+
+`cfg/nistcurves-example.cfg` is a starting point for your own linker
+config, not a drop-in: adapt the memory map, keep the `SEGMENTS{}`
+block. Its inline comments are the normative SPEC §4 declarations of
+which placement attributes this library's correctness and timing
+depend on, and what breaks without them — a clean link is not evidence
+you got them right (see §8.3).
+
 ### 8.2 Building against the library
 
 The recommended consumer build pattern (added in v0.2.x via c64-lib-contract
