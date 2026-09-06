@@ -74,7 +74,7 @@ MODULES = main constants zp_config lib_version reu_config lib_manifest \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
-          data_shared data_p256 data_p256_invref data_p256_limlee \
+          data_shared data_reu_wait data_p256 data_p256_invref data_p256_limlee \
           data_p384 data_p384_limlee data_sha data_test
 
 CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
@@ -412,7 +412,8 @@ LIB_CORE_P384CURVE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
 # zero REU DMA code, API.md §8.4.2).
 LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/reu_mul_init.o \
-                $(BUILD_DIR)/data_shared.o
+                $(BUILD_DIR)/data_shared.o \
+                $(BUILD_DIR)/data_reu_wait.o
 
 # Per-curve verify object sets (core point ops only -- no comb).
 # The verify ARCHIVES take the ecdsa*_nocomb.o variants (-D ECDSA_NO_COMB,
@@ -504,7 +505,8 @@ LIB_CORE_APP_OWNED_OBJS = $(BUILD_DIR)/lib_version.o \
 # whole body is gated out, so the object would ship nothing.
 LIB_MUL_APP_OWNED_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8_appowned.o \
-                $(BUILD_DIR)/data_shared.o
+                $(BUILD_DIR)/data_shared.o \
+                $(BUILD_DIR)/data_reu_wait.o
 
 LIB_APP_OWNED_OBJS = $(LIB_CORE_APP_OWNED_OBJS) $(LIB_MUL_APP_OWNED_OBJS) \
                 $(LIB_P256_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa256.o \
@@ -538,7 +540,8 @@ LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/precalc_manifest_onchip.o \
                 $(BUILD_DIR)/zp_config.o
 LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
-                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o
+                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o \
+                $(BUILD_DIR)/data_reu_wait.o
 LIB_P256_VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/fp256_onchip.o $(BUILD_DIR)/mod256.o \
                 $(BUILD_DIR)/curve256.o $(BUILD_DIR)/points256_core.o \
                 $(BUILD_DIR)/data_p256.o $(BUILD_DIR)/ecdsa256_nocomb.o

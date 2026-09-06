@@ -1,0 +1,6 @@
+VICE PID=71837, port=6514; waiting for $02A7
+Init complete after 324.8s
+=== p384 ===
+[PASS] ecdsa-p384 :: baseline valid (hazmat key, manual k) (98.7s)
+[PASS] ecdsa-p384 :: malleable (r, n-s) must VERIFY (94.6s)
+[PASS] ecdsa-p384 :: r = n-1 (random) (97.0s)
