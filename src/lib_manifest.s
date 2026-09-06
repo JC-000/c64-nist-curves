@@ -334,7 +334,8 @@
     ; §6.6 (SPEC v0.10.0): MUST be >= the measured sum. 9000 was < the
     ; measured 9001 -- a round-to-tens artifact erring in the unsafe
     ; direction by one byte. Now the next 256-byte boundary above measured
-    ; (the §6.6 fleet convention), +2.4%, inside §5's ±5%.
+    ; (the §6.6 fleet convention), +2.4% -- inside the ±5% band §6.6 had,
+    ; which §5 never carried; see the retired-band note above.
     LIB_NISTCURVES_RESIDENT_BYTES = 9400
   .elseif .defined(LIB_P256_VERIFY_ONLY)
     LIB_NISTCURVES_RESIDENT_BYTES = 8800

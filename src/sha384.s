@@ -1009,3 +1009,66 @@ hi_7_tbl:
         .repeat 256, i
                 .byte (i << 1) & $ff
         .endrepeat
+
+; ---------------------------------------------------------------------------
+; Page-alignment invariants for the twelve rotate LUTs above.
+;
+; Classify by MECHANISM, not by looking for `.align`: a sweep for `.align`
+; directives finds nothing in this tree, because every aligned table here gets
+; its alignment from a cfg segment attribute or a consumer equate instead.
+; The four mechanisms and their guards:
+;
+;   segment `align = $100`   -> assert the RESOLVED address (`lderror`)
+;   consumer equate/knob     -> assert the base (`error`, assemble-time)
+;   absolute literal         -> no guard by default   (none in this tree)
+;   inherited from a
+;     neighbour's size       -> no guard by default   (THIS BLOCK, until now)
+;
+; Only lo_2_tbl is aligned by anything that says so -- the segment carries
+; `align = $100`. The other eleven are aligned *by derivation*: each table is
+; exactly 256 bytes and they are contiguous, so the location counter happens to
+; arrive on a page boundary each time. Nothing declared it, and the comment
+; above ("Tables live in TABLES (align=$100) so `lda lo_k_tbl,x` and
+; `ora hi_k_tbl,x` never page-cross") quietly assumed it for all twelve.
+;
+; That is what broke c64-x25519: a data-TU split moved the block preceding
+; their x38 reduction tables, those tables dropped off their page boundary, and
+; a secret-indexed `abs,y` read began crossing a page for some indices. Cycle
+; spread went 0 -> 83,342 and EVERY FUNCTIONAL TEST STAYED GREEN, because a
+; page-cross changes timing, not results. Their existing alignment asserts did
+; not fire either: the buffers that moved were still aligned; the neighbour
+; broke.
+;
+; This library has split data TUs three times across two releases --
+; data_reu_wait.s and data_mul_stage.s shipped in v0.13.0, zp_aliases.s and
+; mul_aliases.s here. All twelve are still aligned -- verified
+; from build/labels.txt at $6F00, $7000 ... $7A00 -- so nothing regressed.
+; These stop the NEXT split from silently undoing it. They emit no bytes.
+;
+; `lderror`, not `error`, and the keyword is not interchangeable: these
+; addresses are relocatable, so ca65 defers them to ld65 whatever is written.
+; Writing `error` here would produce a check that looks assemble-time and is
+; not. Compare src/mul_8x8.s's sqtab guard, which asserts a consumer equate --
+; an assemble-time constant -- and correctly uses `error`.
+;
+; A page-cross is a timing leak only if the index is secret. SHA-384 here
+; hashes public ECDSA verify input, so this is hygiene rather than a live
+; exposure -- but a consumer may hash a key, and the invariant costs nothing.
+;
+; Negative-tested: inserting one byte before lo_2_tbl fires
+;   ld65: Error: src/sha384.s(1062): lo_2_tbl must be page-aligned
+; (with -D LIB_SHARED_SQTAB_BASE=0xA000 for headroom, since at the default base
+; the image-overrun guard in main.s trips first -- only 150 bytes of slack).
+; ---------------------------------------------------------------------------
+.assert (lo_2_tbl & $00ff) = 0, lderror, "lo_2_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (hi_2_tbl & $00ff) = 0, lderror, "hi_2_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (lo_3_tbl & $00ff) = 0, lderror, "lo_3_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (hi_3_tbl & $00ff) = 0, lderror, "hi_3_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (lo_4_tbl & $00ff) = 0, lderror, "lo_4_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (hi_4_tbl & $00ff) = 0, lderror, "hi_4_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (lo_5_tbl & $00ff) = 0, lderror, "lo_5_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (hi_5_tbl & $00ff) = 0, lderror, "hi_5_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (lo_6_tbl & $00ff) = 0, lderror, "lo_6_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (hi_6_tbl & $00ff) = 0, lderror, "hi_6_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (lo_7_tbl & $00ff) = 0, lderror, "lo_7_tbl must be page-aligned (abs,x rotate LUT)"
+.assert (hi_7_tbl & $00ff) = 0, lderror, "hi_7_tbl must be page-aligned (abs,x rotate LUT)"

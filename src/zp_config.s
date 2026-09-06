@@ -21,9 +21,20 @@
 ;   fp_src1/fp_src2/fp_dst/fp_misc : four 2-byte pointers (8 bytes total)
 ;   fp_carry/fp_mul_i/fp_mul_j : three 1-byte scratch (3 bytes)
 ;   ec_scalar_ptr  : 2-byte pointer to the scalar currently being processed
-;   zp_tmp1/zp_tmp2  : two 1-byte temps
-;   zp_ptr1/zp_ptr2  : two 2-byte general-purpose pointers (4 bytes)
+;   nistcurves_zp_tmp1/nistcurves_zp_tmp2  : two 1-byte temps
+;   nistcurves_zp_ptr1/nistcurves_zp_ptr2  : two 2-byte general-purpose
+;                                            pointers (4 bytes)
 ;   sha_src/sha_len/sha_w_ptr/sha_w_ptr2 : four 2-byte pointers (8 bytes)
+;
+; The deprecated bare `zp_tmp1` / `zp_tmp2` / `zp_ptr1` / `zp_ptr2` aliases
+; of the four general-purpose slots do NOT live here: SPEC 1.2.0 §6.1
+; (member isolation) forbids a displaceable name sharing a translation unit
+; with importable symbols that are not its own prefixed counterparts, and
+; sixteen of the slots below are exactly that. They moved to
+; `src/zp_aliases.s` -- still archived, so no §6.5 window is owed -- where
+; each is an `.importzp` of its canonical slot re-exported bare, and so
+; cannot drift from the address defined here. Issue #154, ruled upstream at
+; SPEC v1.2.2 (c64-lib-contract#188).
 ;
 ; Default layout below mirrors the historical c64-x25519 allocation and
 ; leaves the BASIC/KERNAL ZP regions free.
@@ -44,16 +55,6 @@
 .ifndef nistcurves_zp_ptr2
   nistcurves_zp_ptr2  = $fd                        ; 2-byte pointer
 .endif
-
-; Deprecated bare aliases of the four general-purpose slots (SPEC §2 ZP
-; registry, §6.5 rename window; lib-contract #83). Same addresses -- the
-; canonical nistcurves_zp_* names above are the definitions. The bare names
-; collide across libraries (x25519 exported the same trio until its v0.11.0),
-; so they are export-gated below and removed at the next MAJOR.
-zp_tmp1 = nistcurves_zp_tmp1
-zp_tmp2 = nistcurves_zp_tmp2
-zp_ptr1 = nistcurves_zp_ptr1
-zp_ptr2 = nistcurves_zp_ptr2
 
 ; --- Field arithmetic working variables (shared by P-256 and P-384) ---
 .ifndef fp_src1
@@ -119,8 +120,8 @@ zp_ptr2 = nistcurves_zp_ptr2
 ;   LIB_P256_VERIFY_ONLY / LIB_P384_VERIFY_ONLY -- the field/point layer
 ;     plus the ecdsa*_nocomb verifier: 9 slots, 15 bytes. Neither ships
 ;     sha384.o, nor the Lim-Lee comb objects -- which are the only
-;     archived users of zp_ptr1 (anchor copy in ec_precompute_*) and
-;     zp_tmp1/zp_tmp2 (sm384w_calc_reu_offset). The two switches stay
+;     archived users of nistcurves_zp_ptr1 (anchor copy in ec_precompute_*)
+;     and nistcurves_zp_tmp1/_tmp2 (sm384w_calc_reu_offset). The two switches stay
 ;     separate even though they select the same arm today: the two
 ;     curves' verify-only ZP need is not guaranteed to stay identical,
 ;     and splitting a shared switch retroactively would break every
@@ -131,7 +132,7 @@ zp_ptr2 = nistcurves_zp_ptr2
 ;   LIB_P256_COMB_ONLY (issue #117) -- the P-256 verify set plus the
 ;     Lim-Lee comb objects and the comb-fast ecdsa256.o: those 9 slots
 ;     plus nistcurves_zp_ptr1 (the anchor-copy pointer in
-;     ec_precompute_256): 10 slots, 17 bytes. NOT zp_tmp1/zp_tmp2 --
+;     ec_precompute_256): 10 slots, 17 bytes. NOT the two tmp slots --
 ;     measured via od65 --dump-imports, the only archived user of those
 ;     two is the P-384 comb's sm384w_calc_reu_offset, which this
 ;     P-256-only variant does not ship.
@@ -144,33 +145,28 @@ zp_ptr2 = nistcurves_zp_ptr2
 ; equates, cost nothing, and keep this file single-source. Only the
 ; export surface narrows, which is what a consumer's collision check
 ; and the §5 ZP_USAGE_BYTES equate are computed from.
+;
+; NO BARE `zp_*` NAME IS EXPORTED FROM THIS FILE (issue #154). The bare
+; aliases live in `src/zp_aliases.s`, whose arms mirror the ones below
+; one-for-one; keep the two in step when adding a variant. `.exportzp`ing
+; a bare name here would re-open the §6.1 defect: this member exports
+; sixteen importable slots, so a consumer importing `fp_src1` would pull
+; every bare name along with it.
 .ifdef LIB_SHA384_ONLY
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
 .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY)
   .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
   .exportzp ec_scalar_ptr, nistcurves_zp_ptr2
-  .ifndef LIB_NO_BARE_EXPORTS
-    .exportzp zp_ptr2
-  .endif
 .elseif .defined(LIB_P384_CURVE_ONLY)
   .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
   .exportzp ec_scalar_ptr, nistcurves_zp_ptr2
-  .ifndef LIB_NO_BARE_EXPORTS
-    .exportzp zp_ptr2
-  .endif
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2
 .elseif .defined(LIB_P256_COMB_ONLY)
   .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
   .exportzp ec_scalar_ptr, nistcurves_zp_ptr1, nistcurves_zp_ptr2
-  .ifndef LIB_NO_BARE_EXPORTS
-    .exportzp zp_ptr1, zp_ptr2
-  .endif
 .else
   .exportzp nistcurves_zp_tmp1, nistcurves_zp_tmp2
   .exportzp nistcurves_zp_ptr1, nistcurves_zp_ptr2
-  .ifndef LIB_NO_BARE_EXPORTS
-    .exportzp zp_tmp1, zp_tmp2, zp_ptr1, zp_ptr2
-  .endif
   .exportzp fp_src1, fp_src2, fp_dst, fp_misc, fp_carry, fp_mul_i, fp_mul_j
   .exportzp ec_scalar_ptr
   .exportzp sha_src, sha_len, sha_w_ptr, sha_w_ptr2

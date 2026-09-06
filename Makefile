@@ -69,12 +69,12 @@ CFG = $(SRC_DIR)/c64.cfg
 # minimal-archive build targets below can exclude buffers their use case
 # doesn't touch (Lim-Lee anchors, the other curve's state, SHA buffers,
 # test-driver scratch).
-MODULES = main constants zp_config lib_version reu_config lib_manifest \
+MODULES = main constants zp_config zp_aliases lib_version reu_config lib_manifest \
           precalc_manifest mul_8x8 reu_mul_init \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
-          data_shared data_reu_wait data_mul_stage data_p256 data_p256_invref data_p256_limlee \
+          data_shared data_reu_wait data_mul_stage mul_aliases data_p256 data_p256_invref data_p256_limlee \
           data_p384 data_p384_limlee data_sha data_test
 
 CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
@@ -83,7 +83,12 @@ ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 
 LIB_DIR = $(BUILD_DIR)/lib
 
-# --- §6.3 looks-reachable knob-staleness guard (SPEC v0.10.5) -----------------
+# --- knob-staleness guard (was SPEC §6.3, RETIRED at contract 1.0.0) ---------
+# §6.3 and §6.7 are cited by their tag below and resolve at
+# `git show v0.17.1:SPEC.md`; RETIRED.md asks adopters not to rewrite such
+# citations, and these are history, not live obligations. What survives is
+# §6.2's define-scoping rule -- and the artifact-flipped property itself, which
+# is now ours to keep rather than something the contract asks for.
 # CONTRACT_DEFINES / CONTRACT_ZP_DEFINES reach every TU's assembly flags, but
 # make cannot see a knob-VALUE change: a re-invocation with different defines
 # would reuse every stale object and exit 0 with an artifact other than the
@@ -276,7 +281,8 @@ bench-u64: $(PRG)
 # reu_config.o and are pulled in by LIB_MUL_OBJS below.
 LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/lib_manifest.o \
                 $(BUILD_DIR)/precalc_manifest.o \
-                $(BUILD_DIR)/zp_config.o
+                $(BUILD_DIR)/zp_config.o \
+                $(BUILD_DIR)/zp_aliases.o
 
 # SHA-only variant of the manifest pair (issue #88). The lib-p384-sha384
 # archive carries no field / point / multiply code, so the default-profile
@@ -302,10 +308,44 @@ $(BUILD_DIR)/zp_config.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
 $(BUILD_DIR)/zp_config_sha384.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
 	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
+# --- §6.1 bare-alias TU (issue #154) -----------------------------------------
+# src/zp_aliases.s carries the deprecated bare zp_tmp1/zp_tmp2/zp_ptr1/zp_ptr2
+# and nothing else, so a consumer importing fp_src1 no longer drags four
+# displaceable names in with the member. It ships in EVERY archive that ships
+# the matching zp_config*.o -- see the LIB_CORE_* lists below -- because a
+# name that vanished from an archive would owe a §6.5 deprecation window,
+# which a same-archive move does not.
+#
+# NOTE THE FLAG ASYMMETRY, and do not "fix" it: these recipes take
+# CONTRACT_DEFINES but NOT CONTRACT_ZP_DEFINES. zp_aliases.s DEFINES no slot;
+# it `.importzp`s each canonical nistcurves_zp_* name and re-exports it bare,
+# so a command-line `-D nistcurves_zp_ptr1=0x50` here would be
+# `Symbol 'nistcurves_zp_ptr1' is already defined` -- the same hard error the
+# CONTRACT_ZP_DEFINES comment at the top of this file documents for every
+# other importing TU. The override reaches zp_config.o alone and the alias
+# follows it through the link, which is what makes the two spellings
+# undriftable. The `zp-alias link identity` leg of tools/check_archives.py
+# drives an override through a real link to prove it.
+#
+# The default-arm object is built by the generic %.o pattern rule (which
+# already passes CONTRACT_DEFINES and not CONTRACT_ZP_DEFINES) -- exactly
+# right here, so it needs no rule of its own.
+$(BUILD_DIR)/zp_aliases_sha384.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/zp_aliases_p256verify.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/zp_aliases_p384verify.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/zp_aliases_p384curve.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+$(BUILD_DIR)/zp_aliases_p256comb.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+
 LIB_CORE_SHA384_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_sha384.o \
                 $(BUILD_DIR)/precalc_manifest_sha384.o \
-                $(BUILD_DIR)/zp_config_sha384.o
+                $(BUILD_DIR)/zp_config_sha384.o \
+                $(BUILD_DIR)/zp_aliases_sha384.o
 
 # Per-variant manifest triples (issue #90). The three minimal curve
 # archives previously inherited the whole-library ZP_USAGE_BYTES /
@@ -369,38 +409,46 @@ $(BUILD_DIR)/precalc_manifest_p256comb_onchip.o: $(SRC_DIR)/precalc_manifest.s |
 LIB_CORE_P256VERIFY_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p256verify.o \
                 $(BUILD_DIR)/precalc_manifest_p256verify.o \
-                $(BUILD_DIR)/zp_config_p256verify.o
+                $(BUILD_DIR)/zp_config_p256verify.o \
+                $(BUILD_DIR)/zp_aliases_p256verify.o
 LIB_CORE_P256VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p256verify_onchip.o \
                 $(BUILD_DIR)/precalc_manifest_p256verify_onchip.o \
-                $(BUILD_DIR)/zp_config_p256verify.o
+                $(BUILD_DIR)/zp_config_p256verify.o \
+                $(BUILD_DIR)/zp_aliases_p256verify.o
 
 LIB_CORE_P384VERIFY_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p384verify.o \
                 $(BUILD_DIR)/precalc_manifest_p384verify.o \
-                $(BUILD_DIR)/zp_config_p384verify.o
+                $(BUILD_DIR)/zp_config_p384verify.o \
+                $(BUILD_DIR)/zp_aliases_p384verify.o
 LIB_CORE_P384VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p384verify_onchip.o \
                 $(BUILD_DIR)/precalc_manifest_p384verify_onchip.o \
-                $(BUILD_DIR)/zp_config_p384verify.o
+                $(BUILD_DIR)/zp_config_p384verify.o \
+                $(BUILD_DIR)/zp_aliases_p384verify.o
 
 LIB_CORE_P256COMB_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p256comb.o \
                 $(BUILD_DIR)/precalc_manifest_p256comb.o \
-                $(BUILD_DIR)/zp_config_p256comb.o
+                $(BUILD_DIR)/zp_config_p256comb.o \
+                $(BUILD_DIR)/zp_aliases_p256comb.o
 LIB_CORE_P256COMB_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p256comb_onchip.o \
                 $(BUILD_DIR)/precalc_manifest_p256comb_onchip.o \
-                $(BUILD_DIR)/zp_config_p256comb.o
+                $(BUILD_DIR)/zp_config_p256comb.o \
+                $(BUILD_DIR)/zp_aliases_p256comb.o
 
 LIB_CORE_P384CURVE_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p384curve.o \
                 $(BUILD_DIR)/precalc_manifest_p384curve.o \
-                $(BUILD_DIR)/zp_config_p384curve.o
+                $(BUILD_DIR)/zp_config_p384curve.o \
+                $(BUILD_DIR)/zp_aliases_p384curve.o
 LIB_CORE_P384CURVE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p384curve_onchip.o \
                 $(BUILD_DIR)/precalc_manifest_p384curve_onchip.o \
-                $(BUILD_DIR)/zp_config_p384curve.o
+                $(BUILD_DIR)/zp_config_p384curve.o \
+                $(BUILD_DIR)/zp_aliases_p384curve.o
 
 # Field / multiply machinery (shared by every curve-using archive).
 # reu_mul_init.o is the SPEC §8.2 reu_mul provider (issue #81): default-
@@ -414,7 +462,8 @@ LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/reu_mul_init.o \
                 $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
-                $(BUILD_DIR)/data_mul_stage.o
+                $(BUILD_DIR)/data_mul_stage.o \
+                $(BUILD_DIR)/mul_aliases.o
 
 # Per-curve verify object sets (core point ops only -- no comb).
 # The verify ARCHIVES take the ecdsa*_nocomb.o variants (-D ECDSA_NO_COMB,
@@ -501,14 +550,16 @@ $(BUILD_DIR)/mul_8x8_appowned.o: $(SRC_DIR)/mul_8x8.s | $(BUILD_DIR)
 LIB_CORE_APP_OWNED_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_appowned.o \
                 $(BUILD_DIR)/precalc_manifest.o \
-                $(BUILD_DIR)/zp_config.o
+                $(BUILD_DIR)/zp_config.o \
+                $(BUILD_DIR)/zp_aliases.o
 # reu_mul_init.o is absent, not substituted: under SHARED_REU_MUL_INIT its
 # whole body is gated out, so the object would ship nothing.
 LIB_MUL_APP_OWNED_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8_appowned.o \
                 $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
-                $(BUILD_DIR)/data_mul_stage.o
+                $(BUILD_DIR)/data_mul_stage.o \
+                $(BUILD_DIR)/mul_aliases.o
 
 LIB_APP_OWNED_OBJS = $(LIB_CORE_APP_OWNED_OBJS) $(LIB_MUL_APP_OWNED_OBJS) \
                 $(LIB_P256_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa256.o \
@@ -540,11 +591,13 @@ $(BUILD_DIR)/precalc_manifest_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_
 LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_onchip.o \
                 $(BUILD_DIR)/precalc_manifest_onchip.o \
-                $(BUILD_DIR)/zp_config.o
+                $(BUILD_DIR)/zp_config.o \
+                $(BUILD_DIR)/zp_aliases.o
 LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
-                $(BUILD_DIR)/data_mul_stage.o
+                $(BUILD_DIR)/data_mul_stage.o \
+                $(BUILD_DIR)/mul_aliases.o
 LIB_P256_VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/fp256_onchip.o $(BUILD_DIR)/mod256.o \
                 $(BUILD_DIR)/curve256.o $(BUILD_DIR)/points256_core.o \
                 $(BUILD_DIR)/data_p256.o $(BUILD_DIR)/ecdsa256_nocomb.o
@@ -564,12 +617,21 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
                 $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
                 $(BUILD_DIR)/ecdsa384_msg.o
 
-# --- SPEC §6.1 consumer packaging --------------------------------------------
-# §6.1 (contract v1.1.0) requires `make lib` to produce the archive PLUS the
-# consumer-facing `.inc` header and an example `.cfg`. Both are checked-in
-# sources copied verbatim into build/lib/ -- they are not generated, so there
-# is exactly one canonical copy of each and no chance of the shipped artifact
-# drifting from the one in the tree:
+# --- Consumer packaging: a LOCAL CHOICE, not a contract requirement ----------
+# c64-lib-contract 1.0.0 briefly made §6.1 require `make lib` to produce the
+# archive PLUS a consumer-facing `.inc` header and an example `.cfg`. **v1.1.1
+# WITHDREW that** (contract#178) as an unannounced tightening the 1.0.0 text
+# cut had carried: it named neither a path nor a filename and failed §0's
+# scope rule on both prongs. Nobody owes these files, here or anywhere.
+#
+# We ship them anyway, as a local choice, because consumers were otherwise
+# transcribing imports and a SEGMENTS{} block out of API.md prose. What DOES
+# still bind is §3's header-import rule, which governs any header that exists
+# -- see src/nistcurves.inc.
+#
+# Both are checked-in sources copied verbatim into build/lib/ -- not generated,
+# so there is exactly one canonical copy of each and no chance of the shipped
+# artifact drifting from the one in the tree:
 #
 #   build/lib/nistcurves.a                    the archive (per-variant name)
 #   build/lib/nistcurves.inc                  <- src/nistcurves.inc

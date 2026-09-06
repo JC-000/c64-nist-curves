@@ -12,6 +12,98 @@ contract).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-06
+
+MINOR, and the settling release against the frozen c64-lib-contract **SPEC
+v1.2.2**. `LIB_NISTCURVES_ABI_VERSION` **3 → 4** — consumers with an ABI gate
+must update it.
+
+### Changed
+
+- **`reu_fetch_mul_row` now takes the row index in `A`, per SPEC §8.2 (issue
+  #153).** It previously ignored `A` and read `nistcurves_mul_cached_a`, while
+  §8.2 had documented `A = a` since the clause existed — so a consumer who
+  followed the contract got whatever row was last cached, for any value of `A`,
+  silently. `A` is now stored into that byte, so the cache and the row fetched
+  cannot disagree.
+
+  The fleet consequence was worse than the local one: c64-x25519, the other
+  §8.2 provider, diverged the same way and reads a byte with a **different**
+  name. §8.2 fetch deferral could not work between the two adopters at all —
+  both symbols resolved, the link was clean, and the fetch returned the
+  provider's last-cached row. Raised as contract#182 rather than fixed
+  one-sidedly; upstream ruled both providers implement `A`, with no ordering
+  between them.
+
+  **`LIB_NISTCURVES_ABI_VERSION` 3 → 4.** Ruled MINOR, not MAJOR: §7's "changed
+  calling conventions" bullet governs the *documented* convention, which §8.2
+  states identically before and after — what changed is our conformance to it —
+  and no consumer conforming to the documented contract can be broken, since
+  one passing `A` is broken today and this fixes them. The counter still moves
+  because a consumer who reverse-engineered the cached-byte behaviour **does**
+  break, and the counter is the gate that tells them to look.
+
+  **Action:** update any `.assert LIB_NISTCURVES_ABI_VERSION = 3`. If you call
+  `reu_fetch_mul_row` directly, pass the row index in `A`; if you relied on
+  presetting `nistcurves_mul_cached_a`, switch.
+
+- **§6.1 member isolation: the bare `zp_*` aliases move to their own archived
+  translation unit (issue #154, upstream contract#188, ruled at SPEC v1.2.2).**
+  `zp_config.o` exported the four displaceable `zp_*` names beside sixteen
+  importable `fp_*` / `ec_*` / `sha_*` slots, so a consumer importing `fp_src1`
+  pulled the member and collided with any sibling exporting the same four.
+  `src/zp_aliases.s` now holds them alone, across all six variant arms. No name,
+  value or archive changes, so no §6.5 window is owed.
+
+- **The bare `mul_dma_*` aliases likewise (`src/mul_aliases.s`).** They shared a
+  TU with `LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO`/`_HI` — §8.2 output equates a
+  consumer is told to import — which are not prefixed counterparts of anything
+  displaceable. Importing one pulled the member and its bare names, and against
+  c64-x25519 ld65 refused the link outright. Found by adversarial review.
+
+- **Onchip archives no longer export `reu_fetch_mul_row`.** Three of the twelve
+  published `SHARED_PRIMITIVES = $0005` (no reu_mul bit) while exporting the
+  canonical fetch, which §8.0 says counts as consuming it. A composed link then
+  failed on a duplicate external *while §8.0's own disjointness assert passed*,
+  because our mask disclaimed ownership.
+
+### Fixed
+
+- **The §8.2 hardware settle probe was silently broken by #153** and would have
+  reported ~100% corruption at every settle length — an instrument with no
+  discrimination, failing in the direction that looks like a finding. Its device
+  trampoline reached the fetch with `A = 2` while the host still selected rows
+  through the byte #153 overwrites. This is the only instrument for the 64 MHz
+  floor, and none of its three offline modes can see the fault because none runs
+  6502 code. `tools/bench_reu_mult.py` had the same miss.
+
+- Twelve `lderror` invariants pin the page alignment of the SHA-384 rotate LUTs.
+  Eleven of the twelve were aligned only *by derivation* — each table exactly
+  256 bytes and contiguous — while the block's own comment asserted the property
+  for all twelve. A sibling library measured a real constant-time regression
+  from exactly this shape: a data-TU split moved the neighbour, cycle spread
+  went 0 → 83,342, and every functional test stayed green.
+
+### Testing
+
+Eight check-archives legs added or repaired, each negative-tested at
+introduction with the observed output recorded in-file. Several existed but
+could not fail:
+
+- the §6.2 override leg proved **2 of 12** recipes while claiming to prove the
+  wiring; two real mis-wirings stayed green, one of them §6.2's named silent
+  runtime corruption;
+- `GATE_TUS` was a roster and had **already gone stale in this release** —
+  deriving it from source immediately found `mul_aliases`, added hours earlier,
+  which the gated-surface leg had never examined while printing a clean "0 bare
+  names";
+- `od65` drops symbols of length exactly 24 from whitespace-splitting
+  extractors, and the names it drops here are precisely the class a "0 bare
+  names" gate counts. A canary now exercises every comparison-feeding extractor
+  against a known-hard input;
+- the §5 footprint basis is now measured against a real link map rather than
+  argued, after a sibling found the same basis under-reporting by up to 295 B.
+
 ## [0.13.0] — 2026-09-06
 
 MINOR. `LIB_NISTCURVES_ABI_VERSION` **2 → 3**. Conformance baseline moves

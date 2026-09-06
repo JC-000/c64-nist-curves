@@ -68,12 +68,14 @@
 ; the canonical names carry this library's prefix. The bare names are
 ; same-address aliases, export-gated under -D LIB_NO_BARE_EXPORTS=1, and go at
 ; the next MAJOR.
+; The bare `mul_dma_lo`/`_hi` aliases used to live here. SPEC §6.1 forbids it:
+; this TU also exports LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO/_HI, which a
+; consumer imports to verify landing-page agreement and which are NOT prefixed
+; counterparts of the bare names. So importing one §8.2 output equate pulled
+; this member and its bare names, colliding with c64-x25519's identical
+; `mul_dma_lo`/`_hi`. They are in src/mul_aliases.s now; do not merge back.
 .export nistcurves_mul_dma_lo
 .export nistcurves_mul_dma_hi
-.ifndef LIB_NO_BARE_EXPORTS
-.export mul_dma_lo
-.export mul_dma_hi
-.endif
 
 .ifdef LIB_SHARED_REU_MUL_STAGE_LO
 nistcurves_mul_dma_lo = LIB_SHARED_REU_MUL_STAGE_LO
@@ -85,9 +87,6 @@ nistcurves_mul_dma_lo:
 nistcurves_mul_dma_hi:
         .res 256, 0           ; DMA target: hi bytes of a*b for current a
 .endif
-
-mul_dma_lo = nistcurves_mul_dma_lo
-mul_dma_hi = nistcurves_mul_dma_hi
 
 ; --- SPEC §8.2 prefixed OUTPUT counterparts ---
 ; The bare LIB_SHARED_REU_MUL_STAGE_* knobs are consumer INPUT and must not be

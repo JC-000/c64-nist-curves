@@ -332,9 +332,43 @@ ct_sign_mask:   .byte 0
 ; =============================================================================
 ; reu_fetch_mul_row - DMA a multiplication table row from REU to C64
 ;
-; Input: nistcurves_mul_cached_a = multiplier value (0-255)
-; Fetches 512 bytes: 256 lo bytes to nistcurves_mul_dma_lo, 256 hi bytes to nistcurves_mul_dma_hi
-; Clobbers: A
+; Input:  A = a, the row index (0-255).           <- SPEC §8.2, issue #153
+; Output: 512 bytes of row `a` at nistcurves_mul_dma_lo / _hi (256 each), i.e.
+;         at LIB_SHARED_REU_MUL_STAGE_LO / _HI.
+; Clobbers: A and all flags; nistcurves_mul_cached_a (see below); and, via
+;           `jsr nistcurves_reu_dma_wait`, nistcurves_reu_wait_cnt plus
+;           nistcurves_reu_dma_timeout on spin expiry.
+;
+; The entry convention is A, and that is a CHANGE. Through v0.13.0 this body
+; opened `lda nistcurves_mul_cached_a` and ignored A entirely, so the row index
+; arrived through a library-private byte while §8.2 had documented `A = a`
+; since the clause existed. A consumer who followed the contract and passed the
+; index in A got row `mul_cached_a` — whatever was last cached — for any value
+; of A, silently.
+;
+; Worse for the fleet: the other §8.2 provider (c64-x25519) diverged the same
+; way and reads a byte with a DIFFERENT name (`mul_cached_a`, `mul_` being its
+; registered §2 prefix). So §8.2 fetch deferral could not work between the two
+; adopters at all — a deferring build's callers wrote their byte, the
+; provider's fetch read its own, both symbols resolved, the link was clean, and
+; the fetch returned whatever row the provider last cached. Raised as
+; c64-lib-contract#182 rather than fixed one-sidedly, which would have moved
+; which side was wrong instead of fixing the pairing; upstream ruled both
+; providers implement A and neither waits for the other.
+;
+; A is stored into nistcurves_mul_cached_a rather than merely used, so the
+; cache and the row actually fetched cannot disagree. The inline fetch in
+; fp_mul / fp_sqr sets that byte and does not call here, so this keeps one
+; source of truth across both paths. Callers that relied on presetting the byte
+; and passing garbage in A must now pass the index in A.
+;
+; ABI: LIB_NISTCURVES_ABI_VERSION 3 -> 4. Ruled MINOR, not MAJOR: §7's
+; "changed calling convention" bullet governs the DOCUMENTED convention, which
+; §8.2 states identically before and after — what changed is our conformance to
+; it — and no consumer conforming to the documented contract can be broken,
+; since one passing A is broken today and this fixes them. The counter still
+; moves because a consumer who reverse-engineered the cached-byte behaviour
+; does break, and the counter is the gate that tells them to look.
 ; =============================================================================
 ; SPEC §8.2 fetch deferral (contract v0.9.1). SHARED_REU_MUL_INIT gates the
 ; init body only; the per-row fetch was exported unconditionally by both REU
@@ -348,12 +382,36 @@ ct_sign_mask:   .byte 0
 ; src/lib_manifest.s. Deferring init while still exporting the canonical fetch
 ; would make this build an owner of the fetch that is not an owner of the
 ; primitive, a state §8.0's three-state table has no row for.
+; FP_ONCHIP_MUL (issue #155-adjacent, found by adversarial review): the onchip
+; profile does not consume §8.2 at all -- lib_manifest_onchip.o publishes
+; LIB_NISTCURVES_SHARED_PRIMITIVES = $0005 with no reu_mul bit, and
+; LIB_NISTCURVES_REU_BANKS_USED = $04 or $00. But this object still EXPORTED
+; the canonical fetch, and §8.0 is explicit that "exporting a primitive's
+; canonical body or init counts as consuming it". So the mask disclaimed a
+; primitive the archive advertised, and the two disagreed in the direction that
+; breaks a composed link: a consumer importing only ct_mul_8x8, plus a sibling
+; exporting reu_fetch_mul_row, plus nistcurves-onchip.a gives
+;
+;   ld65: Error: Duplicate external identifier: 'reu_fetch_mul_row'
+;
+; while §8.0's own disjointness assert passes first, because our mask says we
+; do not own it. The contract's collision check green-lights a link ld65
+; rejects. Three of the twelve shipped archives were in that state, which also
+; made the §8.2 fetch deferral #153 argues for impossible against them.
+;
+; Nothing needs the body here: the onchip field layer generates rows via
+; og_common/ct_mul_8x8 and never DMAs a multiply row, and no ca65 source in
+; this tree calls the fetch at any profile.
+.if .defined(SHARED_REU_MUL_FETCH) .or .defined(FP_ONCHIP_MUL)
 .ifdef SHARED_REU_MUL_FETCH
 .import reu_fetch_mul_row
+.endif
 .else
 .export reu_fetch_mul_row
 reu_fetch_mul_row:
-        lda nistcurves_mul_cached_a
+        sta nistcurves_mul_cached_a  ; §8.2: A = a on entry; keep the cache in
+                                     ; sync so the row fetched and the row the
+                                     ; inline path believes is cached agree
         asl                    ; A = multiplier * 2, carry = bit 7
         sta reu_reu_hi
         lda #<LIB_NISTCURVES_REU_BANK_MUL

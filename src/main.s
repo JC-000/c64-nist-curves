@@ -69,7 +69,10 @@
 ; import against `define = yes` on MAIN in src/c64.cfg. Remove that cfg
 ; attribute and the link fails loudly (verified, exit 1, no output file);
 ; make the import optional instead and the collision goes back to silent.
-.include "sqtab_base.inc"   ; source-level base (SPEC v0.10.2 §6.7: the
+.include "sqtab_base.inc"   ; source-level base. §6.7 was RETIRED at contract
+                            ; 1.0.0 -- the reasoning below is why WE keep the
+                            ; guard, not an obligation anyone owes; the §8.1
+                            ; half of it is live. (SPEC v0.10.2 §6.7: the
                             ; guard MUST NOT import the base -- §8.1 forbids
                             ; exporting it, and our previous form imported
                             ; sqtab_lo, a gated window export whose removal

@@ -567,6 +567,7 @@ def build_trampoline(labels) -> bytes:
             f"${SHIM_ADDR >> 8:02X}xx — the single-byte hijack at "
             f"${main_loop + 1:04X} assumes it is")
     mdl, mdh = labels["nistcurves_mul_dma_lo"], labels["nistcurves_mul_dma_hi"]
+    cached_a = labels["nistcurves_mul_cached_a"]
     a = Asm(TRAMPOLINE_ADDR)
 
     def latch():
@@ -579,6 +580,17 @@ def build_trampoline(labels) -> bytes:
         a.abs(STA_ABS, REU_LEN_LO)
         a.abs(STA_ABS, REU_ADDR_CTRL)
         a.imm(LDA_IMM, 2); a.abs(STA_ABS, REU_LEN_HI)      # length = 512
+        # SPEC §8.2 / issue #153: reu_fetch_mul_row takes the row index in A.
+        # It used to ignore A and read nistcurves_mul_cached_a itself, so this
+        # trampoline reached the jsr with whatever latch() left in A -- which
+        # is 2, from the store above. After #153 that would have fetched row 2
+        # for every cell, and because the probe compares each fetch against
+        # expected_row(a), EVERY settle length would report ~100% corruption:
+        # an instrument with no discrimination, failing in the direction that
+        # looks like a finding. The host still selects the row by writing
+        # nistcurves_mul_cached_a, so load A from it here, last, immediately
+        # before the call.
+        a.abs(LDA_ABS, cached_a)
 
     def snapshot(tag):
         """6502-side copy of both landing pages into SNAP_LO/SNAP_HI, as tight
@@ -1518,6 +1530,7 @@ def self_test() -> int:
                "nistcurves_reu_dma_wait": 0x0A74,
                "nistcurves_mul_dma_lo": 0x7A00,
                "nistcurves_mul_dma_hi": 0x7B00,
+               "nistcurves_mul_cached_a": 0x7D00,
                "bench_start": 0x087C, "bench_stop": 0x0887,
                "fp_sqr": 0x1234})
     try:

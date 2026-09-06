@@ -67,7 +67,7 @@
 ; what makes these importable alongside a sibling library's manifest.
 ; -----------------------------------------------------------------------------
 LIB_NISTCURVES_VERSION_MAJOR = 0
-LIB_NISTCURVES_VERSION_MINOR = 13
+LIB_NISTCURVES_VERSION_MINOR = 14
 LIB_NISTCURVES_VERSION_PATCH = 0
 ; 2 -> 3 (issue #148). `ec_scalar_mul` / `ec_scalar_mul_384` documented no
 ; carry and now return one: C=1 with a zeroed output when the evaluation ends
@@ -83,7 +83,7 @@ LIB_NISTCURVES_VERSION_PATCH = 0
 ; source is never in a state where the surface has changed and the counter
 ; says otherwise -- check-archives pins the counter against the source, so it
 ; would validate a stale value against itself and pass.
-LIB_NISTCURVES_ABI_VERSION   = 3
+LIB_NISTCURVES_ABI_VERSION   = 4
 
 .export LIB_NISTCURVES_VERSION_MAJOR:abs
 .export LIB_NISTCURVES_VERSION_MINOR:abs
