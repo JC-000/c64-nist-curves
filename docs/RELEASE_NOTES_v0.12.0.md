@@ -4,6 +4,25 @@
 **Tarball:** `c64-nist-curves-v0.12.0.tar.gz` (269,692 bytes)
 **SHA256:** `4d635e1f193db429d481a9d14ab1a0f8a7f7ce062ad633293a0d79f76f6c799c`
 
+> **Erratum (issue #147).** The two values above are the authoritative pair,
+> verified against the published release asset, and they match the GitHub
+> Release body. **The copy of this file at the `v0.12.0` tag carries the stale
+> pre-#145 pair** (`265,893` bytes,
+> `bf6921d5…`): the re-cut executed the re-tag and publish steps but not the
+> rebuild-and-re-derive step, and a wrong hash is the one value in a release
+> document whose wrongness is invisible to a reader. The published tarball is
+> correct — only the tag's copy of these notes is not. The tag was left
+> unmoved deliberately; this fleet has twice declined to move a published tag,
+> and immutability beats a doc fix.
+>
+> The underlying defect is structural, not procedural: these notes ship
+> *inside* the tarball, so any hash they claim is computed over a document that
+> does not yet contain the claim and can never be correct. From **v0.13.0** the
+> hash lives in the `<tarball>.sha256` sidecar `make dist` writes, and
+> `make check-release-notes` keeps the claim out of the notes — so the
+> fill-in step cannot be dropped again, because there is no longer a step to
+> drop.
+
 MINOR release. Four new exported symbols (all additive),
 `LIB_NISTCURVES_ABI_VERSION` stays **2**, and the PRG grows 3 bytes
 (37480 → 37483; `18701274…` → `e070a554…`, ending the v0.10.0–v0.11.2

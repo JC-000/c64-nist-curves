@@ -12,8 +12,18 @@
 # Determinism: git archive is byte-deterministic for a given commit,
 # and `gzip -n` drops the gzip timestamp/filename header. The same tag
 # therefore always produces a byte-identical tarball. Re-running this
-# script must reproduce the SHA256 recorded in the matching
-# docs/RELEASE_NOTES_<tag>.md.
+# script must therefore reproduce the same SHA256 for the same tag.
+#
+# The hash is written to <tarball>.sha256 and NOT recorded in
+# docs/RELEASE_NOTES_<tag>.md. Those notes ship INSIDE the tarball, so
+# any hash they claim is self-referential and can never be correct --
+# v0.12.0 shipped a stale pair for exactly that reason (issue #147),
+# and the only value in the document whose wrongness is invisible to
+# inspection was the one that survived four rounds of review. The
+# sidecar is the artifact to publish in the GitHub Release body and to
+# hand anyone verifying a download; `make check-release-notes` keeps
+# the claim out of the notes so the fill-in step cannot be dropped
+# again, because there is no longer a step to drop.
 #
 # File list: the canonical v0.3.0+ vendoring set. `src/*.s` (canonical
 # ca65 sources only; legacy `.asm` ACME variants are excluded), the
@@ -104,6 +114,11 @@ git archive \
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 SHA=$(shasum -a 256 "$OUT" | cut -d' ' -f1)
 
+# Sidecar, in the standard `shasum -a 256 -c` format so a consumer can
+# verify with `shasum -a 256 -c <file>.sha256` rather than eyeballing.
+shasum -a 256 "$OUT" > "${OUT}.sha256"
+
 echo "Built ${OUT}"
 echo "  Size:   ${SIZE} bytes"
 echo "  SHA256: ${SHA}"
+echo "  Sidecar: ${OUT}.sha256  (publish as a release asset; paste into the Release body)"

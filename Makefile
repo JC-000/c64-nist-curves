@@ -650,6 +650,14 @@ check-archives: lib lib-app-owned lib-p256-verify lib-p384-verify lib-p384-sha38
 # Needs build/*.o for import resolution, hence the $(PRG) prerequisite.
 check-docs: $(PRG)
 	python3 tools/check_doc_snippets.py
+	python3 tools/check_release_notes.py
+
+# Issue #147: the release notes ship inside the tarball, so any hash they
+# claim about it is self-referential. Kept out by check-release-notes; the
+# real hash comes from the <tarball>.sha256 sidecar `make dist` writes.
+.PHONY: check-release-notes
+check-release-notes:
+	python3 tools/check_release_notes.py
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
