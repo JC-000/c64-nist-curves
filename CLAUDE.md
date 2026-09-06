@@ -684,7 +684,8 @@ keep all library calls on a single thread of control.
   issue #132 carry). The `ECDSA_NO_COMB` variants route `u1·G` through the
   variable-base ladder and never reach this path. Giving these entry points a
   defined carry where none was documented is a SPEC v1.1.0 §7 ABI-counter
-  event — `LIB_NISTCURVES_ABI_VERSION` is 3 as of this change, bumped in the
+  event — `LIB_NISTCURVES_ABI_VERSION` went to 3 at this change (it is 4 as of
+  issue #153), bumped in the
   commit that caused it (check-archives pins the counter against the source,
   so a deferred bump would validate a stale value against itself and pass).
   Contract: API.md §5.3 and the comb-table-integrity note below it.

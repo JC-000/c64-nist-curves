@@ -83,7 +83,7 @@ LIB_NISTCURVES_VERSION_PATCH = 0
 ; source is never in a state where the surface has changed and the counter
 ; says otherwise -- check-archives pins the counter against the source, so it
 ; would validate a stale value against itself and pass.
-LIB_NISTCURVES_ABI_VERSION   = 3
+LIB_NISTCURVES_ABI_VERSION   = 4
 
 .export LIB_NISTCURVES_VERSION_MAJOR:abs
 .export LIB_NISTCURVES_VERSION_MINOR:abs

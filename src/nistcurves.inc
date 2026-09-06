@@ -233,7 +233,7 @@ NISTCURVES_INC_INCLUDED = 1
 ; Gate your integration on the ABI counter, not on MAJOR — it is a generation
 ; counter for the exported surface and moves independently of the semantic
 ; version (§1/§7):
-;   .assert LIB_NISTCURVES_ABI_VERSION = 3, lderror, "c64-nist-curves exported surface changed; re-check the integration"
+;   .assert LIB_NISTCURVES_ABI_VERSION = 4, lderror, "c64-nist-curves exported surface changed; re-check the integration"
 .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
