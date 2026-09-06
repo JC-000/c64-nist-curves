@@ -8,63 +8,77 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v0.15.0** (verified clause-by-clause; the
-alignment baseline lives in the session memory's lib-contract-alignment-monitor
-note; v0.10.4–v0.10.6 are the #117/#123-driven clarifications — the comb
-targets discharge v0.10.4's member-set-axis obligation, the Makefile's
-knob-staleness stamp discharges v0.10.5's looks-reachable rule for
-`CONTRACT_DEFINES`/`CONTRACT_ZP_DEFINES`, and the §8.3 provider-surface
-import shape shipped in v0.11.1 satisfies v0.10.6. **v0.10.7 and v0.11.0
-are the c64-mlkem-intake pair and impose nothing on this library**:
-v0.10.7 registers the `mlkem_` ZP prefix — collision-free against our
-`fp_` / `ec_` / `sha_` / `nistcurves_` rows — and v0.11.0 adds two
-*zero-consumer* carve-outs (§6.5 member basenames born prefixed, §1 bare
-version exports not emitted at all). Both scope to libraries with no
-released consumers; c64-https pins our v0.11.2, so we stay on the MAJOR
-path — bare `LIB_VERSION_*` stay exported and gated, and the
-`nistcurves_`-prefixed member basenames remain a next-MAJOR obligation,
-not a now one. **v0.11.1** names which consequence §6.3's select-or-reject
-rule carries in which case, and puts this library on the *invalidation*
-branch — a knob value the build can honor must invalidate what it
-reconfigures, which is what the Makefile's knob stamp does; upstream
-records us as already on that branch. Its two stated guard properties
-(unchanged knobs must not rebuild; the check must assert the **artifact
-flipped**, not that something rebuilt) are both pinned by
-`make check-archives`, which since this alignment drives the real make
-flow six ways — three legs per knob axis — reading the built object's
-exported surface each time). **v0.12.0 / v0.12.1 / v0.14.0 are §13
-(network ABI) releases** — not adopted, nothing owed. **v0.13.0 §8.2 is
-adopted (issue #130)**: every REU execute site confirms `$DF00` bit 6 and
-observes a post-execute settle before the next REU register access —
-see the Known-issues entry and `src/reu_dma_done.inc`; the settle floor
-is bracketed at 48 MHz only, 64 MHz is open upstream. **v0.14.1** (PATCH,
-written against our #131) names `bit $DF00` a conformant capture form and
-asks that a *structurally* met settle be asserted, not described — the six
-hot sites now `REU_SETTLE_ASSERT_BYTES` their straight-line distance to the
-next REU register write against the 49-cycle floor (bytes ≤ cycles on any
-6502 path, so the byte distance is a conservative floor). **v0.14.2** is doc-only (§8.1's override examples shown `0x`-form,
-the §6.2 make-interface rule — we carried the same `$` trap in two
-examples, API.md §8.6.1 and this file's sqtab note; both now `0x`). **v0.15.0** adds the §8.4
-zero-consumer carve-out for the bare `LIB_PRECALC_<name>_*` triple; like
-v0.11.0's pair it scopes to libraries with no released consumers, so this
-library keeps emitting the bare triple (gated under `LIB_NO_BARE_EXPORTS`)
-through v0.x — nothing owed. That covers §1–§7 core (prefixed version equates with gated bare
-aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, REU symbol contract,
-§4 load-bearing cfg attribute declarations, per-archive §5 manifests with
-§6.6 safe-direction footprint values, the §6 build-and-consume chapter:
-`CONTRACT_DEFINES`/`CONTRACT_ZP_DEFINES` forwarding, twelve `make lib*` targets
-incl. the required `lib-app-owned`, the §6.5 name surface with bare forms
-export-gated under `-D LIB_NO_BARE_EXPORTS=1`, and the §6.7 sqtab-window link
-guard via `src/sqtab_base.inc`) and §8.0–§8.4 crypto (conditional
-ownership + consumes masks, deferral switches incl. the paired
-`SHARED_REU_MUL_INIT`/`_FETCH`, precalc catch-loop, shared sqtab / reu_mul /
-ct_mul_8x8). §13 (network ABI) is deliberately not adopted — no network
-surface. Consumer integration is a single `make lib-<variant>` + link; no
+— conformant through **SPEC v1.2.0**, verified clause-by-clause from built
+objects rather than from source comments (the alignment baseline lives in the
+session memory's lib-contract-alignment-monitor note).
+
+**The contract was cut by seven eighths at 1.0.0** — 40,737 words to ~5,300 —
+and that changes how to read this file. Sections §9, §12, §13, §14, §15 and
+sub-clauses §6.3, §6.6, §6.7 are **retired**. Surviving sections kept their
+numbers, so citations to them still resolve; citations to a retired one resolve
+at `git show v0.17.1:SPEC.md` and, per upstream's `RETIRED.md`, **stay valid at
+the tag they cite and do not need restating**. Do not rewrite older citations in
+this tree — that is churn with no reader benefit. The rule the document is now
+held to: a clause belongs in the contract only if it governs (1) a name, value
+or placement two independently-built artifacts must agree on, where (2) a
+violation is invisible from inside any single repository's own build. Both
+prongs. That test is worth applying before proposing anything upstream.
+
+What the cut cost us in practice — the 1.0.0 note that "a library conformant at
+v0.17.1 is conformant here without edits" is true of the text removal but not
+of the whole release, which also carried corrections. The v0.13.0 re-audit found
+and closed: §8.2's base-bank bound (`< $FE` → `< 31`; `1 .shl 32` exports 0, so
+the old bound let a consumer's bank-collision assert pass **falsely**), §8.1's
+canonical init (`mul_tables_init` was never exported although every non-SHA
+archive claimed §8.1 ownership), §8.2's staging-buffer knobs (now honoured for
+real — a consumer's `LIB_SHARED_REU_MUL_STAGE_LO/_HI` moves the buffers the code
+reads, not just an exported number), §8.4's enumeration (3072 B of SHA-384
+rotate LUTs were unlisted), and §5's published-bound SHOULD
+(`LIB_NISTCURVES_SHA384_UPDATE_MAX`).
+
+Three later releases matter here:
+- **1.1.0 §7** — the ABI counter moves on *what the code does*, not on whether
+  the export list changed: it moves when an entry point's return set gains a
+  value, holds when undocumented behaviour becomes documented. Such a change is
+  **not** thereby MAJOR and owes no deprecation cycle. `LIB_NISTCURVES_ABI_VERSION`
+  is **3** — issue #148 gave `ec_scalar_mul[_384]` a defined carry where none
+  was documented. Bump the counter in the commit that causes it: `check-archives`
+  pins it against the source, so a deferred bump validates a stale value against
+  itself and passes.
+- **1.1.1** — withdrew the §6.1 requirement that `make lib` also ship a `.inc`
+  header and an example `.cfg`. We ship both anyway (`src/nistcurves.inc`,
+  `cfg/nistcurves-example.cfg`) because consumers were otherwise transcribing
+  symbols out of API.md prose. Not owed — but §3's header-import rule binds any
+  header that exists, so every guarded `.import` carries an `.else` assert
+  against the library's exported value, both directions pinned by
+  `check-archives`.
+- **1.2.0 §6.1 member isolation** — a symbol a consumer may displace (gated
+  under `LIB_NO_BARE_EXPORTS`, or defined by the consumer under `APP_OWNED`)
+  must not share a translation unit with anything else a consumer may import or
+  the library's own code references. This library is recorded upstream as
+  already conformant: it is our issue #179, filed after the same defect cost
+  c64-https every shipped configuration on v0.12.0, and `src/data_reu_wait.s`
+  exists precisely to keep the §8.2 settle state out of the TU holding the
+  APP_OWNED multiply buffers. **Do not merge them back.**
+
+§13 (network ABI) was never adopted and is now retired outright. The remaining
+core is §1–§7 plus §8.0–§8.4 crypto: prefixed version equates with gated bare
+aliases, the §2 ZP prefix registry as `nistcurves_zp_*`, the §3 REU symbol
+contract, §4 load-bearing cfg attribute declarations, per-archive §5 manifests,
+the §6 build-and-consume chapter (`CONTRACT_DEFINES`/`CONTRACT_ZP_DEFINES`
+forwarding, twelve `make lib*` targets, the §6.5 name surface gated under
+`-D LIB_NO_BARE_EXPORTS=1`), and the §8 shared primitives (conditional ownership
+and consumes masks, deferral switches including the paired
+`SHARED_REU_MUL_INIT`/`_FETCH`, the precalc catch-loop, shared sqtab / reu_mul /
+ct_mul_8x8). Consumer integration is a single `make lib-<variant>` + link; no
 source patching. See `API.md` §8.2–§8.4 for the archive contract.
-Three standing gates keep this true: `make check-archives` (contract ratchet
-incl. §1 version identity, §4 placement, §5 value pins, gated surface),
-`make check-docs` (every doc snippet assembles), and PRG byte-identity when
-nothing should move.
+
+Standing gates keep this true: `make check-archives` (contract ratchet — §1
+version identity, §4 placement, the §5 footprint **measured** against each
+archive's real segment bytes, gated surface, §3 header guards, §6.1 member
+isolation, knob staleness asserting the *artifact* flipped), `make check-docs`
+(every doc snippet assembles, plus the release-notes self-reference check), and
+PRG byte-identity when nothing should move.
 
 Companion docs (read alongside this file):
 - `README.md` — user-facing overview, full benchmark tables, ECDSA ABI walkthrough.
@@ -252,7 +266,8 @@ archive contract.
 | ecdsa384.s | P-384 ECDSA verify (`ecdsa_verify_384`) + BE<->LE helper `fp_reverse48`. Non-constant-time (public-input-only). |
 | ecdsa384_msg.s | `ecdsa_verify_with_message_384` — one-shot SHA-384-then-verify wrapper. Factored out of ecdsa384.s so `lib-p384-verify` can exclude SHA; consumers that drive streaming SHA themselves don't need this object. |
 | sha384.s | SHA-384 streaming hash (FIPS 180-4 §6.4) — `sha384_init` / `sha384_update` / `sha384_final` + 48 B BE digest at `sha384_digest`. Self-contained (no REU DMA, no shared field/multiply scratch). Used by `ecdsa_verify_with_message_384`. |
-| data_shared.s | Cross-curve RW state: `nistcurves_reu_wait_cnt` (2 B spin/settle counter) + sticky `nistcurves_reu_dma_timeout` (issue #130), `nistcurves_mul_cached_a`, `nistcurves_mul_src2_buf`, page-aligned `nistcurves_mul_dma_lo` / `nistcurves_mul_dma_hi` DMA targets (§6.5 rename window — `mul_` is registered to c64-x25519 in the §2 registry; bare `mul_*` names remain as same-address aliases, export-gated under `-D LIB_NO_BARE_EXPORTS=1`, removed at next MAJOR). |
+| data_reu_wait.s | SPEC §8.2 DMA completion-confirm state alone: `nistcurves_reu_wait_cnt` (2 B spin/settle counter) + sticky `nistcurves_reu_dma_timeout`. Split out of data_shared.s by issue #149 and kept out by SPEC 1.2.0 §6.1 member isolation — this is library-private plumbing, the mul buffers next door are an APP_OWNED surface, and sharing one TU meant referencing the settle state pulled the member in and duplicated the consumer's own buffer definitions. That cost c64-https every shipped configuration on v0.12.0 (`ld65: Duplicate external identifier: 'nistcurves_mul_dma_hi'`). **Do not merge them back**; `make check-archives` links an APP_OWNED stand-in against three archives to keep it that way. |
+| data_shared.s | Cross-curve RW state: `nistcurves_mul_cached_a`, `nistcurves_mul_src2_buf`, page-aligned `nistcurves_mul_dma_lo` / `nistcurves_mul_dma_hi` DMA targets — which are also the §8.2 staging buffers, so a consumer's `LIB_SHARED_REU_MUL_STAGE_LO`/`_HI` relocates them here rather than merely renaming an exported number (§6.5 rename window — `mul_` is registered to c64-x25519 in the §2 registry; bare `mul_*` names remain as same-address aliases, export-gated under `-D LIB_NO_BARE_EXPORTS=1`, removed at next MAJOR). |
 | data_p256.s | P-256 field / point / ECDSA scratch (fp_*, ec_*, ecdsa_*) actually referenced on the verify path — trimmed to 1312 B by issue #54. |
 | data_p256_invref.s | `fp_tmp1`, the inv256.s (Fermat-reference) scratch. Rides with inv256.o: full archive + standalone PRG only, excluded from `lib-p256-verify`. |
 | data_p256_limlee.s | P-256 Lim-Lee anchor RAM (`ec_aff2g_256_x/y`, `ec_anchor{1..8}_x/y`, `cm_k`). Excluded from `lib-p256-verify`. |
@@ -261,6 +276,8 @@ archive contract.
 | data_sha.s | SHA-384 stream state (`sha_state`, `sha_w`, `sha_abcdefgh`, `sha_t`, `sha_scratch`, `sha_block_buf`, `sha_block_len`, `sha_total_len`, `sha384_digest`). |
 | data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`, and the `fp_tmp2..4` harness staging slots — no .s code references those; the Python tools poke operands there). Linked into the standalone PRG; excluded from every consumer archive. |
 | c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. Note `define = yes` on MAIN is load-bearing, not cosmetic: `src/main.s` imports `__MAIN_LAST__` and asserts with `lderror` that the image ends at or below `sqtab_lo`. Do not make that import conditional — an `lderror` assert whose operands are unresolvable degrades to a `Cannot evaluate assertion` warning, so the guard survives only because a missing external is itself a hard link error. Also carries the SPEC §4 **load-bearing cfg attribute declarations**: inline comments stating which placement attributes the library's correctness or timing depends on, and what breaks without them (`align = $100` on the two table segments; `type = rw`, i.e. never `bss`, on the self-modifying code segments and the REU DMA landing pages; plus the `$9C00..$9FFF` sqtab window that is an equate rather than a segment and so is invisible to ld65). Consumers author their own SEGMENTS{} block, so these are the contract — measured on ld65 V2.18, a dropped `align` and a zero-filled `rw`→`bss` flip both link with **no diagnostic at all**. |
+| nistcurves.inc | Consumer-facing header, copied to `build/lib/` by `make lib` and every `lib-*` target. **Not contract-required** — 1.0.0 briefly demanded it, 1.1.1 withdrew that — but shipped because consumers were otherwise transcribing symbols out of API.md prose. SPEC §3 binds any header that exists: every `.import` of an equate whose defining TU guards its definition is `.ifndef`-guarded **and** paired with an `.else` asserting the override against the library's exported value, since a bare guard turns a compile error into silent divergence. `check-archives` links all twelve guarded rows both ways. |
+| ../cfg/nistcurves-example.cfg | Example consumer linker config: every `LIB_NISTCURVES_*` segment, `optional = yes` so any archive subset places, carrying the §4 load-bearing placement declarations across from `c64.cfg` with their consequences. |
 | exports.inc | Cross-module .import/.export dependency map |
 | nistcurves.inc | **Consumer-facing header** (SPEC §6.1). Not included by any library TU — `make lib*` copies it to `build/lib/nistcurves.inc` for downstream projects to `.include`. Publishes the §1 version equates, §5 manifest equates, §3 REU placement equates, §8.2 prefixed placement outputs, §8.4 precalc triples and the public entry points, gated by the same variant switches (`LIB_P256_VERIFY_ONLY`, `FP_ONCHIP_MUL`, the `SHARED_*` deferral set, …) that `lib_manifest.s` / `precalc_manifest.s` use, so it resolves against all twelve archives. **The §3 guard rule is per-symbol and load-bearing:** an import is `.ifndef`-guarded iff its defining TU guards the definition, and every such guard carries an `.else` asserting the consumer's `-D` against the archive's exported value — a bare guard alone turns a compile error into silent divergence. The `.else` imports the same-named export into a private `.scope` and compares across the boundary (`NISTCURVES_PIN_OVERRIDE`), so no duplicate "output alias" export exists to keep in sync. Symbols whose defining TU assigns unconditionally keep a **bare** import on purpose, so a `-D` on them collides loudly. Pinned by the `§6.1 consumer packaging + §3 header guards` leg of `make check-archives`, which drives every guarded symbol at the archive's real value and at value XOR 1. |
 | *(repo root)* `cfg/nistcurves-example.cfg` | **Example consumer linker config** (SPEC §6.1/§4). Copied by `make lib*` to `build/lib/cfg/`. Maps all twenty `LIB_NISTCURVES_*` segments and restates the load-bearing placement attributes from `src/c64.cfg` with their consequences, because that is the file consumers actually copy. Not the library's own build — `src/c64.cfg` stays canonical for `make`. |
