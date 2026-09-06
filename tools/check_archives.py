@@ -839,7 +839,7 @@ def bare_gated(names):
 # it must export no bare name in either configuration -- is asserted by
 # zp_alias_audit() below, which has the populated-dump sentinel that makes an
 # absence assertion mean something.
-GATE_TUS = ["zp_aliases", "data_shared", "mul_8x8", "lib_version",
+GATE_TUS = ["zp_aliases", "mul_aliases", "data_shared", "mul_8x8", "lib_version",
             "precalc_manifest"]
 
 
@@ -1667,6 +1667,69 @@ def packaging_check(failures, archives):
                 print(f"  BARE FAIL [{sym}]: assemble failed, but not on redefinition:\n{aout.strip()}")
             else:
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
+
+
+def gate_tus_derivation_check(failures):
+    """GATE_TUS is a roster. Derive the same set from the sources and compare.
+
+    The gated-surface leg's pass condition is literally "0 bare names", and a
+    count of zero passes when the input is empty: nothing distinguishes "looked
+    and found none" from "looked at nothing". This repo has already produced
+    two independent ways that leg could report zero falsely -- an extraction
+    dropping exactly the bare LIB_PRECALC_* names, and BARE_GATED listing none
+    of them. A roster that never grew is the third, and it is upstream of the
+    sentinel: if GATE_TUS omits a TU, the leg never looks at it and still
+    prints a clean zero.
+
+    So derive: assemble every src/*.s twice, once ungated and once with
+    LIB_NO_BARE_EXPORTS, and any TU whose export set SHRINKS owns a displaceable
+    name by construction. That set must equal GATE_TUS exactly. A TU that
+    starts owning one is then covered automatically, and one that stops is
+    flagged rather than sitting in the roster proving nothing."""
+    import tempfile
+    print("\n=== GATE_TUS derived from source (roster vs reality) ===")
+    srcs = sorted((REPO / "src").glob("*.s"))
+    if not srcs:
+        failures.append("gate-tus: no sources found -- derivation is vacuous")
+        print("  DERIVE FAIL: no src/*.s")
+        return
+    derived, unreadable = set(), []
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        for src in srcs:
+            tu = src.stem
+            ung, gat = td / f"{tu}_u.o", td / f"{tu}_g.o"
+            r1, _ = sh(["ca65", "--cpu", "6502", "-I", "src", "-o", str(ung), str(src)])
+            r2, _ = sh(["ca65", "--cpu", "6502", "-I", "src", "-D",
+                        "LIB_NO_BARE_EXPORTS=1", "-o", str(gat), str(src)])
+            if r1 or r2:
+                unreadable.append(tu)
+                continue
+            a, b = od65_export_names(ung), od65_export_names(gat)
+            if a is None or b is None or a is COUNT_MISMATCH or b is COUNT_MISMATCH:
+                unreadable.append(tu)
+                continue
+            if a - b:
+                derived.add(tu)
+    if unreadable:
+        failures.append(f"gate-tus: could not derive from {sorted(unreadable)} -- "
+                        "an undecided TU is not a clean one")
+        print(f"  DERIVE FAIL: undecidable {sorted(unreadable)}")
+        return
+    roster = set(GATE_TUS)
+    missing, extra = sorted(derived - roster), sorted(roster - derived)
+    if missing:
+        failures.append(f"gate-tus: {missing} own a displaceable name but are "
+                        f"not in GATE_TUS -- the gated-surface leg never looks "
+                        f"at them and still prints a clean zero")
+        print(f"  DERIVE FAIL: unlisted owners {missing}")
+    if extra:
+        failures.append(f"gate-tus: {extra} are in GATE_TUS but own no "
+                        f"displaceable name; their gated result proves nothing")
+        print(f"  DERIVE FAIL: roster entries proving nothing {extra}")
+    if not (missing or extra):
+        print(f"  GATE_TUS OK ({len(derived)} TUs derived from source, roster "
+              f"matches exactly)")
 
 
 def zp_roster_reconciliation_check(failures):
@@ -2519,6 +2582,7 @@ def main():
     # Runs last by design: its knob-change legs wipe build/*.o via the
     # Makefile stamp, and the final default-build leg restores only the
     # object it exercises.
+    gate_tus_derivation_check(failures)
     zp_roster_reconciliation_check(failures)
     footprint_basis_check(failures)
     sibling_bare_collision_check(failures)
