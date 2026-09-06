@@ -1649,6 +1649,129 @@ def packaging_check(failures, archives):
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
 
 
+def footprint_basis_check(failures):
+    """The §5 measurement basis is od65 segment sums. Pin that it equals a real
+    link, because if it stops doing so the footprint leg understates SILENTLY.
+
+    c64-ChaCha20-Poly1305 found all five of their RESIDENT_BYTES under-reporting
+    a real link by 39-295 B, in §5's dangerous direction, from exactly this
+    basis: Sigma of what each MEMBER contributes excludes the fill ld65 inserts
+    when it PLACES them, and `od65 basis + fill = real link` held exactly across
+    ten of their rows.
+
+    Two kinds of fill, and only one of them is bounded by what we charge:
+
+      BETWEEN segments -- up to 255 bytes before each page-aligned segment.
+        Bounded, and measured_code_rodata() charges ALIGN_WORST_CASE per
+        aligned footprint segment for it.
+      WITHIN a segment -- if ld65 aligns each object's fragment. UNBOUNDED in
+        the number of contributing objects, and NOT charged. This is what bit
+        CCP, whose fill exceeded 255 and so cannot be a single inter-segment
+        gap.
+
+    We are clean today: no src file contains a source-level `.align`, and each
+    aligned segment takes contributions from one object, so od65 sums equal
+    placed sizes exactly. Measured over all 20 segments of a full link, delta
+    +0 on every one.
+
+    That is a property, not a guarantee -- adding one `.align` to a segment two
+    objects contribute to would introduce within-segment fill and make every
+    footprint figure quietly low again. So this links for real, reads the map,
+    and asserts the identity."""
+    import tempfile
+    print("\n=== §5 footprint basis (od65 sums == real placed sizes) ===")
+    # Assemble from source into a scratch dir rather than reading build/*.o:
+    # other legs in this file wipe the tree as a side effect, and a leg that
+    # silently measures whatever objects happen to survive is the ambient-state
+    # version of the vacuity problem. Deriving the module list from the
+    # Makefile also means a new src file cannot quietly escape the check.
+    mk = (REPO / "Makefile").read_text()
+    m = re.search(r"^MODULES\s*=\s*((?:.*\\\n)*.*)$", mk, re.M)
+    if not m:
+        failures.append("footprint basis: cannot parse MODULES from the Makefile")
+        print("  BASIS FAIL: MODULES unparsed")
+        return
+    modules = m.group(1).replace("\\\n", " ").split()
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        objs = []
+        for mod in modules:
+            src = REPO / "src" / f"{mod}.s"
+            obj = td / f"{mod}.o"
+            rc, out = sh(["ca65", "--cpu", "6502", "-I", "src", "-o", str(obj), str(src)])
+            if rc:
+                failures.append(f"footprint basis: {mod}.s does not assemble")
+                print(f"  BASIS FAIL: {mod}.s\n{out[:200]}")
+                return
+            objs.append(str(obj))
+        mp = td / "l.map"
+        rc, out = sh(["ld65", "-o", str(td / "o.prg"), "-C", "src/c64.cfg",
+                      "-m", str(mp), *objs])
+        if rc or not mp.exists():
+            failures.append("footprint basis: reference link failed")
+            print(f"  BASIS FAIL: link error\n{out[:300]}")
+            return
+        sums = {}
+        for o in objs:
+            for n, sz in _SEG_RE.findall(sh(["od65", "--dump-segments", o])[1]):
+                if int(sz):
+                    sums[n] = sums.get(n, 0) + int(sz)
+        mapping_lines = mp.read_text().splitlines()
+        placed = {}
+        for line in mapping_lines:
+            m = re.match(r"(LIB_\S+)\s+[0-9A-F]{6}\s+[0-9A-F]{6}\s+([0-9A-F]{6})",
+                         line.strip())
+            if m:
+                placed[m.group(1)] = int(m.group(2), 16)
+    if not placed:
+        failures.append("footprint basis: parsed no segments from the map -- "
+                        "the check is vacuous, not passing")
+        print("  BASIS FAIL: empty map parse")
+        return
+
+    # Second half: the charge must BOUND the real inter-segment fill, measured
+    # rather than argued. measured_code_rodata() adds ALIGN_WORST_CASE per
+    # aligned footprint segment on the reasoning that fill before a
+    # page-aligned segment cannot exceed 255. That reasoning is sound but it is
+    # reasoning; this measures the gap ld65 actually left.
+    starts = {}
+    for line in mapping_lines:
+        m = re.match(r"(LIB_\S+)\s+([0-9A-F]{6})\s+([0-9A-F]{6})\s+([0-9A-F]{6})",
+                     line.strip())
+        if m:
+            starts[m.group(1)] = (int(m.group(2), 16), int(m.group(3), 16))
+    real_fill = 0
+    for seg in FOOTPRINT_ALIGNED & set(starts):
+        if seg not in FOOTPRINT_SEGMENTS:
+            continue
+        st = starts[seg][0]
+        prev_end = max((e for n, (b, e) in starts.items()
+                        if e < st and n != seg), default=None)
+        if prev_end is not None:
+            real_fill += st - prev_end - 1
+    charged = ALIGN_WORST_CASE * len(
+        [x for x in FOOTPRINT_ALIGNED if x in FOOTPRINT_SEGMENTS and x in starts])
+    if real_fill > charged:
+        failures.append(
+            f"footprint basis: inter-segment fill measures {real_fill} B but "
+            f"only {charged} B is charged -- every §5 figure is low by the "
+            f"difference")
+        print(f"  BASIS FAIL: fill {real_fill} > charged {charged}")
+    else:
+        print(f"  fill charge OK (measured {real_fill} B inter-segment, "
+              f"{charged} B charged)")
+    bad = [(k, sums.get(k, 0), v) for k, v in sorted(placed.items())
+           if sums.get(k, 0) != v]
+    if bad:
+        for k, a, b in bad:
+            failures.append(f"footprint basis: {k} od65 sum {a} != placed {b} "
+                            f"(+{b - a} of fill the §5 measurement does not see)")
+            print(f"  BASIS FAIL [{k}]: od65 {a} vs placed {b} (+{b - a})")
+    else:
+        print(f"  basis OK ({len(placed)} segments, od65 sums == placed sizes, "
+              f"so the only fill is inter-segment and is charged)")
+
+
 def sibling_bare_collision_check(failures):
     """§6.1: importing a §8.2 output equate must not drag a bare `mul_` name in.
 
@@ -2298,6 +2421,7 @@ def main():
     # Runs last by design: its knob-change legs wipe build/*.o via the
     # Makefile stamp, and the final default-build leg restores only the
     # object it exercises.
+    footprint_basis_check(failures)
     sibling_bare_collision_check(failures)
     od65_extraction_canary(failures)
     app_owned_buffer_ownership_check(failures)
