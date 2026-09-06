@@ -70,18 +70,31 @@ nistcurves_reu_dma_timeout:
 
 ; --- REU DMA target buffers (page-aligned for LDA abs,Y without penalty) ---
 ; SHARED between P-256 and P-384 code paths - see re-entrancy note above.
-.segment "LIB_NISTCURVES_TABLES"
+;
+; SPEC §8.2 staging-buffer placement. These two pages ARE the §8.2 staging
+; buffers, so a consumer supplying LIB_SHARED_REU_MUL_STAGE_LO/_HI through
+; CONTRACT_DEFINES places them: the labels below become equates to the
+; consumer's addresses and this TU allocates nothing, so the override moves the
+; bytes the fetch writes and the bytes fp_mul/fp_sqr read -- not merely the
+; number reu_config.s exports. That distinction is what §8.2's "the exported
+; value MUST be the value the code reads" is about. Without the knobs (the
+; standalone and default-archive case) the library allocates them itself,
+; page-aligned via LIB_NISTCURVES_TABLES, exactly as it always has.
 .export nistcurves_mul_dma_lo
-.ifndef LIB_NO_BARE_EXPORTS
-.export mul_dma_lo
-.endif
-mul_dma_lo = nistcurves_mul_dma_lo
-nistcurves_mul_dma_lo:
-        .res 256, 0           ; DMA target: lo bytes of a*b for current a
 .export nistcurves_mul_dma_hi
 .ifndef LIB_NO_BARE_EXPORTS
+.export mul_dma_lo
 .export mul_dma_hi
 .endif
-mul_dma_hi = nistcurves_mul_dma_hi
+.ifdef LIB_SHARED_REU_MUL_STAGE_LO
+nistcurves_mul_dma_lo = LIB_SHARED_REU_MUL_STAGE_LO
+nistcurves_mul_dma_hi = LIB_SHARED_REU_MUL_STAGE_HI
+.else
+.segment "LIB_NISTCURVES_TABLES"
+nistcurves_mul_dma_lo:
+        .res 256, 0           ; DMA target: lo bytes of a*b for current a
 nistcurves_mul_dma_hi:
         .res 256, 0           ; DMA target: hi bytes of a*b for current a
+.endif
+mul_dma_lo = nistcurves_mul_dma_lo
+mul_dma_hi = nistcurves_mul_dma_hi

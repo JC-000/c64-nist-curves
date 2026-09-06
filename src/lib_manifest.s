@@ -707,6 +707,42 @@
 .endif
 
 
+; -----------------------------------------------------------------------------
+; Published input bound (SPEC §5, issue #141)
+; -----------------------------------------------------------------------------
+; §5: "Where a library's real input restriction is a bound a consumer must
+; respect [...] it SHOULD publish that bound here as a symbol the consumer can
+; reference [...] A consumer SHOULD reference the published symbol rather than
+; re-derive the value."
+;
+; `sha384_update` consumes `sha_len` bytes from `sha_src`, and `sha_len` is a
+; 16-bit ZP slot, so ONE call caps at 65535 bytes. Through v0.12.0 that ceiling
+; existed only in prose (API.md §5.4, CLAUDE.md) -- nothing a consumer could
+; `.assert` against, so a caller sizing a buffer had to re-derive the number
+; from the slot width and hope it had read the right row.
+;
+; This is the only bound in the library that fits an equate and was prose-only.
+; The others are already referenceable symbols by construction: the field and
+; group moduli are exported labels (`ec_p256`/`ec_n256`, `ec_p384`/`ec_n384`) --
+; a 256- or 384-bit bound cannot be a ca65 equate at all, which is the case §5
+; carves out -- and the operand widths are `FP256_SIZE`/`FP384_SIZE`.
+;
+; It is a per-CALL bound, not a stream bound: the stream is unbounded, because
+; a caller may chain any number of `sha384_update` calls. `sha_len = 0` is
+; legal and is a no-op (exercised by tools/test_prims_adversarial.py, including
+; repeated zero-length updates).
+;
+; Gated like the §8.4 sha384_k row: emitted only by the archives that actually
+; ship sha384.o, so per §6.4 no archive advertises a bound for an entry point
+; it does not contain.
+.if .not (.defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P256_COMB_ONLY))
+  .ifndef LIB_NISTCURVES_SHA384_UPDATE_MAX
+    LIB_NISTCURVES_SHA384_UPDATE_MAX = 65535
+  .endif
+  .export LIB_NISTCURVES_SHA384_UPDATE_MAX:abs
+.endif
+
+
 ; --- Exports ---
 ; Force absolute address-size on the exports: the integer-equate values
 ; can fit in zero-page so ca65 would otherwise tag them as `zeropage` and
