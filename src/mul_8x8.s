@@ -335,7 +335,9 @@ ct_sign_mask:   .byte 0
 ; Input:  A = a, the row index (0-255).           <- SPEC §8.2, issue #153
 ; Output: 512 bytes of row `a` at nistcurves_mul_dma_lo / _hi (256 each), i.e.
 ;         at LIB_SHARED_REU_MUL_STAGE_LO / _HI.
-; Clobbers: A, and nistcurves_mul_cached_a (see below).
+; Clobbers: A and all flags; nistcurves_mul_cached_a (see below); and, via
+;           `jsr nistcurves_reu_dma_wait`, nistcurves_reu_wait_cnt plus
+;           nistcurves_reu_dma_timeout on spin expiry.
 ;
 ; The entry convention is A, and that is a CHANGE. Through v0.13.0 this body
 ; opened `lda nistcurves_mul_cached_a` and ignored A entirely, so the row index

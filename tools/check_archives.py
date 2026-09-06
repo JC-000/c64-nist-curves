@@ -1842,7 +1842,7 @@ def sibling_bare_collision_check(failures):
 
 
 def od65_extraction_canary(failures):
-    """Pin the assumption every other leg here rests on: that we see every name
+    r"""Pin the assumption every other leg here rests on: that we see every name
     od65 prints.
 
     od65 emits the field as `printf("Name:%*s\"%s\"", 24 - Len, "", Name)`.
@@ -1873,6 +1873,7 @@ def od65_extraction_canary(failures):
         LIB_PRECALC_reu_mul_SIZE   exports  -> the gated-surface count
         LIB_PRECALC_sqtab_REGION   exports  -> the gated-surface count
         LIB_PRECALC_sqtab_SHARED   exports  -> the gated-surface count
+        bench_fp_mod_mul_n_tramp   exports  -> no leg (main.o, never archived)
 
     Both failures would be in the passing direction. Dropping the three code
     segments understates `measured`, so the footprint leg would certify figures
@@ -2204,14 +2205,34 @@ def defines_staleness_check(failures):
     # runtime. Nothing else in this file drives a real ZP override through the
     # Makefile's per-recipe flag wiring and out the other side of a link, so
     # this leg is what proves the wiring rather than the source intent.
+    # Drive EVERY arm, not just the default pair. The first version of this leg
+    # built only build/zp_config.o and build/zp_aliases.o, so ten of the twelve
+    # recipes were never given an override -- and two real mis-wirings stayed
+    # green: adding CONTRACT_ZP_DEFINES to a zp_aliases_* recipe (which makes
+    # the documented override fail to assemble, since that TU .importzp's the
+    # slot) and removing it from a zp_config_* recipe (which ships an archive
+    # whose members disagree about an address, links cleanly, fails at runtime
+    # -- §6.2's named silent failure). A leg that proves 2 of 12 recipes is
+    # evidence about 2 of 12 recipes.
     print("\n=== §6.2 ZP override reaches slot AND alias together (issue #154) ===")
+    for arm, (alias_obj, bare) in sorted(ZP_ALIAS_ARMS.items()):
+        if "zp_ptr2" not in bare:
+            print(f"  override SKIP [{arm}]: arm exports no bare zp_ptr2")
+            continue
+        _zp_override_probe(failures, arm, alias_obj)
+    print("  (each arm driven with a real -D through make, both spellings read "
+          "from an ld65 map)")
+
+
+def _zp_override_probe(failures, arm, alias_obj):
+    import tempfile
     for knob, want in ((["CONTRACT_ZP_DEFINES=-D nistcurves_zp_ptr2=0x60"], 0x60),
                        ([], 0xfd)):
-        rc, out = sh(["make", "-C", str(REPO), "build/zp_config.o",
-                      "build/zp_aliases.o", *knob])
+        rc, out = sh(["make", "-C", str(REPO), f"build/{arm}.o",
+                      f"build/{alias_obj}.o", *knob])
         if rc:
-            failures.append(f"zp-override: build failed with {knob or ['(default)']}")
-            print(f"  OVERRIDE FAIL: make failed for {knob or ['(default)']}:\n{out}")
+            failures.append(f"zp-override {arm}: build failed with {knob or ['(default)']}")
+            print(f"  OVERRIDE FAIL [{arm}]: make failed for {knob or ['(default)']}:\n{out}")
             return
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
@@ -2228,7 +2249,7 @@ def defines_staleness_check(failures):
                 return
             rc, out = sh(["ld65", "-C", str(td / "cfg"), "-Ln", str(td / "lbl"),
                           "-o", str(td / "o.prg"), str(td / "p.o"),
-                          str(BUILD / "zp_config.o"), str(BUILD / "zp_aliases.o")])
+                          str(BUILD / f"{arm}.o"), str(BUILD / f"{alias_obj}.o")])
             if rc:
                 failures.append(f"zp-override: link failed at {hex(want)}")
                 print(f"  OVERRIDE FAIL: link failed:\n{out}")
@@ -2239,7 +2260,7 @@ def defines_staleness_check(failures):
         got = (lbl.get("nistcurves_zp_ptr2"), lbl.get("zp_ptr2"))
         if got != (want, want):
             failures.append(
-                f"zp-override {knob or 'default'}: nistcurves_zp_ptr2="
+                f"zp-override {arm} {knob or 'default'}: nistcurves_zp_ptr2="
                 f"{got[0]!r}, zp_ptr2={got[1]!r}, want both {hex(want)}")
             print(f"  OVERRIDE FAIL: canonical={got[0]!r} alias={got[1]!r}, "
                   f"want both {hex(want)} -- the two spellings have drifted; "
@@ -2247,8 +2268,8 @@ def defines_staleness_check(failures):
                   "zp_aliases.o)")
             return
         label = knob[0].split("=", 1)[1] if knob else "default"
-        print(f"  override OK [{label}]: nistcurves_zp_ptr2 and zp_ptr2 both "
-              f"link at ${want:02x}")
+        print(f"  override OK [{arm}/{label}]: nistcurves_zp_ptr2 and zp_ptr2 "
+              f"both link at ${want:02x}")
 
 
 def main():

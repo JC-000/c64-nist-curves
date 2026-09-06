@@ -1039,8 +1039,9 @@ hi_7_tbl:
 ; not fire either: the buffers that moved were still aligned; the neighbour
 ; broke.
 ;
-; This library split data TUs three times in one release (data_reu_wait.s,
-; data_mul_stage.s, zp_aliases.s). All twelve are still aligned -- verified
+; This library has split data TUs three times across two releases --
+; data_reu_wait.s and data_mul_stage.s shipped in v0.13.0, zp_aliases.s and
+; mul_aliases.s here. All twelve are still aligned -- verified
 ; from build/labels.txt at $6F00, $7000 ... $7A00 -- so nothing regressed.
 ; These stop the NEXT split from silently undoing it. They emit no bytes.
 ;
@@ -1055,7 +1056,7 @@ hi_7_tbl:
 ; exposure -- but a consumer may hash a key, and the invariant costs nothing.
 ;
 ; Negative-tested: inserting one byte before lo_2_tbl fires
-;   ld65: Error: src/sha384.s(1044): lo_2_tbl must be page-aligned
+;   ld65: Error: src/sha384.s(1062): lo_2_tbl must be page-aligned
 ; (with -D LIB_SHARED_SQTAB_BASE=0xA000 for headroom, since at the default base
 ; the image-overrun guard in main.s trips first -- only 150 bytes of slack).
 ; ---------------------------------------------------------------------------
