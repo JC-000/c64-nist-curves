@@ -1729,6 +1729,36 @@ def od65_extraction_canary(failures):
                 failures.append(f"od65 canary: {objp.name} --dump-segments -- "
                                 f"_SEG_RE drops no-space name(s) {missed}")
                 print(f"  CANARY FAIL [{objp.name} segments]: dropped {missed}")
+    # Every OTHER extraction path, exercised against the same known-hard input.
+    # Reading a regex and concluding it is safe is the standard this file has
+    # been bitten by; a comparison check in particular does not fail loudly when
+    # its extractor breaks SYMMETRICALLY -- it agrees, wrongly, and in a ratchet
+    # it then bakes the omission into the recorded baseline. So every helper
+    # that feeds a comparison is called for real on a 24-character name.
+    probe_obj = BUILD / "precalc_manifest.o"
+    if probe_obj.exists():
+        HARD = "LIB_PRECALC_sqtab_REGION"          # exactly 24 characters
+        assert len(HARD) == 24, "probe symbol is no longer the hard case"
+        if od65_value([probe_obj], HARD) is None:
+            failures.append("od65 canary: od65_value() cannot read the "
+                            f"24-character {HARD} -- every §5 value pin and the "
+                            "manifest comparison runs through it")
+            print(f"  CANARY FAIL [od65_value]: {HARD} unreadable")
+        else:
+            print(f"  canary OK [od65_value] ({HARD})")
+        exp = od65_export_names(probe_obj)
+        if exp is None or HARD not in exp:
+            failures.append("od65 canary: od65_export_names() drops the "
+                            f"24-character {HARD} -- the gated-surface and "
+                            "zp-alias audits run through it")
+            print(f"  CANARY FAIL [od65_export_names]: {HARD} missing")
+        else:
+            print(f"  canary OK [od65_export_names] ({HARD})")
+    else:
+        failures.append("od65 canary: build/precalc_manifest.o absent, so the "
+                        "helper probes did not run")
+        print("  CANARY FAIL: probe object missing, helper paths unexercised")
+
     if seen == 0:
         # Not a pass. If nothing in the tree is 24 characters long any more, the
         # canary is no longer testing anything and should be told so rather
