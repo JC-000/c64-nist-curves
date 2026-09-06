@@ -69,7 +69,21 @@
 LIB_NISTCURVES_VERSION_MAJOR = 0
 LIB_NISTCURVES_VERSION_MINOR = 12
 LIB_NISTCURVES_VERSION_PATCH = 0
-LIB_NISTCURVES_ABI_VERSION   = 2
+; 2 -> 3 (issue #148). `ec_scalar_mul` / `ec_scalar_mul_384` documented no
+; carry and now return one: C=1 with a zeroed output when the evaluation ends
+; at infinity having seeded from a table slot. SPEC v1.1.0 §7 -- the counter
+; moves "when a consumer conforming to the previously documented contract can
+; be broken by the change [...] most often when an existing entry point's
+; actual return set gains a value, since exhaustive handling silently becomes
+; non-exhaustive". That is exactly this case, and it is the third time the
+; fleet has hit the clause. Per the same clause it is NOT thereby MAJOR and
+; owes no deprecation cycle: a return set has no side-by-side form.
+;
+; Bumped in the commit that causes it rather than at the release, so the
+; source is never in a state where the surface has changed and the counter
+; says otherwise -- check-archives pins the counter against the source, so it
+; would validate a stale value against itself and pass.
+LIB_NISTCURVES_ABI_VERSION   = 3
 
 .export LIB_NISTCURVES_VERSION_MAJOR:abs
 .export LIB_NISTCURVES_VERSION_MINOR:abs

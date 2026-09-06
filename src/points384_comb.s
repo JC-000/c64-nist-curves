@@ -670,7 +670,7 @@ ec_scalar_mul_384:
         iny
         cpy #144
         bne @cm384_bs_zero
-        sec                     ; C=1: comb table slot unusable
+        sec                     ; C=1: no usable result (see @cm384_check_z)
         rts
 
 @cm384_check_z:

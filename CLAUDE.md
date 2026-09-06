@@ -621,15 +621,33 @@ keep all library calls on a single thread of control.
   is never reduced between the DMA and the seed, so a byte test missed it by
   exactly one value; a slot equal to the negation of the accumulator collapses
   through `ec_point_add`'s `H = 0` branch with every `Y` non-zero; and a
-  timed-out DMA leaves the previous slot in `ec_p2`. All routes end at `Z = 0`,
-  so the post-condition closes the class the per-slot test could not. **Do not
-  "simplify" it back into a per-slot check.** Not covered by design: a corrupt
-  table yielding a wrong but non-zero point — that fails closed already.
+  timed-out DMA leaves the previous slot in `ec_p2`. A *persisting* collapse
+  from any of those routes lands on the same terminal test, which a per-slot
+  test could not do. **Do not "simplify" it back into a per-slot check.**
+  (`Z` cannot repeat the `Y = p` trap: unlike `Y` it never carries raw DMA
+  bytes — every path that writes it is a literal 1 or a reduced field op
+  landing in `[0,p)`.)
+  **Scope, precisely — the docs overclaimed this twice before review caught
+  it.** The guard covers collapse-to-infinity *that persists to the last
+  column*, which is what accidental corruption produces. It is not, and cannot
+  be, a defence against an adversary who writes the comb bank: a mid-loop
+  collapse is erased by `ec_point_add`'s P1-infinity re-seed (`Z := 1`), and an
+  attacker who picks the planted point needs no collapse at all — given `Q`
+  they can plant `T[1] = R' − (r·h⁻¹)·Q`, set `r = x(R') mod n`, `s = h`, and
+  reach `R'` with `Z ≠ 0` throughout. Anyone able to write bank 2 can write the
+  code that reads it, so that is outside the threat model; closing it would
+  need table *integrity*, not a result check. Do not restate this guard as
+  "verify fails closed on a corrupt table" — it fails closed on a *collapsed*
+  one.
   `ecdsa_verify_256/384` reject on C=1; `u1 = 0` still returns the infinity
-  encoding with C=0, which is correct. The `ECDSA_NO_COMB` variants route
-  `u1·G` through the variable-base ladder and never reach this path. Giving
-  these entry points a defined carry where none was documented is a SPEC
-  v1.1.0 §7 ABI-counter event — `LIB_NISTCURVES_ABI_VERSION` moved 2 → 3.
+  encoding with C=0, which is correct (so C=0 does **not** imply an
+  affine-convertible point — callers still need `ec_jacobian_to_affine`'s
+  issue #132 carry). The `ECDSA_NO_COMB` variants route `u1·G` through the
+  variable-base ladder and never reach this path. Giving these entry points a
+  defined carry where none was documented is a SPEC v1.1.0 §7 ABI-counter
+  event — `LIB_NISTCURVES_ABI_VERSION` is 3 as of this change, bumped in the
+  commit that caused it (check-archives pins the counter against the source,
+  so a deferred bump would validate a stale value against itself and pass).
   Contract: API.md §5.3 and the comb-table-integrity note below it.
 - **`fp_mod_inv` residue-class-0 guard / `ec_jacobian_to_affine` Z=0
   guard (issue #132, adversarial audit F-1 — FIXED).** The binary
