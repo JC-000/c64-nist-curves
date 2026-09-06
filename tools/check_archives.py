@@ -1305,6 +1305,87 @@ def packaging_check(failures, archives):
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
 
 
+def od65_extraction_canary(failures):
+    """Pin the assumption every other leg here rests on: that we see every name
+    od65 prints.
+
+    od65 pads the `Name:` field to a fixed column, and at a name length of
+    EXACTLY 24 characters the padding computes to zero, so the line is emitted
+    as `Name:"LIB_NISTCURVES_P256_CODE"` with no space at all. Anything that
+    splits on whitespace -- `awk '/Name:/{print $2}'`, or a regex with
+    `Name:\s+"` -- then yields an empty field and drops the symbol SILENTLY.
+
+    This is not hypothetical here and it is not harmless. Seven names in this
+    tree are exactly 24 characters, and they are precisely the ones the two
+    load-bearing legs read:
+
+        LIB_NISTCURVES_MAIN_CODE   segments -> the footprint measurement
+        LIB_NISTCURVES_P256_CODE   segments -> the footprint measurement
+        LIB_NISTCURVES_P384_CODE   segments -> the footprint measurement
+        LIB_PRECALC_reu_mul_SIZE   exports  -> the gated-surface count
+        LIB_PRECALC_sqtab_REGION   exports  -> the gated-surface count
+        LIB_PRECALC_sqtab_SHARED   exports  -> the gated-surface count
+
+    Both failures would be in the passing direction. Dropping the three code
+    segments understates `measured`, so the footprint leg would certify figures
+    that are too low -- the exact unsafe direction §5 exists to prevent, in the
+    check written to prevent it. Dropping the three bare names would let a leg
+    whose pass condition is "zero bare names" report success on an object
+    exporting three, with the prefixed counterparts still visible so the dump
+    looks plausible.
+
+    Our extractors use `\s*` (zero-or-more) and are verified immune. This leg
+    exists so they stay that way: it finds the no-space names by substring,
+    which cannot tokenise and so cannot be fooled, and asserts our real
+    extractors return each one.
+
+    Reported by c64-ChaCha20-Poly1305 via the contract session as needing
+    40-plus-character names, which is why they could not reproduce it -- a
+    47-character name is fine, only 24 is not."""
+    import glob
+    print("\n=== od65 extraction canary (name length 24 emits no space) ===")
+    seen = 0
+    dropped_any = False
+    for obj in sorted(glob.glob(str(BUILD / "*.o"))):
+        objp = Path(obj)
+        for mode in ("--dump-exports", "--dump-imports"):
+            raw = sh(["od65", mode, obj])[1]
+            # Substring, never tokenised: immune to the padding by construction.
+            nospace = set(re.findall(r'Name:"([^"]+)"', raw))
+            if not nospace:
+                continue
+            seen += len(nospace)
+            got = od65_names(objp, mode)
+            missed = sorted(nospace - got)
+            if missed:
+                dropped_any = True
+                failures.append(f"od65 canary: {objp.name} {mode} -- extractor "
+                                f"drops no-space name(s) {missed}")
+                print(f"  CANARY FAIL [{objp.name} {mode}]: dropped {missed}")
+        raw = sh(["od65", "--dump-segments", obj])[1]
+        nospace = set(re.findall(r'Name:"([^"]+)"', raw))
+        if nospace:
+            seen += len(nospace)
+            got = {n for n, _ in _SEG_RE.findall(raw)}
+            missed = sorted(nospace - got)
+            if missed:
+                dropped_any = True
+                failures.append(f"od65 canary: {objp.name} --dump-segments -- "
+                                f"_SEG_RE drops no-space name(s) {missed}")
+                print(f"  CANARY FAIL [{objp.name} segments]: dropped {missed}")
+    if seen == 0:
+        # Not a pass. If nothing in the tree is 24 characters long any more, the
+        # canary is no longer testing anything and should be told so rather
+        # than printing green -- that is the vacuous-evidence failure this file
+        # has been bitten by twice.
+        failures.append("od65 canary: no no-space names found at all -- the "
+                        "canary is now vacuous; re-check whether od65's padding "
+                        "changed before trusting any other leg's extraction")
+        print("  CANARY FAIL: nothing to test -- leg has gone vacuous")
+    elif not dropped_any:
+        print(f"  canary OK ({seen} no-space name occurrences, all extracted)")
+
+
 def app_owned_buffer_ownership_check(failures):
     """Issue #149: resolving the §8.2 settle state must not drag an APP_OWNED
     buffer definition into the link.
@@ -1702,6 +1783,7 @@ def main():
     # Runs last by design: its knob-change legs wipe build/*.o via the
     # Makefile stamp, and the final default-build leg restores only the
     # object it exercises.
+    od65_extraction_canary(failures)
     app_owned_buffer_ownership_check(failures)
     defines_staleness_check(failures)
 
