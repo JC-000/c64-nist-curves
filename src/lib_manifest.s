@@ -28,7 +28,7 @@
 ; checks compare them against ld65-published `__<MEMORY>_SIZE__` symbols
 ; (see c64-lib-contract SPEC §5 worked example).
 ;
-; The numbers are approximate -- within ±5% per SPEC §5. Refreshed at each
+; The numbers are approximate -- safe-direction per SPEC §5 (round up, never down). Refreshed at each
 ; release that substantively changes one of them. Build size as of this
 ; equate refresh: 37683 B PRG (build/nist-curves.prg, v0.7.0 / issue #66;
 ; unchanged by the issue #81 reu_mul_init move -- code reordered, no net
@@ -73,9 +73,23 @@
 ; gates above, REU truth here depends on BOTH axes (variant AND profile),
 ; so the new arm carries an inner FP_ONCHIP_MUL check rather than sitting
 ; flat alongside the profile arm; see the nested form below.
+; The bank equates come from the shared include so this mask can be COMPUTED
+; from the values the code reads, not restated as a literal. Through v0.12.0
+; every arm below was a hard-coded $07 / $04 / $03 / $00 and a source comment
+; told the consumer to override the mask by hand whenever they relocated a
+; bank. A consumer who did the first half and forgot the second got
+;
+;   $07 & $18 = 0   ->  §3's collision assert PASSES
+;
+; while both libraries DMA into the same banks. That is the same false-pass
+; the `< $FE` -> `< 31` bound fix closed one level down; this closes it where
+; consumers actually compose. `CONTRACT_DEFINES` reaches every TU (§6.2), so a
+; single -D now moves the code and the mask together.
+.include "reu_banks.inc"
+
 .ifndef LIB_NISTCURVES_REU_BANKS_USED
   .ifdef LIB_SHA384_ONLY
-    LIB_NISTCURVES_REU_BANKS_USED = $00
+    LIB_NISTCURVES_REU_BANKS_USED = 0
   .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
     ; None of the three minimal variants ship points256_comb.o /
     ; points384_comb.o (issue #90) -- they take the ECDSA_NO_COMB
@@ -85,9 +99,9 @@
     ; the DMA profile: all three share this logic, hence one combined arm
     ; rather than three near-duplicates.
     .if .defined(FP_ONCHIP_MUL)
-      LIB_NISTCURVES_REU_BANKS_USED = $00
+      LIB_NISTCURVES_REU_BANKS_USED = 0
     .else
-      LIB_NISTCURVES_REU_BANKS_USED = $03
+      LIB_NISTCURVES_REU_BANKS_USED = LIB_NISTCURVES_REU_MASK_MUL
     .endif
   .elseif .defined(LIB_P256_COMB_ONLY)
     ; Issue #117: the P-256 comb archives ship points256_comb.o, so bank
@@ -99,14 +113,14 @@
     ; REU truth is pinned by check-archives rather than inherited by
     ; fall-through.
     .if .defined(FP_ONCHIP_MUL)
-      LIB_NISTCURVES_REU_BANKS_USED = $04
+      LIB_NISTCURVES_REU_BANKS_USED = LIB_NISTCURVES_REU_MASK_COMB
     .else
-      LIB_NISTCURVES_REU_BANKS_USED = $07
+      LIB_NISTCURVES_REU_BANKS_USED = LIB_NISTCURVES_REU_MASK_MUL | LIB_NISTCURVES_REU_MASK_COMB
     .endif
   .elseif .defined(FP_ONCHIP_MUL)
-    LIB_NISTCURVES_REU_BANKS_USED = $04
+    LIB_NISTCURVES_REU_BANKS_USED = LIB_NISTCURVES_REU_MASK_COMB
   .else
-    LIB_NISTCURVES_REU_BANKS_USED = $07
+    LIB_NISTCURVES_REU_BANKS_USED = LIB_NISTCURVES_REU_MASK_MUL | LIB_NISTCURVES_REU_MASK_COMB
   .endif
 .endif
 
@@ -215,6 +229,16 @@
 
 
 ; -----------------------------------------------------------------------------
+; NOTE on the "±5%" this file's derivations keep citing: that band was SPEC
+; §6.6, RETIRED at contract 1.0.0. The surviving rule is §5's, and it is
+; one-sided: "Footprint equates MUST be safe-direction: round up, never down."
+; The ±5% references below are historical reasoning about how each figure was
+; chosen, not a live obligation -- do not treat a figure inside ±5% but BELOW
+; the measured value as conformant, because it is not. `make check-archives`
+; now measures each archive's real code+rodata (charging worst-case alignment
+; padding) and fails on any figure that understates; that is the binding check.
+; -----------------------------------------------------------------------------
+; -----------------------------------------------------------------------------
 ; Resident footprint (approx)
 ; -----------------------------------------------------------------------------
 ; Library code + rodata that MUST stay in CPU RAM at runtime to serve an
@@ -311,13 +335,13 @@
     ; measured 9001 -- a round-to-tens artifact erring in the unsafe
     ; direction by one byte. Now the next 256-byte boundary above measured
     ; (the §6.6 fleet convention), +2.4%, inside §5's ±5%.
-    LIB_NISTCURVES_RESIDENT_BYTES = 9216
+    LIB_NISTCURVES_RESIDENT_BYTES = 9400
   .elseif .defined(LIB_P256_VERIFY_ONLY)
     LIB_NISTCURVES_RESIDENT_BYTES = 8800
   .elseif .defined(LIB_P384_VERIFY_ONLY)
     LIB_NISTCURVES_RESIDENT_BYTES = 8450
   .elseif .defined(LIB_P384_CURVE_ONLY)
-    LIB_NISTCURVES_RESIDENT_BYTES = 17550
+    LIB_NISTCURVES_RESIDENT_BYTES = 17800
   .elseif .defined(LIB_P256_COMB_ONLY)
     ; Issue #117: od65 segment sums (code+rodata) over the archive
     ; members, minus the cold blocks itemized in the COLD arm below:
@@ -325,7 +349,7 @@
     ;   DMA arm    10036 total - 1045 cold = 8991 resident
     ;   onchip arm  9953 total -  859 cold = 9094 resident
     ;
-    ; The 103 B profile delta (1.1%) is inside SPEC §5's ±5% band, so
+    ; The 103 B profile delta (1.1%) is safe-direction per SPEC §5, so
     ; the variant shares one figure across both profiles like every
     ; other variant. §6.6: next 256-byte boundary above the larger
     ; measurement (9094) = 9216, margin +1.3% onchip / +2.5% DMA.
@@ -335,7 +359,7 @@
     ; 9216 still covers both (+0.6% onchip). Pinned by check-archives.
     LIB_NISTCURVES_RESIDENT_BYTES = 9300
   .else
-    LIB_NISTCURVES_RESIDENT_BYTES = 27200
+    LIB_NISTCURVES_RESIDENT_BYTES = 27400
   .endif
 .endif
 
@@ -371,7 +395,7 @@
 ; sum to. Through issue #90 this block also carried a seventh entry --
 ; 384 B of RFC 6979 self-test vectors in curve256.s (288) / curve384.s
 ; (96) -- which pushed the honest total to 2216 and made the declared
-; 1800 19% low, outside SPEC §5's ±5% band. Issue #91 deleted those
+; 1800 19% low, outside SPEC §5's safe-direction rule. Issue #91 deleted those
 ; vectors outright (nothing referenced them: zero importers across every
 ; built object, and the test suites take their vectors from the oracle
 ; and tools/vectors/, never from on-chip constants), so the seventh
@@ -462,7 +486,7 @@
   .elseif .defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P384_CURVE_ONLY)
     .if .defined(FP_ONCHIP_MUL)
       ; §6.6: MUST be >= measured (243). 240 was under by 3. The 256-byte
-      ; fleet convention would be +5.3% here, outside §5's ±5% band at this
+      ; fleet convention would be +5.3% here, not safe-direction under SPEC §5 at this
       ; size, so this value keeps fine granularity: >= measured, minimal
       ; headroom.
       LIB_NISTCURVES_COLD_BYTES = 250
@@ -482,7 +506,7 @@
     ; The 186 B reu_mul_init delta is 18% -- outside ±5% like every other
     ; variant's DMA/onchip cold split, so COLD stays keyed on variant AND
     ; profile. §6.6: the 256-boundary convention (1280 / 1024) would be
-    ; +22% / +19%, outside §5's ±5% band at this size, so these keep fine
+    ; +22% / +19%, not safe-direction under SPEC §5 at this size, so these keep fine
     ; granularity: >= measured, minimal headroom (same reasoning as the
     ; minimal variants' 250 figure).
     .if .defined(FP_ONCHIP_MUL)
@@ -736,9 +760,14 @@
 ; ship sha384.o, so per §6.4 no archive advertises a bound for an entry point
 ; it does not contain.
 .if .not (.defined(LIB_P256_VERIFY_ONLY) .or .defined(LIB_P384_VERIFY_ONLY) .or .defined(LIB_P256_COMB_ONLY))
-  .ifndef LIB_NISTCURVES_SHA384_UPDATE_MAX
-    LIB_NISTCURVES_SHA384_UPDATE_MAX = 65535
-  .endif
+  ; Deliberately NOT `.ifndef`-guarded. This is a published FACT about the
+  ; code -- sha_len is a 16-bit ZP slot, so one call cannot absorb more --
+  ; not a placement knob a consumer may choose. A guard would let
+  ; `-D LIB_NISTCURVES_SHA384_UPDATE_MAX=1000000` export a ceiling the code
+  ; does not enforce, which is exactly the failure §8.2 names as "the exported
+  ; value MUST be the value the code reads", one clause over. A `-D` on this
+  ; name must collide loudly, like the §1 version equates.
+  LIB_NISTCURVES_SHA384_UPDATE_MAX = 65535
   .export LIB_NISTCURVES_SHA384_UPDATE_MAX:abs
 .endif
 

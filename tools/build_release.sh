@@ -110,6 +110,8 @@ git archive \
   src/ecdsa384.s src/ecdsa384_msg.s src/sha384.s \
   src/data_shared.s \
   src/data_reu_wait.s \
+  src/data_mul_stage.s \
+  src/reu_banks.inc \
   src/data_p256.s src/data_p256_invref.s src/data_p256_limlee.s \
   src/data_p384.s src/data_p384_limlee.s \
   src/data_sha.s src/data_test.s \

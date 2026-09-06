@@ -46,108 +46,15 @@
 ; `LIB_SHARED_REU_MUL_BANK` so the canonical shared equate is the single
 ; source of truth at all in-tree callsites.
 
-.ifndef LIB_SHARED_REU_MUL_BANK
-  LIB_SHARED_REU_MUL_BANK = $00
-.endif
+.include "reu_banks.inc"
 
-.ifndef LIB_SHARED_REU_MUL_OFFSET
-  LIB_SHARED_REU_MUL_OFFSET = $0000
-.endif
-
-; Derived two-bank mask per SPEC §8.2 (the table claims `base` and
-; `base + 1`). Consumers compose it directly into REU-region collision
-; `.assert`s instead of rewriting `(1 .shl bank) | (1 .shl (bank+1))`
-; at every callsite. Libraries OR it into their own
-; `LIB_<X>_REU_BANKS_USED` (§5) when they consume the canonical primitive.
-LIB_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_SHARED_REU_MUL_BANK) | (1 .shl (LIB_SHARED_REU_MUL_BANK + 1))
-
-; SPEC §8.2 assemble-time guards:
-;   - offset $0000:  row-stride constraint (start-of-bank required)
-;   - base < 31:     the hi-half bank lives at base+1, and both banks have to
-;                    be nameable in the 32-bit §5 REU_BANKS_USED mask. SPEC
-;                    1.0.0 tightened this from the `< $FE` this file shipped
-;                    through v0.12.0: `1 .shl 32` exports 0, so a base of 31
-;                    or more contributed a zero bit and the consumer-side
-;                    bank-collision `.assert` passed *falsely* — the loosest
-;                    possible failure, since it silently certifies that two
-;                    libraries do not overlap when they may. Adopted here per
-;                    the 1.0.0 note that the tighter bound may land at each
-;                    library's next release; no ABI event (the default bank is
-;                    0, so no in-range configuration changes behaviour).
-.assert LIB_SHARED_REU_MUL_OFFSET = $0000, error, "reu_mul must start at offset 0 within its bank pair (SPEC §8.2)"
-.assert LIB_SHARED_REU_MUL_BANK < 31,      error, "reu_mul base bank must leave room for the hi-half bank at base+1 inside the 32-bit §5 bank mask (SPEC §8.2)"
-
-; Backwards-compatible alias. `LIB_NISTCURVES_REU_BANK_MUL` is the
-; pre-SPEC-§8.2 name; in-tree callsites (main.s, mul_8x8.s) still
-; .import it. Aliasing to the canonical shared equate keeps one source
-; of truth without breaking any callsite. The `.ifndef` guard preserves
-; the consumer-override path that already existed for the legacy name.
-.ifndef LIB_NISTCURVES_REU_BANK_MUL
-  LIB_NISTCURVES_REU_BANK_MUL = LIB_SHARED_REU_MUL_BANK
-.endif
-
-; The bound above guards the LIB_SHARED_ spelling. This one guards the legacy
-; spelling, which a consumer may override DIRECTLY -- in which case the
-; `.ifndef` skips the alias and the shared knob's assert never sees the value.
-; It is the code-read symbol and the one the `.shl` below shifts by, so an
-; unbounded override here reaches the §5 mask exactly the same way. Same
-; correction, second door.
-.assert LIB_NISTCURVES_REU_BANK_MUL < 31, error, "LIB_NISTCURVES_REU_BANK_MUL must leave room for the hi-half bank at base+1 inside the 32-bit §5 bank mask (SPEC §8.2)"
-
-; The comb bank feeds no `.shl` here -- lib_manifest.s hard-codes
-; LIB_NISTCURVES_REU_BANKS_USED per variant, and a consumer overriding the bank
-; is told to override the mask with it -- but a bank index the 32-bit §5 mask
-; cannot name is unrepresentable whatever computes it, so bound it at the
-; source rather than leaving the consumer to discover it downstream.
-.assert LIB_NISTCURVES_REU_BANK_COMB < 32, error, "LIB_NISTCURVES_REU_BANK_COMB must be nameable in the 32-bit §5 bank mask (SPEC §3/§5: bit n = bank n, banks 0-31)"
-
-; --- SPEC §8.2 staging buffers ---
-;
-; §8.2's Fetch clause states that on return from `reu_fetch_mul_row` the 512
-; bytes of the row are at `LIB_SHARED_REU_MUL_STAGE_LO` / `_STAGE_HI`. Through
-; v0.12.0 this library named no such thing: the row landed in
-; `nistcurves_mul_dma_lo` / `_hi`, placed by the linker via the
-; `LIB_NISTCURVES_TABLES` segment, and a consumer had no symbol to check two
-; co-linked §8.2 libraries against. c64-x25519 -- the other §8.2 adopter, and
-; the one c64-https links alongside us -- has honoured the knobs since its #92,
-; so we were the only adopter a consumer could not relocate.
-;
-; Default: alias this library's own buffers, so a standalone build is
-; unchanged and the exported value is the address the fetch really writes. When
-; a consumer supplies the knobs through CONTRACT_DEFINES they reach every TU,
-; including src/data_shared.s, which then EQUATES the buffer labels to the
-; consumer's addresses instead of allocating its own -- so the override moves
-; the code, not just the number. That distinction is the whole point of §8.2's
-; "the exported value MUST be the value the code reads": c64-x25519's pre-#92
-; export published an address nothing consumed, and a consumer override
-; silently relocated nothing.
-;
-; `.global` + `:=` because the default is a link-time label address, not an
-; assemble-time constant; the asserts are `lderror` for the same reason.
-.ifndef LIB_SHARED_REU_MUL_STAGE_LO
-  .global nistcurves_mul_dma_lo
-  LIB_SHARED_REU_MUL_STAGE_LO := nistcurves_mul_dma_lo
-.endif
-.ifndef LIB_SHARED_REU_MUL_STAGE_HI
-  .global nistcurves_mul_dma_hi
-  LIB_SHARED_REU_MUL_STAGE_HI := nistcurves_mul_dma_hi
-.endif
-
-.assert (LIB_SHARED_REU_MUL_STAGE_LO & $00ff) = 0, lderror, "reu_mul stage_lo must be page-aligned (SPEC §8.2)"
-.assert LIB_SHARED_REU_MUL_STAGE_HI = LIB_SHARED_REU_MUL_STAGE_LO + $0100, lderror, "reu_mul stage_hi must follow stage_lo by $0100 (SPEC §8.2)"
-
-; --- Lim-Lee comb anchor tables (one bank, two within-bank regions) ---
-.ifndef LIB_NISTCURVES_REU_BANK_COMB
-  LIB_NISTCURVES_REU_BANK_COMB = $02
-.endif
-
-.ifndef LIB_NISTCURVES_REU_OFFSET_COMB_P256
-  LIB_NISTCURVES_REU_OFFSET_COMB_P256 = $0000
-.endif
-
-.ifndef LIB_NISTCURVES_REU_OFFSET_COMB_P384
-  LIB_NISTCURVES_REU_OFFSET_COMB_P384 = $4000
-.endif
+; The §8.2 staging-buffer knobs (LIB_SHARED_REU_MUL_STAGE_LO/_HI) and their
+; prefixed output counterparts live in src/data_mul_stage.s, next to the labels
+; they describe. Deriving them here required `.global nistcurves_mul_dma_lo`,
+; which turned this file -- a pure equate TU with zero imports -- into one that
+; pulls that member: a consumer importing nothing but a §3 bank equate got 512
+; bytes of buffers and four `mul_*` names registered to another library,
+; uninvited.
 
 ; --- SPEC v0.13.0 §8.2 post-execute settle (issue #130) ---
 ; Iterations of the 9-cycle settle loop in nistcurves_reu_dma_wait
@@ -204,7 +111,7 @@ LIB_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_SHARED_REU_MUL_BANK) | (1 .shl (LIB_
 ; code-read bank for the same reason the BANK output is.
 LIB_NISTCURVES_SHARED_REU_MUL_BANK   = LIB_NISTCURVES_REU_BANK_MUL
 LIB_NISTCURVES_SHARED_REU_MUL_OFFSET = LIB_SHARED_REU_MUL_OFFSET
-LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_NISTCURVES_REU_BANK_MUL) | (1 .shl (LIB_NISTCURVES_REU_BANK_MUL + 1))
+LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED = LIB_NISTCURVES_REU_MASK_MUL
 
 .export LIB_NISTCURVES_SHARED_REU_MUL_BANK:abs
 .export LIB_NISTCURVES_SHARED_REU_MUL_OFFSET:abs
@@ -215,10 +122,6 @@ LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_NISTCURVES_REU_BANK_MUL) 
 ; the row actually lands so a consumer can assert two co-linked §8.2 libraries
 ; agree on the landing page. No `:abs` -- unlike the scalar parameters above
 ; these are genuine addresses, and ca65 already sizes them from the label.
-LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO := LIB_SHARED_REU_MUL_STAGE_LO
-LIB_NISTCURVES_SHARED_REU_MUL_STAGE_HI := LIB_SHARED_REU_MUL_STAGE_HI
-.export LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO
-.export LIB_NISTCURVES_SHARED_REU_MUL_STAGE_HI
 
 ; SPEC §8.2 canonical equates are deliberately NOT exported
 ; (c64-lib-contract #82). They are consumer-supplied placement values:

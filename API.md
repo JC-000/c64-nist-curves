@@ -869,7 +869,7 @@ Exclusion summary (per minimal archive):
   sides were the table: **six of the twelve archives were understating
   their footprint** by 5 to 72 bytes when the measurement leg was first
   run, in the direction that lets a consumer's fit check pass while the
-  library overruns their region. All twelve now carry 0.6–3.3% headroom.
+  library overruns their region. All twelve now carry 0.4–2.1% headroom.
   A segment the classification does not recognise fails the check rather
   than being silently omitted, so a new segment cannot escape the
   accounting.
@@ -1098,7 +1098,7 @@ issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
   boot-only `reu_mul_init` body present in every DMA-profile archive and
   absent from every onchip one (issues #78/#81) — 1840 vs. 1650 for the
   full archive, and a larger relative delta (26-35%) on the minimal
-  archives, outside the SPEC §5 ±5% band either way (issue #90). Note the
+  archives, and understating either way (issue #90). Note the
   runtime-generated 1 KB `sqtab` RAM table is verify-hot under this
   profile but excluded from the equates (generated RW state, not
   code+rodata) — budget it separately at `LIB_SHARED_SQTAB_BASE`.

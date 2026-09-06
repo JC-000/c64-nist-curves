@@ -295,13 +295,13 @@ MANIFEST_VALUES = {
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0000,
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 8,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 9216,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 9400,
         "LIB_NISTCURVES_COLD_BYTES": 0,
     },
     "nistcurves.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 27200,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 27400,
         "LIB_NISTCURVES_COLD_BYTES": 1840,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
@@ -309,7 +309,7 @@ MANIFEST_VALUES = {
     "nistcurves-onchip.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 27200,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 27400,
         "LIB_NISTCURVES_COLD_BYTES": 1650,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -349,7 +349,7 @@ MANIFEST_VALUES = {
     "nistcurves-p384-curve.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 17550,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 17800,
         "LIB_NISTCURVES_COLD_BYTES": 430,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
@@ -357,7 +357,7 @@ MANIFEST_VALUES = {
     "nistcurves-p384-curve-onchip.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 17550,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 17800,
         "LIB_NISTCURVES_COLD_BYTES": 250,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -652,17 +652,30 @@ _SEG_RE = re.compile(
     r'Name: *"([^"]+)"\s*\n\s*Flags:\s*\d+\s*\n\s*Size:\s*(\d+)')
 
 
+# Segments the cfg page-aligns. ld65 inserts 0-255 bytes of padding ahead of
+# each when it places them, and a per-object size sum cannot see that padding --
+# so the placed span a consumer must budget is larger than the sum. Charged at
+# the worst case, because the actual amount depends on the consumer's own
+# preceding code, which we cannot know and must not assume is favourable.
+FOOTPRINT_ALIGNED = {"LIB_NISTCURVES_SHA384_TABLES", "LIB_NISTCURVES_TABLES"}
+ALIGN_WORST_CASE = 255
+
+
 def measured_code_rodata(mods):
-    """Sum the code+rodata segment bytes an archive's members actually carry.
+    """Placed code+rodata bytes an archive's members demand, worst case.
 
     Returns (total, unknown_segment_names). Zero-length segments are ignored --
-    ca65 emits placeholders for the default names in every object.
+    ca65 emits placeholders for the default names in every object. Missing
+    objects are a hard failure, not a skip: a partially-built tree would
+    otherwise measure low and pass.
     """
     total = 0
     unknown = set()
+    aligned_present = set()
     for m in mods:
         obj = BUILD / (m + ".o")
         if not obj.exists():
+            unknown.add(f"<missing object {obj.name}>")
             continue
         dump = sh(["od65", "--dump-segments", str(obj)])[1]
         for seg, size in _SEG_RE.findall(dump):
@@ -671,8 +684,11 @@ def measured_code_rodata(mods):
                 continue
             if seg in FOOTPRINT_SEGMENTS:
                 total += size
+                if seg in FOOTPRINT_ALIGNED:
+                    aligned_present.add(seg)
             elif seg not in FOOTPRINT_EXCLUDED:
                 unknown.add(seg)
+    total += ALIGN_WORST_CASE * len(aligned_present)
     return total, unknown
 
 
@@ -1047,17 +1063,36 @@ HEADER_GUARDED_SYMS = [
     "LIB_NISTCURVES_COLD_BYTES",
     "LIB_NISTCURVES_SHARED_PRIMITIVES",
     "LIB_NISTCURVES_SHARED_CONSUMES",
-    "LIB_NISTCURVES_SHA384_UPDATE_MAX",
 ]
 
 # Symbols whose defining TU assigns UNCONDITIONALLY. §3 says leave those
 # imports bare so a `-D` collides loudly; a guard there would mask a
 # deliberate parse-time rejection. Pinned in the opposite direction: a `-D` of
 # one of these must FAIL TO ASSEMBLE against the header.
+# Each archive and the ca65 switch set it is built with, so the header can be
+# driven the way that archive's consumer drives it.
+HEADER_ARCHIVE_SWITCHES = {
+    "nistcurves.a": [],
+    "nistcurves-onchip.a": ["FP_ONCHIP_MUL"],
+    "nistcurves-app-owned.a": ["SHARED_SQTAB_INIT", "SHARED_CT_MUL_8X8",
+                               "SHARED_REU_MUL_INIT", "SHARED_REU_MUL_FETCH"],
+    "nistcurves-p256-verify.a": ["LIB_P256_VERIFY_ONLY"],
+    "nistcurves-p256-verify-onchip.a": ["LIB_P256_VERIFY_ONLY", "FP_ONCHIP_MUL"],
+    "nistcurves-p384-verify.a": ["LIB_P384_VERIFY_ONLY"],
+    "nistcurves-p384-verify-onchip.a": ["LIB_P384_VERIFY_ONLY", "FP_ONCHIP_MUL"],
+    "nistcurves-p384-curve.a": ["LIB_P384_CURVE_ONLY"],
+    "nistcurves-p384-curve-onchip.a": ["LIB_P384_CURVE_ONLY", "FP_ONCHIP_MUL"],
+    "nistcurves-p256-comb.a": ["LIB_P256_COMB_ONLY"],
+    "nistcurves-p256-comb-onchip.a": ["LIB_P256_COMB_ONLY", "FP_ONCHIP_MUL"],
+    "nistcurves-p384-sha384.a": ["LIB_SHA384_ONLY"],
+}
+
 HEADER_BARE_SYMS = [
     "LIB_NISTCURVES_ABI_VERSION",                # src/lib_version.s:71
     "LIB_NISTCURVES_SHARED_REU_MUL_BANK",        # src/reu_config.s:205
     "LIB_NISTCURVES_PRECALC_sqtab_SIZE",         # src/precalc_table.inc:86
+    "LIB_NISTCURVES_SHA384_UPDATE_MAX",          # src/lib_manifest.s (a fact,
+                                                 # not a knob -- see there)
 ]
 
 # A consumer TU: includes the shipped header, emits the 2-byte PRG load
@@ -1189,6 +1224,31 @@ def packaging_check(failures, archives):
             return
         print("  header OK (plain .include assembles and links against nistcurves.a)")
 
+        # (3b) ... and against EVERY archive, with the variant switch set that
+        # archive is built with. The header gates ~650 lines by those switches,
+        # and linking only the full archive exercises none of that gating --
+        # while API.md and CLAUDE.md both claimed every archive was covered.
+        # A claim of mechanical verification the mechanism does not perform is
+        # worse than no claim, so the mechanism now performs it.
+        for aname, adefs in sorted(HEADER_ARCHIVE_SWITCHES.items()):
+            apath = LIBDIR / aname
+            if not apath.exists():
+                failures.append(f"header: {aname} not built, cannot check header against it")
+                print(f"  HEADER FAIL [{aname}]: archive missing")
+                continue
+            dargs = []
+            for d in adefs:
+                dargs += ["-D", d]
+            arc, aout, lrc, lout = _header_link(td, LIBDIR, src_cfg, apath, dargs)
+            if arc != 0:
+                failures.append(f"header: does not assemble for {aname}'s switch set")
+                print(f"  HEADER FAIL [{aname}]: assemble:\n{aout}")
+            elif lrc != 0:
+                failures.append(f"header: does not link against {aname}")
+                print(f"  HEADER FAIL [{aname}]: link:\n{lout}")
+            else:
+                print(f"  header OK [{aname}]")
+
         # (4) Guarded symbols: right value assembles AND links; wrong value
         # assembles but MUST be rejected at link by the .else assert.
         for sym in HEADER_GUARDED_SYMS:
@@ -1270,14 +1330,25 @@ def app_owned_buffer_ownership_check(failures):
     makes every archive below report Duplicate external identifier."""
     import tempfile
     print("\n=== §8.0 APP_OWNED buffer ownership (issue #149) ===")
+    # The probe must do what a real APP_OWNED consumer does: own the buffers
+    # AND call a field operation. An earlier version referenced only the §8.2
+    # settle state, which made it blind to the defect it exists to catch --
+    # the operand cache (nistcurves_mul_cached_a / _src2_buf) stayed in the
+    # buffers' TU, and fp256.o / fp384.o / mul_8x8.o import it, so any consumer
+    # calling fp_mul still pulled the member and still collided. A probe that
+    # links nothing proves nothing.
     consumer = (
-        '; Stands in for a consumer that owns the multiply-row buffers itself.\n'
+        '; Stands in for a consumer that owns the multiply-row buffers itself\n'
+        '; and also calls into the library, which is the only shape that has a\n'
+        '; reason to exist.\n'
         '.export nistcurves_mul_dma_lo, nistcurves_mul_dma_hi\n'
         '.import nistcurves_reu_dma_timeout, nistcurves_reu_wait_cnt\n'
+        '.import fp_mul\n'
         '.segment "CODE"\n'
         'entry:\n'
         '\tlda nistcurves_reu_dma_timeout\n'
         '\tlda nistcurves_reu_wait_cnt\n'
+        '\tjsr fp_mul\n'
         '\trts\n'
         '.segment "APP_TABLES"\n'
         'nistcurves_mul_dma_lo:\n\t.res 256, 0\n'
@@ -1583,6 +1654,15 @@ def main():
             if not have_both:
                 failures.append(f"{name}: §5 footprint equates missing")
                 print("  FOOTPRINT FAIL: RESIDENT/COLD not both exported")
+            resident = od65_value(obj_paths, "LIB_NISTCURVES_RESIDENT_BYTES")
+            cold = od65_value(obj_paths, "LIB_NISTCURVES_COLD_BYTES")
+            if resident is not None and cold is not None and resident < measured - cold:
+                # RESIDENT alone is what a consumer sizing a resident-only
+                # region binds to; pinning only the sum leaves it unchecked.
+                failures.append(
+                    f"{name}: §5 RESIDENT_BYTES understates -- {resident} declared, "
+                    f"but measured {measured} minus COLD {cold} needs {measured - cold}")
+                print(f"  FOOTPRINT FAIL: RESIDENT {resident} < measured-minus-COLD {measured - cold}")
             elif declared < measured:
                 failures.append(
                     f"{name}: §5 footprint understates -- RESIDENT+COLD = {declared} "

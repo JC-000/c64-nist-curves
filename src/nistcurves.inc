@@ -233,7 +233,7 @@ NISTCURVES_INC_INCLUDED = 1
 ; Gate your integration on the ABI counter, not on MAJOR — it is a generation
 ; counter for the exported surface and moves independently of the semantic
 ; version (§1/§7):
-;   .assert LIB_NISTCURVES_ABI_VERSION = 2, lderror, "c64-nist-curves exported surface changed; re-check the integration"
+;   .assert LIB_NISTCURVES_ABI_VERSION = 3, lderror, "c64-nist-curves exported surface changed; re-check the integration"
 .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
@@ -314,14 +314,12 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_con, LIB_NISTCURVES_SHARED_CONSUMES, "LIB_NISTCU
 ; §5 published input bound: the maximum bytes ONE `sha384_update` call may
 ; absorb (`sha_len` is 16-bit). The STREAM is unbounded — chain as many
 ; updates as you like — and `sha_len = 0` is a legal no-op. Emitted only by
-; the archives that ship sha384.o (src/lib_manifest.s:738-744), and guarded
-; there, so it is gated and pinned here the same way.
+; the archives that ship sha384.o, so it is gated here the same way.
 .if _NC_SHA384
-.ifndef LIB_NISTCURVES_SHA384_UPDATE_MAX
+; Bare, not guarded: the defining TU assigns it unconditionally because it is
+; a fact about the code (16-bit sha_len), not a placement knob. A `-D` must
+; collide loudly rather than be honoured.
 .import LIB_NISTCURVES_SHA384_UPDATE_MAX
-.else
-NISTCURVES_PIN_OVERRIDE _nc_ovr_shamax, LIB_NISTCURVES_SHA384_UPDATE_MAX, "LIB_NISTCURVES_SHA384_UPDATE_MAX override disagrees with the archive this header ships against"
-.endif
 .endif
 
 ; §8.0 per-primitive bit constants. Plain assemble-time equates, deliberately
@@ -412,6 +410,37 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .import LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED
 .import LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO
 .import LIB_NISTCURVES_SHARED_REU_MUL_STAGE_HI
+
+; --- §3 cross-check on the §8.2 knobs you may have passed ---
+; These are the one class §3's guard pattern above cannot cover: they are
+; consumer INPUT (§8.2 forbids the library exporting them), so there is nothing
+; to `.ifndef`-guard an import of. What can be checked is agreement -- if you
+; passed a knob to your own TUs but forgot it in CONTRACT_DEFINES, or the
+; reverse, your code points at one address and the library's DMA lands at
+; another, and the link is otherwise clean. That is exactly the silent
+; divergence §3 exists to prevent.
+.ifdef LIB_SHARED_REU_MUL_STAGE_LO
+.assert LIB_SHARED_REU_MUL_STAGE_LO = LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO, lderror, "LIB_SHARED_REU_MUL_STAGE_LO disagrees with the archive: pass it in CONTRACT_DEFINES too, or not at all"
+.endif
+.ifdef LIB_SHARED_REU_MUL_STAGE_HI
+.assert LIB_SHARED_REU_MUL_STAGE_HI = LIB_NISTCURVES_SHARED_REU_MUL_STAGE_HI, lderror, "LIB_SHARED_REU_MUL_STAGE_HI disagrees with the archive: pass it in CONTRACT_DEFINES too, or not at all"
+.endif
+.ifdef LIB_SHARED_REU_MUL_BANK
+.assert LIB_SHARED_REU_MUL_BANK = LIB_NISTCURVES_SHARED_REU_MUL_BANK, lderror, "LIB_SHARED_REU_MUL_BANK disagrees with the archive: pass it in CONTRACT_DEFINES too, or not at all"
+.endif
+
+; --- PLACEMENT WARNING, same shape as the sqtab window ---
+; If you set LIB_SHARED_REU_MUL_STAGE_LO/_HI, those 512 bytes stop being a
+; linker-managed segment and become an absolute window. ld65 does not know the
+; window exists and will place a segment straight over it with NO overlap
+; diagnostic -- the identical failure mode that moved this library's sqtab
+; table in 2026-05-17, silently corrupting it at init. The library asserts the
+; pair is page-aligned and adjacent; nothing can assert it is unoccupied.
+;
+; Reserve it in your MEMORY{} block, or give the region `define = yes` and
+; assert your own `__<REGION>_LAST__` against it, exactly as src/main.s does
+; for sqtab. If you do not need to place these buffers, do not pass the knobs:
+; the library's own page-aligned allocation is the safe default.
 
 .endif ; _NC_FIELD
 
