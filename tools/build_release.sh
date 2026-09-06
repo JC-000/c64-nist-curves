@@ -98,7 +98,7 @@ git archive \
   "$TAG" \
   src/c64.cfg src/exports.inc \
   src/nistcurves.inc cfg/nistcurves-example.cfg \
-  src/constants.s src/zp_config.s \
+  src/constants.s src/zp_config.s src/zp_aliases.s \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
   src/precalc_manifest.s src/precalc_table.inc src/sqtab_base.inc \
   src/reu_dma_done.inc \

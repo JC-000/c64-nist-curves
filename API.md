@@ -767,7 +767,8 @@ intermediate `.o` shuffling.
 MAJOR.** SPEC §6.5 lists archive member basenames alongside symbol and
 segment names as versioned surface. This library's members are still
 unprefixed (`lib_version.o`, `lib_manifest_<variant>.o`,
-`precalc_manifest_<variant>.o`, `zp_config_<variant>.o`, plus the
+`precalc_manifest_<variant>.o`, `zp_config_<variant>.o`,
+`zp_aliases_<variant>.o`, plus the
 per-module objects), which is the flat namespace §6.5 defers to each
 library's next MAJOR: at that bump they take the `nistcurves_` prefix
 (`nistcurves_lib_version.o`). Members cannot dual-name, so this rides
@@ -818,7 +819,10 @@ Exclusion summary (per minimal archive):
   driving streaming SHA themselves link this in via `lib-p384-curve`
   instead), all SHA-384, the test-driver staging buffers.
 - `lib-p384-sha384` is the tightest archive: `sha384.o`, `data_sha.o`,
-  `zp_config.o`, `lib_version.o`, plus the two SHA-only manifest objects
+  `zp_config_sha384.o`, `zp_aliases_sha384.o` (empty in this arm — the SHA
+  slot set has no bare alias; it is archived anyway so the
+  `zp_config*.o` ↔ `zp_aliases*.o` pairing stays mechanical),
+  `lib_version.o`, plus the two SHA-only manifest objects
   `lib_manifest_sha384.o` / `precalc_manifest_sha384.o`. No `mul_8x8`,
   no REU, no `constants.o` — SHA-384 has no shared scratch with the
   field / point / ECDSA code paths. Because it carries no field layer at

@@ -12,6 +12,56 @@ contract).
 
 ## [Unreleased]
 
+### Changed
+
+- **§6.1 member isolation: the bare `zp_*` aliases move to their own
+  archived translation unit (issue #154, upstream contract#188, ruled at
+  SPEC v1.2.2).** `zp_config.o` exported `zp_tmp1` / `zp_tmp2` / `zp_ptr1` /
+  `zp_ptr2` — displaceable names, gated under `LIB_NO_BARE_EXPORTS` — from
+  the same member as sixteen importable slots (`fp_src1`, `fp_dst`,
+  `ec_scalar_ptr`, `sha_src`, …). ld65 links whole members, so a consumer
+  importing `fp_src1` pulled all four bare names in with it and collided
+  with any sibling library exporting the same spelling. They now live in
+  `src/zp_aliases.s`, built the same six ways as `zp_config.s` and added
+  wherever the matching `zp_config*.o` appears — so all twelve archives
+  still export them.
+
+  **No name, value, address or archive changed, so no §6.5 deprecation
+  window is owed** — that is contingent on the new TU staying *archived*,
+  and it must stay that way: moving these to a never-archived TU would be a
+  removed export and would owe the window plus a gate. The four aliases are
+  `.importzp`ed from their canonical `nistcurves_zp_*` slots and re-exported
+  bare rather than restated, so they have no address of their own and cannot
+  drift; `CONTRACT_ZP_DEFINES` consequently reaches `zp_config.s` alone (a
+  `-D` of an imported name is a hard ca65 error) and the alias follows
+  through the link. `LIB_NISTCURVES_ZP_USAGE_BYTES` is unchanged in every
+  variant (27 / 15 / 15 / 23 / 17 / 8) and `build/nist-curves.prg` is
+  byte-identical.
+
+### Fixed
+
+- **`make check-archives`: the `LIB_NO_BARE_EXPORTS` gated-surface leg had
+  never examined `precalc_manifest.o`.** `BARE_GATED` was a hand-written
+  roster and listed none of the 18 bare `LIB_PRECALC_*` names that TU
+  exports (the §8.4 macro generates a triple per table, so the family cannot
+  be enumerated by hand), making `names & BARE_GATED` the empty set and the
+  leg's "0 bare names" report vacuous for that TU from issue #113 onward.
+  The membership test is now a predicate covering the generated family, and
+  each gate-owning TU must export at least one bare name *ungated* before its
+  gated result is believed — which is what surfaced this. Negative-tested by
+  un-gating the bare triple in `precalc_table.inc`: the leg now names all 18.
+
+- **The same class in the ZP legs, pre-empted rather than discovered.** After
+  a TU split, any check asserting a name is *absent* passes trivially over an
+  empty dump. The R2 ZP audit now reconciles the whole export partition
+  (bare + prefixed + other, against od65's own declared Count) before
+  concluding anything from what is missing, asserts the *positive* half (each
+  alias object exports exactly its variant's expected set), link-resolves
+  every alias from every archive to its canonical slot's address, and drives
+  a real `CONTRACT_ZP_DEFINES` override through the make recipes and out of a
+  link to prove slot and alias move together. Each leg was made to fail
+  deliberately and observed reporting.
+
 ## [0.13.0] — 2026-09-06
 
 MINOR. `LIB_NISTCURVES_ABI_VERSION` **2 → 3**. Conformance baseline moves
