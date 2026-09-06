@@ -301,7 +301,7 @@ MANIFEST_VALUES = {
     "nistcurves.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 27000,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 27200,
         "LIB_NISTCURVES_COLD_BYTES": 1840,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
@@ -309,7 +309,7 @@ MANIFEST_VALUES = {
     "nistcurves-onchip.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 27,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 27000,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 27200,
         "LIB_NISTCURVES_COLD_BYTES": 1650,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -317,7 +317,7 @@ MANIFEST_VALUES = {
     "nistcurves-p256-verify.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 8700,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8800,
         "LIB_NISTCURVES_COLD_BYTES": 430,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
@@ -325,7 +325,7 @@ MANIFEST_VALUES = {
     "nistcurves-p256-verify-onchip.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 8700,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8800,
         "LIB_NISTCURVES_COLD_BYTES": 250,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -333,7 +333,7 @@ MANIFEST_VALUES = {
     "nistcurves-p384-verify.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 8300,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8450,
         "LIB_NISTCURVES_COLD_BYTES": 430,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
@@ -341,7 +341,7 @@ MANIFEST_VALUES = {
     "nistcurves-p384-verify-onchip.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 15,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 8300,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 8450,
         "LIB_NISTCURVES_COLD_BYTES": 250,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -349,7 +349,7 @@ MANIFEST_VALUES = {
     "nistcurves-p384-curve.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x03,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 17400,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 17550,
         "LIB_NISTCURVES_COLD_BYTES": 430,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
@@ -357,7 +357,7 @@ MANIFEST_VALUES = {
     "nistcurves-p384-curve-onchip.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 23,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x00,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 17400,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 17550,
         "LIB_NISTCURVES_COLD_BYTES": 250,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -375,7 +375,7 @@ MANIFEST_VALUES = {
     "nistcurves-p256-comb.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 17,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x07,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 9216,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 9300,
         "LIB_NISTCURVES_COLD_BYTES": 1050,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0007,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0007,
@@ -383,7 +383,7 @@ MANIFEST_VALUES = {
     "nistcurves-p256-comb-onchip.a": {
         "LIB_NISTCURVES_ZP_USAGE_BYTES": 17,
         "LIB_NISTCURVES_REU_BANKS_USED": 0x04,
-        "LIB_NISTCURVES_RESIDENT_BYTES": 9216,
+        "LIB_NISTCURVES_RESIDENT_BYTES": 9300,
         "LIB_NISTCURVES_COLD_BYTES": 870,
         "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0005,
         "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
@@ -616,6 +616,64 @@ def od65_value(objs, sym):
         if m:
             return int(m.group(1), 16)
     return None
+
+
+# --- §5 footprint measurement (issue #142) -----------------------------------
+# Which segments count as the "code+rodata footprint" §5's RESIDENT/COLD pair
+# describes. Stated as an explicit classification rather than a name pattern so
+# that a segment added later lands in neither set and trips the unclassified
+# failure above -- the accounting stays a decision, not an accident.
+#
+# Counted: executable code and read-only data, including the SHA-384 rotate
+# LUTs, which are page-aligned RODATA read on every compression.
+# Not counted: RW state. §5 scopes both equates to code+rodata, and the manifest
+# derivations exclude BSS on the same basis -- LIB_NISTCURVES_TABLES holds the
+# two 256-byte REU DMA landing pages, which are RW buffers, not rodata.
+FOOTPRINT_SEGMENTS = {
+    "LIB_NISTCURVES_MAIN_CODE", "LIB_NISTCURVES_MUL_CODE",
+    "LIB_NISTCURVES_P256_CODE", "LIB_NISTCURVES_P384_CODE",
+    "LIB_NISTCURVES_SHA384_CODE",
+    "LIB_NISTCURVES_MAIN_RODATA", "LIB_NISTCURVES_P256_RODATA",
+    "LIB_NISTCURVES_P384_RODATA", "LIB_NISTCURVES_SHA384_RODATA",
+    "LIB_NISTCURVES_SHA384_TABLES",
+}
+FOOTPRINT_EXCLUDED = {
+    "LIB_NISTCURVES_TABLES",            # RW: the REU DMA landing pages
+    "LIB_NISTCURVES_BSS", "LIB_NISTCURVES_P256_BSS",
+    "LIB_NISTCURVES_P256_INVREF_BSS", "LIB_NISTCURVES_P256_LIMLEE_BSS",
+    "LIB_NISTCURVES_P384_BSS", "LIB_NISTCURVES_P384_LIMLEE_BSS",
+    "LIB_NISTCURVES_P384_DATA_BSS",
+    "LIB_NISTCURVES_SHA384_BSS", "LIB_NISTCURVES_TEST_BSS",
+    # ca65 emits these as zero-length placeholders in every object.
+    "CODE", "RODATA", "DATA", "BSS", "ZEROPAGE", "NULL", "LOADADDR",
+}
+
+_SEG_RE = re.compile(
+    r'Name: *"([^"]+)"\s*\n\s*Flags:\s*\d+\s*\n\s*Size:\s*(\d+)')
+
+
+def measured_code_rodata(mods):
+    """Sum the code+rodata segment bytes an archive's members actually carry.
+
+    Returns (total, unknown_segment_names). Zero-length segments are ignored --
+    ca65 emits placeholders for the default names in every object.
+    """
+    total = 0
+    unknown = set()
+    for m in mods:
+        obj = BUILD / (m + ".o")
+        if not obj.exists():
+            continue
+        dump = sh(["od65", "--dump-segments", str(obj)])[1]
+        for seg, size in _SEG_RE.findall(dump):
+            size = int(size)
+            if size == 0:
+                continue
+            if seg in FOOTPRINT_SEGMENTS:
+                total += size
+            elif seg not in FOOTPRINT_EXCLUDED:
+                unknown.add(seg)
+    return total, unknown
 
 
 def parse_makefile_archives():
@@ -947,9 +1005,13 @@ def app_owned_reachability_check(failures):
 
 # --- SPEC §6.1 packaging + §3 header-guard leg --------------------------------
 #
-# §6.1 (contract v1.1.0): "Every library MUST provide `make lib`, producing
+# The header and example cfg are NOT contract-required: 1.0.0 briefly made
+# §6.1 say "Every library MUST provide `make lib`, producing
 # build/lib/<shortname>.a PLUS the consumer-facing .inc header and an example
-# .cfg." Presence alone is a weak pin, so this leg also drives the header the
+# .cfg" -- and 1.1.1 withdrew it, as a tightening the text cut had carried
+# unannounced. We ship both anyway (consumers were transcribing symbols out of
+# API.md prose), so what binds is §3's header-import rule, which governs any
+# header that exists. Presence alone is a weak pin, so this leg also drives the header the
 # way a consumer does, against the SHIPPED copy under build/lib/ rather than
 # the source, and asserts BOTH halves of the §3 rule that governs it:
 #
@@ -1483,7 +1545,55 @@ def main():
                 failures.append(f"{name}: {sym} = {got}, contract says {want}")
                 print(f"  VALUE FAIL: {sym} = {got}, expected {want}")
         if MANIFEST_VALUES.get(name):
-            print("  manifest value pins OK (§5 equates match the archive's real content)")
+            print("  manifest value pins OK (§5 equates match the pinned table)")
+
+        # (a4) §5 footprint MEASUREMENT (issue #142). The pins above compare
+        # the manifest against MANIFEST_VALUES -- a hard-coded copy of the same
+        # numbers in this file. Both sides are the table, so the leg reports
+        # agreement while checking nothing about the archive, and a figure that
+        # has drifted from the bytes it describes passes. That is the shape
+        # that left 43 of 45 §5 values wrong before issue #90, sitting inside
+        # the gate that exists to prevent a recurrence.
+        #
+        # This measures instead, and checks the one property §5 states
+        # normatively: "Footprint equates MUST be safe-direction: round up,
+        # never down", with RESIDENT and COLD a pair a consumer budgets
+        # together. So the invariant is
+        #
+        #     RESIDENT_BYTES + COLD_BYTES  >=  measured code+rodata
+        #
+        # An understating figure makes a consumer's §5 fit check pass while the
+        # library overruns their region, which is the direction that corrupts.
+        measured, unknown = measured_code_rodata(mods)
+        if unknown:
+            # A new segment must not silently escape the accounting: whoever
+            # adds one decides whether it is footprint, here, on purpose.
+            failures.append(f"{name}: unclassified segment(s) {sorted(unknown)} "
+                            f"-- add them to FOOTPRINT_SEGMENTS or the exclusions")
+            print(f"  FOOTPRINT FAIL: unclassified segment(s) {sorted(unknown)}")
+        else:
+            declared = 0
+            have_both = True
+            for sym in ("LIB_NISTCURVES_RESIDENT_BYTES", "LIB_NISTCURVES_COLD_BYTES"):
+                v = od65_value(obj_paths, sym)
+                if v is None:
+                    have_both = False
+                else:
+                    declared += v
+            if not have_both:
+                failures.append(f"{name}: §5 footprint equates missing")
+                print("  FOOTPRINT FAIL: RESIDENT/COLD not both exported")
+            elif declared < measured:
+                failures.append(
+                    f"{name}: §5 footprint understates -- RESIDENT+COLD = {declared} "
+                    f"but the archive's code+rodata measures {measured} "
+                    f"(short by {measured - declared}; §5 requires safe-direction)")
+                print(f"  FOOTPRINT FAIL: declared {declared} < measured {measured}")
+            else:
+                slack = declared - measured
+                pct = (slack / measured * 100) if measured else 0.0
+                print(f"  footprint OK (RESIDENT+COLD {declared} >= measured "
+                      f"{measured}, +{slack} B / {pct:.1f}%)")
 
         # (b) dummy-link smoke tests.
         for label, imps, expect_link in SMOKE.get(name, []):

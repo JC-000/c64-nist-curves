@@ -313,11 +313,11 @@
     ; (the §6.6 fleet convention), +2.4%, inside §5's ±5%.
     LIB_NISTCURVES_RESIDENT_BYTES = 9216
   .elseif .defined(LIB_P256_VERIFY_ONLY)
-    LIB_NISTCURVES_RESIDENT_BYTES = 8700
+    LIB_NISTCURVES_RESIDENT_BYTES = 8800
   .elseif .defined(LIB_P384_VERIFY_ONLY)
-    LIB_NISTCURVES_RESIDENT_BYTES = 8300
+    LIB_NISTCURVES_RESIDENT_BYTES = 8450
   .elseif .defined(LIB_P384_CURVE_ONLY)
-    LIB_NISTCURVES_RESIDENT_BYTES = 17400
+    LIB_NISTCURVES_RESIDENT_BYTES = 17550
   .elseif .defined(LIB_P256_COMB_ONLY)
     ; Issue #117: od65 segment sums (code+rodata) over the archive
     ; members, minus the cold blocks itemized in the COLD arm below:
@@ -333,9 +333,9 @@
     ; (inline confirms) + 39 B nistcurves_reu_dma_wait (resident, both
     ; profiles) + 6 B points256_comb -> 9060 DMA / 9163 onchip resident;
     ; 9216 still covers both (+0.6% onchip). Pinned by check-archives.
-    LIB_NISTCURVES_RESIDENT_BYTES = 9216
+    LIB_NISTCURVES_RESIDENT_BYTES = 9300
   .else
-    LIB_NISTCURVES_RESIDENT_BYTES = 27000
+    LIB_NISTCURVES_RESIDENT_BYTES = 27200
   .endif
 .endif
 

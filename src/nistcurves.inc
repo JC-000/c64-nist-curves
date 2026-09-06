@@ -1,7 +1,21 @@
 ; =============================================================================
 ; nistcurves.inc — consumer-facing header for c64-nist-curves
-;                  (c64-lib-contract SPEC §6.1: `make lib` ships the archive
-;                   PLUS this header and an example .cfg)
+;
+; NOT required by the contract. c64-lib-contract 1.0.0 briefly made `make lib`
+; ship a header and an example cfg alongside the archive; 1.1.1 WITHDREW that,
+; as a tightening the text cut had carried unannounced, "never proposed, naming
+; neither path, and failing §0's scope rule on both prongs". This library ships
+; both anyway, because consumers were otherwise transcribing symbol names out
+; of API.md prose by hand, and because a header that is checked against the
+; built archives is a better answer than a table in a document that is not.
+;
+; What DOES bind, now that the header exists: SPEC §3's header-import rule.
+; Every `.import` of an equate whose defining TU guards its definition is
+; `.ifndef`-guarded here AND paired with an `.else` branch asserting the
+; consumer's override against the library's own exported value -- a bare guard
+; alone would convert a compile error into silent divergence, letting a
+; consumer built for one bank link cleanly against an archive built for
+; another. `make check-archives` links every guarded row both ways.
 ;
 ; `make lib`, and every `make lib-*` variant target, copies this file to
 ; build/lib/nistcurves.inc next to the archive. Vendor it with the archive
