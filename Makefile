@@ -609,12 +609,21 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
                 $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
                 $(BUILD_DIR)/ecdsa384_msg.o
 
-# --- SPEC §6.1 consumer packaging --------------------------------------------
-# §6.1 (contract v1.1.0) requires `make lib` to produce the archive PLUS the
-# consumer-facing `.inc` header and an example `.cfg`. Both are checked-in
-# sources copied verbatim into build/lib/ -- they are not generated, so there
-# is exactly one canonical copy of each and no chance of the shipped artifact
-# drifting from the one in the tree:
+# --- Consumer packaging: a LOCAL CHOICE, not a contract requirement ----------
+# c64-lib-contract 1.0.0 briefly made §6.1 require `make lib` to produce the
+# archive PLUS a consumer-facing `.inc` header and an example `.cfg`. **v1.1.1
+# WITHDREW that** (contract#178) as an unannounced tightening the 1.0.0 text
+# cut had carried: it named neither a path nor a filename and failed §0's
+# scope rule on both prongs. Nobody owes these files, here or anywhere.
+#
+# We ship them anyway, as a local choice, because consumers were otherwise
+# transcribing imports and a SEGMENTS{} block out of API.md prose. What DOES
+# still bind is §3's header-import rule, which governs any header that exists
+# -- see src/nistcurves.inc.
+#
+# Both are checked-in sources copied verbatim into build/lib/ -- not generated,
+# so there is exactly one canonical copy of each and no chance of the shipped
+# artifact drifting from the one in the tree:
 #
 #   build/lib/nistcurves.a                    the archive (per-variant name)
 #   build/lib/nistcurves.inc                  <- src/nistcurves.inc
