@@ -83,7 +83,12 @@ ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 
 LIB_DIR = $(BUILD_DIR)/lib
 
-# --- §6.3 looks-reachable knob-staleness guard (SPEC v0.10.5) -----------------
+# --- knob-staleness guard (was SPEC §6.3, RETIRED at contract 1.0.0) ---------
+# §6.3 and §6.7 are cited by their tag below and resolve at
+# `git show v0.17.1:SPEC.md`; RETIRED.md asks adopters not to rewrite such
+# citations, and these are history, not live obligations. What survives is
+# §6.2's define-scoping rule -- and the artifact-flipped property itself, which
+# is now ours to keep rather than something the contract asks for.
 # CONTRACT_DEFINES / CONTRACT_ZP_DEFINES reach every TU's assembly flags, but
 # make cannot see a knob-VALUE change: a re-invocation with different defines
 # would reuse every stale object and exit 0 with an artifact other than the

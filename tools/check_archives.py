@@ -1326,7 +1326,9 @@ APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",
 
 
 def app_owned_reachability_check(failures):
-    """§6.3 reachability of APP_OWNED x profile (issue #123): the full
+    """Reachability of APP_OWNED x profile (issue #123). §6.3 was RETIRED at
+    contract 1.0.0 and the citations here are history, not a live obligation --
+    we keep the check because it caught a real unreachable combination. The full
     deferral define set must ASSEMBLE against both profile arms of
     mul_8x8.s -- the onchip arm shipped for two releases with same-TU
     references (og_common -> ct_mul_8x8 / smc_* / poly_prod) that the gate
@@ -1334,7 +1336,7 @@ def app_owned_reachability_check(failures):
     CI target exercised the combination. The onchip deferring object must
     IMPORT the five-symbol §8.3 provider surface and re-export none of it."""
     import tempfile
-    print("\n=== §6.3 APP_OWNED x profile reachability (issue #123) ===")
+    print("\n=== APP_OWNED x profile reachability (issue #123; was §6.3) ===")
     with tempfile.TemporaryDirectory() as td:
         for profile_args, label in ([], "dma"), (["-D", "FP_ONCHIP_MUL"], "onchip"):
             obj = Path(td) / f"m8_{label}.o"
@@ -1815,7 +1817,11 @@ def app_owned_buffer_ownership_check(failures):
 
 
 def defines_staleness_check(failures):
-    """§6.3 looks-reachable rule, staleness shape (SPEC v0.10.5): a make
+    """Knob-staleness guard. §6.3 was RETIRED at contract 1.0.0; what survives
+    is §6.2's define-scoping rule, and the artifact-flipped property below is
+    now ours to keep rather than something the contract asks for.
+
+    §6.3 looks-reachable rule, staleness shape (SPEC v0.10.5): a make
     re-invocation with a changed CONTRACT_*DEFINES value must rebuild --
     without the Makefile's knob stamp, make reuses every stale object and
     exits 0 with an artifact other than the one requested (shape-3 silent
@@ -1825,7 +1831,7 @@ def defines_staleness_check(failures):
     time, which is SPEC v0.11.1's "assert the artifact flipped, not that
     something rebuilt". Runs LAST: a knob change wipes build/*.o by design;
     the final leg restores the default configuration."""
-    print("\n=== §6.3 knob-staleness guard (defines change must rebuild) ===")
+    print("\n=== knob-staleness guard (defines change must rebuild; was §6.3) ===")
 
     # --- Linked-artifact leg (issue #144) ------------------------------------
     # Every other leg in this function reads a built OBJECT's exported surface.
