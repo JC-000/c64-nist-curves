@@ -74,7 +74,7 @@ MODULES = main constants zp_config lib_version reu_config lib_manifest \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
-          data_shared data_reu_wait data_p256 data_p256_invref data_p256_limlee \
+          data_shared data_reu_wait data_mul_stage data_p256 data_p256_invref data_p256_limlee \
           data_p384 data_p384_limlee data_sha data_test
 
 CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
@@ -413,7 +413,8 @@ LIB_CORE_P384CURVE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
 LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/reu_mul_init.o \
                 $(BUILD_DIR)/data_shared.o \
-                $(BUILD_DIR)/data_reu_wait.o
+                $(BUILD_DIR)/data_reu_wait.o \
+                $(BUILD_DIR)/data_mul_stage.o
 
 # Per-curve verify object sets (core point ops only -- no comb).
 # The verify ARCHIVES take the ecdsa*_nocomb.o variants (-D ECDSA_NO_COMB,
@@ -506,7 +507,8 @@ LIB_CORE_APP_OWNED_OBJS = $(BUILD_DIR)/lib_version.o \
 LIB_MUL_APP_OWNED_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8_appowned.o \
                 $(BUILD_DIR)/data_shared.o \
-                $(BUILD_DIR)/data_reu_wait.o
+                $(BUILD_DIR)/data_reu_wait.o \
+                $(BUILD_DIR)/data_mul_stage.o
 
 LIB_APP_OWNED_OBJS = $(LIB_CORE_APP_OWNED_OBJS) $(LIB_MUL_APP_OWNED_OBJS) \
                 $(LIB_P256_VERIFY_BASE_OBJS) $(BUILD_DIR)/ecdsa256.o \
@@ -541,7 +543,8 @@ LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/zp_config.o
 LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
                 $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o \
-                $(BUILD_DIR)/data_reu_wait.o
+                $(BUILD_DIR)/data_reu_wait.o \
+                $(BUILD_DIR)/data_mul_stage.o
 LIB_P256_VERIFY_ONCHIP_OBJS = $(BUILD_DIR)/fp256_onchip.o $(BUILD_DIR)/mod256.o \
                 $(BUILD_DIR)/curve256.o $(BUILD_DIR)/points256_core.o \
                 $(BUILD_DIR)/data_p256.o $(BUILD_DIR)/ecdsa256_nocomb.o
@@ -561,21 +564,55 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
                 $(BUILD_DIR)/inv256.o $(BUILD_DIR)/data_p256_invref.o \
                 $(BUILD_DIR)/ecdsa384_msg.o
 
-lib:             $(LIB_DIR)/nistcurves.a
-lib-p256-comb:   $(LIB_DIR)/nistcurves-p256-comb.a
-lib-p256-comb-onchip: $(LIB_DIR)/nistcurves-p256-comb-onchip.a
-lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a
-lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a
-lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a
-lib-p384-curve:  $(LIB_DIR)/nistcurves-p384-curve.a
-lib-app-owned:           $(LIB_DIR)/nistcurves-app-owned.a
-lib-onchip:              $(LIB_DIR)/nistcurves-onchip.a
-lib-p256-verify-onchip:  $(LIB_DIR)/nistcurves-p256-verify-onchip.a
-lib-p384-verify-onchip:  $(LIB_DIR)/nistcurves-p384-verify-onchip.a
-lib-p384-curve-onchip:   $(LIB_DIR)/nistcurves-p384-curve-onchip.a
+# --- SPEC §6.1 consumer packaging --------------------------------------------
+# §6.1 (contract v1.1.0) requires `make lib` to produce the archive PLUS the
+# consumer-facing `.inc` header and an example `.cfg`. Both are checked-in
+# sources copied verbatim into build/lib/ -- they are not generated, so there
+# is exactly one canonical copy of each and no chance of the shipped artifact
+# drifting from the one in the tree:
+#
+#   build/lib/nistcurves.a                    the archive (per-variant name)
+#   build/lib/nistcurves.inc                  <- src/nistcurves.inc
+#   build/lib/cfg/nistcurves-example.cfg      <- cfg/nistcurves-example.cfg
+#
+# EVERY `lib*` target carries $(LIB_PACKAGING), not just `lib`: a consumer who
+# runs `make lib-p256-verify` gets an archive whose header and cfg they need
+# just as much, and the header's own variant switches (see src/nistcurves.inc
+# §1) are what make it usable against the minimal archives at all.
+#
+# `build/lib/cfg` gets its OWN order-only prerequisite rather than riding on
+# $(LIB_DIR): `mkdir -p $(LIB_DIR)` does not create the subdirectory, so a
+# rule that depends only on $(LIB_DIR) existing would die in `cp` the first
+# time it ran into a build/lib created by some other path.
+LIB_INC         = $(LIB_DIR)/nistcurves.inc
+LIB_CFG_DIR     = $(LIB_DIR)/cfg
+LIB_EXAMPLE_CFG = $(LIB_CFG_DIR)/nistcurves-example.cfg
+LIB_PACKAGING   = $(LIB_INC) $(LIB_EXAMPLE_CFG)
+
+lib:             $(LIB_DIR)/nistcurves.a $(LIB_PACKAGING)
+lib-p256-comb:   $(LIB_DIR)/nistcurves-p256-comb.a $(LIB_PACKAGING)
+lib-p256-comb-onchip: $(LIB_DIR)/nistcurves-p256-comb-onchip.a $(LIB_PACKAGING)
+lib-p256-verify: $(LIB_DIR)/nistcurves-p256-verify.a $(LIB_PACKAGING)
+lib-p384-verify: $(LIB_DIR)/nistcurves-p384-verify.a $(LIB_PACKAGING)
+lib-p384-sha384: $(LIB_DIR)/nistcurves-p384-sha384.a $(LIB_PACKAGING)
+lib-p384-curve:  $(LIB_DIR)/nistcurves-p384-curve.a $(LIB_PACKAGING)
+lib-app-owned:           $(LIB_DIR)/nistcurves-app-owned.a $(LIB_PACKAGING)
+lib-onchip:              $(LIB_DIR)/nistcurves-onchip.a $(LIB_PACKAGING)
+lib-p256-verify-onchip:  $(LIB_DIR)/nistcurves-p256-verify-onchip.a $(LIB_PACKAGING)
+lib-p384-verify-onchip:  $(LIB_DIR)/nistcurves-p384-verify-onchip.a $(LIB_PACKAGING)
+lib-p384-curve-onchip:   $(LIB_DIR)/nistcurves-p384-curve-onchip.a $(LIB_PACKAGING)
 
 $(LIB_DIR):
 	mkdir -p $(LIB_DIR)
+
+$(LIB_CFG_DIR):
+	mkdir -p $(LIB_CFG_DIR)
+
+$(LIB_INC): $(SRC_DIR)/nistcurves.inc | $(LIB_DIR)
+	cp $< $@
+
+$(LIB_EXAMPLE_CFG): cfg/nistcurves-example.cfg | $(LIB_CFG_DIR)
+	cp $< $@
 
 # ar65 a <archive> <objs>... creates / appends; we rm -f first so each rebuild
 # starts from an empty archive (ar65 has no replace-all flag).

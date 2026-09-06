@@ -624,6 +624,45 @@ git commit -m "Bump c64-nist-curves to v0.9.1"
 Consumers should pin to a specific tag rather than tracking `master`
 or any wave branch — see §8.5 for the version-stability policy.
 
+#### 8.1.1 The shipped header and example cfg (SPEC §6.1)
+
+`make lib` — and every `make lib-*` variant target — produces three
+artifacts, not one:
+
+```text
+build/lib/nistcurves.a                  the archive (per-variant basename)
+build/lib/nistcurves.inc                consumer-facing header
+build/lib/cfg/nistcurves-example.cfg    example consumer linker config
+```
+
+**Use the header rather than transcribing imports out of the sections
+below.** `.include "nistcurves.inc"` gives you the §1 version equates,
+the §5 manifest equates, the §3 REU placement equates, the §8.2
+prefixed placement outputs, the §8.4 precalc enumeration and the public
+entry points, each annotated with the rule that governs it. Sections
+§5, §8.4 and §8.6 here remain the prose reference; the header is the
+machine-checkable copy, and `make check-archives` links it against
+every archive on every run so it cannot drift from reality.
+
+Two things the header needs from you:
+
+- **Tell it which archive you linked.** Twelve archives ship, with
+  different member sets, so define the matching switch (`-D
+  LIB_P256_VERIFY_ONLY`, `-D FP_ONCHIP_MUL`, …) before including it.
+  The full table is in the header's own preamble. Getting it wrong is
+  a link error naming the symbol, never a silent wrong build.
+- **Add `-D LIB_NO_BARE_EXPORTS=1` on both sides** if you compose two
+  or more c64-lib-contract libraries — to `make lib
+  CONTRACT_DEFINES=…` and to your own TUs. It gates the deprecated
+  unprefixed names symmetrically.
+
+`cfg/nistcurves-example.cfg` is a starting point for your own linker
+config, not a drop-in: adapt the memory map, keep the `SEGMENTS{}`
+block. Its inline comments are the normative SPEC §4 declarations of
+which placement attributes this library's correctness and timing
+depend on, and what breaks without them — a clean link is not evidence
+you got them right (see §8.3).
+
 ### 8.2 Building against the library
 
 The recommended consumer build pattern (added in v0.2.x via c64-lib-contract
@@ -791,17 +830,17 @@ Exclusion summary (per minimal archive):
 
   | Archive | `-D` switch(es) | `ZP_USAGE_BYTES` | `REU_BANKS_USED` | `SHARED_PRIMITIVES` | `SHARED_CONSUMES` | `RESIDENT_BYTES` | `COLD_BYTES` | precalc rows |
   |---|---|---:|---|---|---|---:|---:|---|
-  | `nistcurves.a` | (default) | 27 | `$07` | `$0007` | `$0007` | 27000 | 1840 | sqtab, reu_mul, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (5) |
-  | `nistcurves-onchip.a` | `FP_ONCHIP_MUL` | 27 | `$04` | `$0005` | `$0005` | 27000 | 1650 | sqtab, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k (4) |
-  | `nistcurves-p256-verify.a` | `LIB_P256_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8700 | 430 | sqtab, reu_mul (2) |
-  | `nistcurves-p256-verify-onchip.a` | `LIB_P256_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8700 | 240 | sqtab (1) |
-  | `nistcurves-p384-verify.a` | `LIB_P384_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8300 | 430 | sqtab, reu_mul (2) |
-  | `nistcurves-p384-verify-onchip.a` | `LIB_P384_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8300 | 240 | sqtab (1) |
-  | `nistcurves-p384-curve.a` | `LIB_P384_CURVE_ONLY` | 23 | `$03` | `$0007` | `$0007` | 17400 | 430 | sqtab, reu_mul, sha384_k (3) |
-  | `nistcurves-p384-curve-onchip.a` | `LIB_P384_CURVE_ONLY` + `FP_ONCHIP_MUL` | 23 | `$00` | `$0005` | `$0005` | 17400 | 240 | sqtab, sha384_k (2) |
-  | `nistcurves-p384-sha384.a` | `LIB_SHA384_ONLY` | 8 | `$00` | `$0000` | `$0000` | 9000 | 0 | sha384_k (1) |
-  | `nistcurves-p256-comb.a` | `LIB_P256_COMB_ONLY` | 17 | `$07` | `$0007` | `$0007` | 9216 | 1050 | sqtab, reu_mul, lim_lee_comb_p256 (3) |
-  | `nistcurves-p256-comb-onchip.a` | `LIB_P256_COMB_ONLY` + `FP_ONCHIP_MUL` | 17 | `$04` | `$0005` | `$0005` | 9216 | 870 | sqtab, lim_lee_comb_p256 (2) |
+  | `nistcurves.a` | (default) | 27 | `$07` | `$0007` | `$0007` | 27200 | 1840 | sqtab, reu_mul, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k, sha384_rotr_lut (6) |
+  | `nistcurves-onchip.a` | `FP_ONCHIP_MUL` | 27 | `$04` | `$0005` | `$0005` | 27200 | 1650 | sqtab, lim_lee_comb_p256, lim_lee_comb_p384, sha384_k, sha384_rotr_lut (5) |
+  | `nistcurves-p256-verify.a` | `LIB_P256_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8800 | 430 | sqtab, reu_mul (2) |
+  | `nistcurves-p256-verify-onchip.a` | `LIB_P256_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8800 | 250 | sqtab (1) |
+  | `nistcurves-p384-verify.a` | `LIB_P384_VERIFY_ONLY` | 15 | `$03` | `$0007` | `$0007` | 8450 | 430 | sqtab, reu_mul (2) |
+  | `nistcurves-p384-verify-onchip.a` | `LIB_P384_VERIFY_ONLY` + `FP_ONCHIP_MUL` | 15 | `$00` | `$0005` | `$0005` | 8450 | 250 | sqtab (1) |
+  | `nistcurves-p384-curve.a` | `LIB_P384_CURVE_ONLY` | 23 | `$03` | `$0007` | `$0007` | 17550 | 430 | sqtab, reu_mul, sha384_k, sha384_rotr_lut (4) |
+  | `nistcurves-p384-curve-onchip.a` | `LIB_P384_CURVE_ONLY` + `FP_ONCHIP_MUL` | 23 | `$00` | `$0005` | `$0005` | 17550 | 250 | sqtab, sha384_k, sha384_rotr_lut (3) |
+  | `nistcurves-p384-sha384.a` | `LIB_SHA384_ONLY` | 8 | `$00` | `$0000` | `$0000` | 9216 | 0 | sha384_k, sha384_rotr_lut (2) |
+  | `nistcurves-p256-comb.a` | `LIB_P256_COMB_ONLY` | 17 | `$07` | `$0007` | `$0007` | 9300 | 1050 | sqtab, reu_mul, lim_lee_comb_p256 (3) |
+  | `nistcurves-p256-comb-onchip.a` | `LIB_P256_COMB_ONLY` + `FP_ONCHIP_MUL` | 17 | `$04` | `$0005` | `$0005` | 9300 | 870 | sqtab, lim_lee_comb_p256 (2) |
 
   **What the two byte figures cover.** Per SPEC §5, `RESIDENT_BYTES` and
   `COLD_BYTES` are **code + rodata only**. RW scratch (the `*_BSS`
@@ -811,23 +850,29 @@ Exclusion summary (per minimal archive):
   budgeted separately — see the §8.3 memory map. Worked example for the
   archive most consumers link, measured with `od65 --dump-segments` over
   the extracted members of `build/lib/nistcurves-p256-verify.a`:
-  `P256_CODE` 8406 + `MUL_CODE` 477 + `P256_RODATA` 192 = 9075 code +
-  rodata (of which 438 B is the cold block itemized in
-  `src/lib_manifest.s` — `sqtab_init` + `ct_mul_8x8` 223,
-  `reu_fetch_mul_row` 23, `reu_mul_init` 192 — leaving 8637 resident
-  against the 8700 equate, §6.6 safe direction — **63 B of headroom, the
-  tightest margin of any archive**: re-measure rather than assume when
-  changing the P-256 verify path. Figures as of v0.12.0, after the SPEC
-  v0.13.0 §8.2 completion-confirm adoption (issue #130) and the issue
-  #132 inversion / infinity guards),
-  **plus** 1351 B BSS
-  (`data_p256.o` 1312 + `data_shared.o` 39) + 512 B DMA landing pages,
-  and 1024 B of `sqtab` if no sibling library already owns it. Total RAM
-  for that archive is therefore 10880 B, or 11904 B counting `sqtab` —
-  not the 27000 the *whole-library*
-  manifest reports: since v0.9.0 (issue #90) each archive links its own
+  `P256_CODE` + `MUL_CODE` + `P256_RODATA` = **9075** B code + rodata,
+  against a declared `RESIDENT + COLD` of 8800 + 430 = 9230 — **155 B of
+  headroom**. Add 1351 B BSS (`data_p256.o` 1312 + `data_shared.o` 39),
+  512 B of DMA landing pages, and 1024 B of `sqtab` if no sibling library
+  already owns it, and total RAM for that archive is 10938 B, or 11962 B
+  counting `sqtab` — not the 27200 the *whole-library* manifest reports.
+  Since v0.9.0 (issue #90) each archive links its own
   `lib_manifest_<variant>.o`, so read the row above for the archive you
   actually link rather than the default one.
+
+  **These figures are measured, not asserted (issue #142).** `make
+  check-archives` sums each archive's code+rodata segments from its built
+  members and requires `RESIDENT + COLD >= measured` — SPEC §5's
+  safe-direction rule, checked against the bytes rather than against a
+  second copy of the same numbers. Until v0.13.0 the "manifest value pins"
+  compared the manifest to a hard-coded table inside the checker, so both
+  sides were the table: **six of the twelve archives were understating
+  their footprint** by 5 to 72 bytes when the measurement leg was first
+  run, in the direction that lets a consumer's fit check pass while the
+  library overruns their region. All twelve now carry 0.4–2.1% headroom.
+  A segment the classification does not recognise fails the check rather
+  than being silently omitted, so a new segment cannot escape the
+  accounting.
 
   The two `nistcurves-p256-comb*` rows (issue #117) are the verify set
   plus the comb: ZP adds `nistcurves_zp_ptr1` (the `ec_precompute_256`
@@ -1053,7 +1098,7 @@ issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
   boot-only `reu_mul_init` body present in every DMA-profile archive and
   absent from every onchip one (issues #78/#81) — 1840 vs. 1650 for the
   full archive, and a larger relative delta (26-35%) on the minimal
-  archives, outside the SPEC §5 ±5% band either way (issue #90). Note the
+  archives, and understating either way (issue #90). Note the
   runtime-generated 1 KB `sqtab` RAM table is verify-hot under this
   profile but excluded from the equates (generated RW state, not
   code+rodata) — budget it separately at `LIB_SHARED_SQTAB_BASE`.
@@ -1130,7 +1175,7 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
 .assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 10), lderror, "c64-nist-curves v0.10 or newer is required"
-.assert LIB_NISTCURVES_ABI_VERSION = 2, lderror, "c64-nist-curves ABI v2 expected; rebuild consumer"
+.assert LIB_NISTCURVES_ABI_VERSION = 3, lderror, "c64-nist-curves ABI v3 expected; rebuild consumer"
 ```
 
 This uses `.assert`/`lderror` rather than `.if`/`.error`. `.if` requires

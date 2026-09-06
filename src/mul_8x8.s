@@ -69,7 +69,16 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 ; removed at the next MAJOR. In-library they are same-TU equates (og_common)
 ; plus one .import from the never-archived main.s sqtab-window guard, which the
 ; standalone build (no gate) still satisfies.
-.ifndef LIB_NO_BARE_EXPORTS
+;
+; Narrowed further by the SPEC 1.1.0 realignment: a build that DEFERS §8.1 to a
+; canonical provider must not export them at all. In the deferral arm the
+; provider derives the same two names from the same base, so the collision is
+; certain rather than merely possible -- and a consumer who has already gone to
+; the trouble of supplying a provider is exactly the one who should not have to
+; discover a second gate (`-D LIB_NO_BARE_EXPORTS=1`) to link. There is no
+; in-tree importer left to protect: src/main.s's sqtab-window guard asserts
+; against LIB_SHARED_SQTAB_BASE, not against these labels.
+.if (.not .defined(LIB_NO_BARE_EXPORTS)) .and (.not .defined(SHARED_SQTAB_INIT))
 .export sqtab_lo, sqtab_hi
 .endif
 
@@ -87,6 +96,21 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 ; =============================================================================
 .ifndef SHARED_SQTAB_INIT
 .export sqtab_init
+; SPEC §8.1: `mul_tables_init` is the CANONICAL init entry point, and §8.0's
+; owner row requires an owner to export the primitive's init "per its §8.x
+; clause". This build owns §8.1 -- lib_manifest.s sets bit $0001 in
+; LIB_NISTCURVES_SHARED_PRIMITIVES in every non-SHA archive -- but exported
+; only the historical `sqtab_init` spelling through v0.12.0, so a co-linked
+; sibling deferring its sqtab to us (`-D SHARED_SQTAB_INIT`, then
+; `.import mul_tables_init`) got an unresolved external from a library whose
+; own manifest said it was the provider. Invisible here: nothing in this tree
+; imports the canonical name.
+;
+; Same shape and same remedy as src/reu_mul_init.s:88's `reu_mul_tables_init`
+; alias for §8.2; that one was added, this one was missed. Additive, so no ABI
+; event -- `sqtab_init` keeps working for every existing caller.
+.export mul_tables_init
+mul_tables_init = sqtab_init
 sqtab_init:
         lda #0
         sta sq_acc              ; accumulator = 0

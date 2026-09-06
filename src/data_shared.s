@@ -60,20 +60,12 @@ nistcurves_mul_src2_buf:
 ; itself. Sharing one TU meant referencing the settle state pulled this member
 ; into the link and duplicated those buffer definitions. Do not merge them back.
 
-; --- REU DMA target buffers (page-aligned for LDA abs,Y without penalty) ---
-; SHARED between P-256 and P-384 code paths - see re-entrancy note above.
-.segment "LIB_NISTCURVES_TABLES"
-.export nistcurves_mul_dma_lo
-.ifndef LIB_NO_BARE_EXPORTS
-.export mul_dma_lo
-.endif
-mul_dma_lo = nistcurves_mul_dma_lo
-nistcurves_mul_dma_lo:
-        .res 256, 0           ; DMA target: lo bytes of a*b for current a
-.export nistcurves_mul_dma_hi
-.ifndef LIB_NO_BARE_EXPORTS
-.export mul_dma_hi
-.endif
-mul_dma_hi = nistcurves_mul_dma_hi
-nistcurves_mul_dma_hi:
-        .res 256, 0           ; DMA target: hi bytes of a*b for current a
+; The §8.2 staging buffers (nistcurves_mul_dma_lo / _hi) used to live here too.
+; They are in src/data_mul_stage.s now, and must stay there: they are an
+; APP_OWNED surface, the two cells above are library-private and imported by
+; fp256.o / fp384.o / mul_8x8.o, and SPEC §6.1 member isolation forbids the combination (clause added at
+; contract 1.2.0, wording amended at 1.2.1 and 1.2.2; frozen at v1.2.2) --
+; ld65 links whole members, so a consumer owning the buffers and calling any
+; field op pulled this member and collided. Splitting the settle state out
+; (issue #149, src/data_reu_wait.s) fixed only half of that. Do not merge them
+; back.

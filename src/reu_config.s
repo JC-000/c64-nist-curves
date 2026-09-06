@@ -46,48 +46,15 @@
 ; `LIB_SHARED_REU_MUL_BANK` so the canonical shared equate is the single
 ; source of truth at all in-tree callsites.
 
-.ifndef LIB_SHARED_REU_MUL_BANK
-  LIB_SHARED_REU_MUL_BANK = $00
-.endif
+.include "reu_banks.inc"
 
-.ifndef LIB_SHARED_REU_MUL_OFFSET
-  LIB_SHARED_REU_MUL_OFFSET = $0000
-.endif
-
-; Derived two-bank mask per SPEC §8.2 (the table claims `base` and
-; `base + 1`). Consumers compose it directly into REU-region collision
-; `.assert`s instead of rewriting `(1 .shl bank) | (1 .shl (bank+1))`
-; at every callsite. Libraries OR it into their own
-; `LIB_<X>_REU_BANKS_USED` (§5) when they consume the canonical primitive.
-LIB_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_SHARED_REU_MUL_BANK) | (1 .shl (LIB_SHARED_REU_MUL_BANK + 1))
-
-; SPEC §8.2 assemble-time guards:
-;   - offset $0000:  v0.x.0 row-stride constraint (start-of-bank required)
-;   - base < $FE:    the hi-half bank lives at base+1, so $FF has no successor
-.assert LIB_SHARED_REU_MUL_OFFSET = $0000, error, "reu_mul must start at offset 0 within its bank pair (SPEC §8.2 v0.x.0)"
-.assert LIB_SHARED_REU_MUL_BANK < $FE,     error, "reu_mul base bank must leave room for the hi-half bank at base+1 (SPEC §8.2)"
-
-; Backwards-compatible alias. `LIB_NISTCURVES_REU_BANK_MUL` is the
-; pre-SPEC-§8.2 name; in-tree callsites (main.s, mul_8x8.s) still
-; .import it. Aliasing to the canonical shared equate keeps one source
-; of truth without breaking any callsite. The `.ifndef` guard preserves
-; the consumer-override path that already existed for the legacy name.
-.ifndef LIB_NISTCURVES_REU_BANK_MUL
-  LIB_NISTCURVES_REU_BANK_MUL = LIB_SHARED_REU_MUL_BANK
-.endif
-
-; --- Lim-Lee comb anchor tables (one bank, two within-bank regions) ---
-.ifndef LIB_NISTCURVES_REU_BANK_COMB
-  LIB_NISTCURVES_REU_BANK_COMB = $02
-.endif
-
-.ifndef LIB_NISTCURVES_REU_OFFSET_COMB_P256
-  LIB_NISTCURVES_REU_OFFSET_COMB_P256 = $0000
-.endif
-
-.ifndef LIB_NISTCURVES_REU_OFFSET_COMB_P384
-  LIB_NISTCURVES_REU_OFFSET_COMB_P384 = $4000
-.endif
+; The §8.2 staging-buffer knobs (LIB_SHARED_REU_MUL_STAGE_LO/_HI) and their
+; prefixed output counterparts live in src/data_mul_stage.s, next to the labels
+; they describe. Deriving them here required `.global nistcurves_mul_dma_lo`,
+; which turned this file -- a pure equate TU with zero imports -- into one that
+; pulls that member: a consumer importing nothing but a §3 bank equate got 512
+; bytes of buffers and four `mul_*` names registered to another library,
+; uninvited.
 
 ; --- SPEC v0.13.0 §8.2 post-execute settle (issue #130) ---
 ; Iterations of the 9-cycle settle loop in nistcurves_reu_dma_wait
@@ -144,11 +111,17 @@ LIB_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_SHARED_REU_MUL_BANK) | (1 .shl (LIB_
 ; code-read bank for the same reason the BANK output is.
 LIB_NISTCURVES_SHARED_REU_MUL_BANK   = LIB_NISTCURVES_REU_BANK_MUL
 LIB_NISTCURVES_SHARED_REU_MUL_OFFSET = LIB_SHARED_REU_MUL_OFFSET
-LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED = (1 .shl LIB_NISTCURVES_REU_BANK_MUL) | (1 .shl (LIB_NISTCURVES_REU_BANK_MUL + 1))
+LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED = LIB_NISTCURVES_REU_MASK_MUL
 
 .export LIB_NISTCURVES_SHARED_REU_MUL_BANK:abs
 .export LIB_NISTCURVES_SHARED_REU_MUL_OFFSET:abs
 .export LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED:abs
+
+; The §8.2 staging pair, same export discipline: the bare LIB_SHARED_ knobs are
+; consumer input and stay unexported; these prefixed counterparts publish where
+; the row actually lands so a consumer can assert two co-linked §8.2 libraries
+; agree on the landing page. No `:abs` -- unlike the scalar parameters above
+; these are genuine addresses, and ca65 already sizes them from the label.
 
 ; SPEC §8.2 canonical equates are deliberately NOT exported
 ; (c64-lib-contract #82). They are consumer-supplied placement values:

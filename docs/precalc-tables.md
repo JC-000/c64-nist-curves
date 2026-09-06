@@ -32,6 +32,7 @@ classification still holds.
 | `lim_lee_comb_p256` | 16384 | REU | `src/points256_comb.s` (`ec_precompute_256`) | Full archives (`nistcurves.a`/`nistcurves-onchip.a`) **and the P-256 comb archives** (`nistcurves-p256-comb[-onchip].a`, `LIB_P256_COMB_ONLY`, issue #117) — issue #90: none of the three minimal verify/curve variants (`LIB_P256_VERIFY_ONLY`/`LIB_P384_VERIFY_ONLY`/`LIB_P384_CURVE_ONLY`) ship `points256_comb.o`, so this row is absent from all three, not just `LIB_SHA384_ONLY`. The onchip full/comb archives still populate/read REU bank `$02` (only the mul banks `$00`/`$01` disappear under onchip). | Curve-specific (P-256) | h=8 Lim-Lee fixed-base scalar-mul anchor table for `secp256r1` at REU bank `$02` offset `$0000`. 256 entries × 64 B (X, Y only — no Z). Specific to the P-256 generator point and curve parameters; not shareable across curves. Built once at boot; only consumed by the fixed-base scalar_mul path in `lib-p256`. Excluded from `lib-p256-verify` archive per `API.md` §8.3. |
 | `lim_lee_comb_p384` | 24576 | REU | `src/points384_comb.s` (`ec_precompute_384`) | Full archives only (`nistcurves.a`/`nistcurves-onchip.a`) — issue #90: same as `lim_lee_comb_p256` — none of the three minimal verify/curve variants ships `points384_comb.o` either, including `LIB_P384_CURVE_ONLY` (it ships SHA-384 + the packaged one-shot verify wrapper, not the comb). Also absent from the P-256 comb archives (`LIB_P256_COMB_ONLY`, issue #117): the two `lim_lee_comb_*` row gates split per curve so the P-256 comb archive does not advertise this 24 KB table it lacks. | Curve-specific (P-384) | h=8 Lim-Lee fixed-base scalar-mul anchor table for `secp384r1` at REU bank `$02` offset `$4000`. 256 entries × 96 B (X, Y only — no Z). Specific to the P-384 generator point and curve parameters; not shareable across curves. Built once at boot; only consumed by the fixed-base scalar_mul path in `lib-p384`. Excluded from `lib-p384-verify` archive per `API.md` §8.3. |
 | `sha384_k` | 640 | RODATA | `src/sha384.s` | Full archives, `LIB_P384_CURVE_ONLY` (ships `sha384.o` + the one-shot verify wrapper), and `LIB_SHA384_ONLY` (the only row that variant emits) — issue #90: absent from `LIB_P256_VERIFY_ONLY`/`LIB_P384_VERIFY_ONLY`, neither of which ships `sha384.o` | Algorithm-specific (SHA-384/512) | FIPS 180-4 §4.2.3 K[80] round constants for the SHA-512 compression family (SHA-384 reuses the same K table; only the IV differs). 80 × 8 B little-endian. Could in principle be shared with a future SHA-512 sibling library, but no second adopter exists today (TLS 1.3 secp384r1 pairs with SHA-384 only). Promotion to §8.x would require a second adopter and an audit-confirmed bit-identical table; not pursued in this release. |
+| `sha384_rotr_lut` | 3072 | RODATA | `src/sha384.s` | Same archives as `sha384_k` — both live in `sha384.o`, so they are present in precisely the same set | Algorithm-specific (SHA-384/512) | The twelve within-byte rotate LUTs `lo_2_tbl`..`hi_7_tbl`, 256 B each. Clears the §8.4 floor on two disjuncts at once: **page-aligned** (`align = $100` on `LIB_NISTCURVES_SHA384_TABLES`, declared load-bearing in `src/c64.cfg`) and **inner-loop-read** (`lda lo_k_tbl,x` / `ora hi_k_tbl,x` in the compression macros, instantiated nine times per round). Enumerated from v0.13.0: missed through v0.12.0, which was an omission rather than a classification — the smaller 640 B `sha384_k` RODATA table was already listed, and at 3072 B these are the second-largest CPU-resident table the library ships. A sibling shipping its own SHA-2 rotate LUTs would have gone undetected, which is the duplication signal this enumeration exists to produce. |
 
 Eleven build variants of this manifest ship (was three through v0.8.0,
 nine through v0.10.2), one per archive, each enumerating exactly the
@@ -43,23 +44,23 @@ deprecated bare one:
 
 | Object | Built with | Tables enumerated | Exports |
 |---|---|---:|---:|
-| `precalc_manifest.o` | (default) | 5 | 30 |
-| `precalc_manifest_onchip.o` | `-D FP_ONCHIP_MUL` | 4 — no `reu_mul` | 24 |
+| `precalc_manifest.o` | (default) | 6 | 36 |
+| `precalc_manifest_onchip.o` | `-D FP_ONCHIP_MUL` | 5 — no `reu_mul` | 30 |
 | `precalc_manifest_p256verify.o` | `-D LIB_P256_VERIFY_ONLY` | 2 — sqtab, reu_mul | 12 |
 | `precalc_manifest_p256verify_onchip.o` | `-D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL` | 1 — sqtab only | 6 |
 | `precalc_manifest_p384verify.o` | `-D LIB_P384_VERIFY_ONLY` | 2 — sqtab, reu_mul | 12 |
 | `precalc_manifest_p384verify_onchip.o` | `-D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL` | 1 — sqtab only | 6 |
-| `precalc_manifest_p384curve.o` | `-D LIB_P384_CURVE_ONLY` | 3 — sqtab, reu_mul, sha384_k | 18 |
-| `precalc_manifest_p384curve_onchip.o` | `-D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL` | 2 — sqtab, sha384_k | 12 |
+| `precalc_manifest_p384curve.o` | `-D LIB_P384_CURVE_ONLY` | 4 — sqtab, reu_mul, sha384_k, sha384_rotr_lut | 24 |
+| `precalc_manifest_p384curve_onchip.o` | `-D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL` | 3 — sqtab, sha384_k, sha384_rotr_lut | 18 |
 | `precalc_manifest_p256comb.o` | `-D LIB_P256_COMB_ONLY` | 3 — sqtab, reu_mul, lim_lee_comb_p256 | 18 |
 | `precalc_manifest_p256comb_onchip.o` | `-D LIB_P256_COMB_ONLY -D FP_ONCHIP_MUL` | 2 — sqtab, lim_lee_comb_p256 | 12 |
-| `precalc_manifest_sha384.o` | `-D LIB_SHA384_ONLY` | 1 — `sha384_k` only | 6 |
+| `precalc_manifest_sha384.o` | `-D LIB_SHA384_ONLY` | 2 — `sha384_k`, `sha384_rotr_lut` | 12 |
 
 The `FP_ONCHIP_MUL` profile generates multiply rows on-chip, so the
 `reu_mul` table does not exist there (issue #78). The `lib-p384-sha384`
-archive carries no field or multiply code at all, so `sha384_k` is the
-only precalculated table it has (issue #88) — enumerating the other four
-there both described tables the archive lacks and, because this
+archive carries no field or multiply code at all, so the two SHA tables
+(`sha384_k`, `sha384_rotr_lut`) are the only precalculated tables it has
+(issue #88) — enumerating the field/multiply ones there both described tables the archive lacks and, because this
 enumeration is what the §8.0 cross-adopter audit greps, made a SHA-only
 link look like a duplicate `sqtab` provider to any sibling that ships a
 real one.

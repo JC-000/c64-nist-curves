@@ -146,3 +146,22 @@ LIB_PRECALC_TABLE "lim_lee_comb_p384", 24576,  PRECALC_REGION_REU,    PRECALC_SH
 .if _HAS_SHA384_K
 LIB_PRECALC_TABLE "sha384_k",          640,    PRECALC_REGION_RODATA, PRECALC_SHARED_NO,  "NISTCURVES"
 .endif
+; sha384_rotr_lut: the twelve within-byte rotate LUTs lo_2_tbl..hi_7_tbl in
+; src/sha384.s (256 B each = 3072 B, confirmed by od65 --dump-segments on
+; sha384.o: LIB_NISTCURVES_SHA384_TABLES size 3072). Missed by this
+; enumeration through v0.12.0 -- an omission, not a classification, since the
+; smaller 640 B sha384_k RODATA table was already listed.
+;
+; They clear §8.4's floor on two of its three disjuncts at once: page-aligned
+; (`align = $100` on their segment, declared load-bearing in src/c64.cfg) and
+; inner-loop-read (`lda lo_k_tbl,x` / `ora hi_k_tbl,x` in the compression
+; macros, instantiated nine times per round). At 3072 B they are the second
+; largest RAM/ROM-resident table this library ships, and leaving them out is
+; exactly the cross-adopter duplication signal §8.4 exists to produce -- any
+; sibling shipping its own SHA-2 rotate LUTs would have gone undetected.
+;
+; Gated on the same flag as sha384_k: both live in sha384.o, so they are
+; present in precisely the same archives.
+.if _HAS_SHA384_K
+LIB_PRECALC_TABLE "sha384_rotr_lut",   3072,   PRECALC_REGION_RODATA, PRECALC_SHARED_NO,  "NISTCURVES"
+.endif
