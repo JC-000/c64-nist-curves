@@ -704,6 +704,30 @@ ec_scalar_mul:
         lda cm_idx
         jsr sm256_reu_fetch_affine
 
+        ; --- Issue #148: fail closed on an unusable table slot ---
+        ; sm256_reu_fetch_affine DMAs 64 bytes out of the REU and validates
+        ; nothing, so a corrupt or never-written slot arrives here as a
+        ; "point". The dangerous shape is Y == 0: seeding R = (X, 0, 1) makes
+        ; the next ec_point_double compute Z3 = 2*Y1*Z1 = 0, i.e. R collapses
+        ; to the infinity encoding. ecdsa_verify_256 then takes the
+        ; ec_point_add_jj P1-infinity branch, R := u2*Q, and the check no
+        ; longer involves G or the message at all -- the textbook u1*G = O
+        ; forgery, which any holder of Q can satisfy without the private key.
+        ; Verification would fail OPEN.
+        ;
+        ; Y == 0 subsumes the all-zero slot #148 reported and is the exact
+        ; collapse condition. It cannot reject a legitimate entry: y = 0 means
+        ; a point of order 2, and both curves have prime (odd) group order, so
+        ; no such point exists -- every stored T[1..255] has Y != 0.
+        ldy #31
+        lda #0
+@cm_slot_y_nz:
+        ora ec_p2+32,y
+        dey
+        bpl @cm_slot_y_nz
+        cmp #0
+        beq @cm_bad_slot
+
         ; --- If R was infinity, seed R = T[idx] (Z=1) and clear flag ---
         lda cm_r_inf
         beq @cm_real_add
@@ -745,6 +769,20 @@ ec_scalar_mul:
         beq @cm_done
         jmp @cm_loop
 
+@cm_bad_slot:
+        ; Issue #148. Zero the output so a caller that ignores C cannot read a
+        ; stale or half-built point, and report the failure in C. This is the
+        ; same 96-byte all-zero Jacobian the k = 0 path returns, so the two are
+        ; distinguished by the carry, not by the buffer.
+        ldy #95
+        lda #0
+@cm_bs_zero:
+        sta ec_p3,y
+        dey
+        bpl @cm_bs_zero
+        sec                     ; C=1: comb table slot unusable
+        rts
+
 @cm_done:
         ; --- If R is still infinity, return all-zero point. ---
         lda cm_r_inf
@@ -755,6 +793,7 @@ ec_scalar_mul:
         sta ec_p3,y
         dey
         bpl @cm_zinf
+        clc                     ; C=0: k ≡ 0 mod n is a normal result
         rts
 
 @cm_copy_out:
@@ -765,6 +804,7 @@ ec_scalar_mul:
         sta ec_p3,y
         dey
         bpl @cm_finc
+        clc                     ; C=0: success
         rts
 
 ; --- Comb scalar-mul state vars ---

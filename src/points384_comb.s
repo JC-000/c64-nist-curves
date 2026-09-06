@@ -618,6 +618,23 @@ ec_scalar_mul_384:
         lda cm384_idx
         jsr sm384w_fetch_to_p2
 
+        ; --- Issue #148: fail closed on an unusable table slot ---
+        ; P-384 mirror of the points256_comb.s gate; see that file for the full
+        ; rationale. sm384w_fetch_to_p2 validates nothing, and a slot with
+        ; Y == 0 seeds R = (X, 0, 1), which the next ec_point_double_384 sends
+        ; to Z3 = 2*Y1*Z1 = 0 -- the infinity encoding -- making
+        ; ecdsa_verify_384 fail OPEN via the u1*G = O forgery. Y == 0 is
+        ; impossible for a legitimate entry (prime group order has no
+        ; 2-torsion), so this cannot reject a healthy table.
+        ldy #47
+        lda #0
+@cm384_slot_y_nz:
+        ora ec384_p2+48,y
+        dey
+        bpl @cm384_slot_y_nz
+        cmp #0
+        beq @cm384_bad_slot
+
         ; --- If R was infinity, seed R = T[idx] and clear flag ---
         lda cm384_r_inf
         beq @cm384_real_add
@@ -660,6 +677,19 @@ ec_scalar_mul_384:
         beq @cm384_done
         jmp @cm384_loop
 
+@cm384_bad_slot:
+        ; Issue #148. Zero the output and report the failure in C; same
+        ; all-zero 144-byte Jacobian as the k = 0 path, distinguished by carry.
+        ldy #0
+        lda #0
+@cm384_bs_zero:
+        sta ec384_p3,y
+        iny
+        cpy #144
+        bne @cm384_bs_zero
+        sec                     ; C=1: comb table slot unusable
+        rts
+
 @cm384_done:
         ; --- If R is still infinity, return all-zero point. ---
         lda cm384_r_inf
@@ -671,6 +701,7 @@ ec_scalar_mul_384:
         iny
         cpy #144
         bne @cm384_zinf
+        clc                     ; C=0: k ≡ 0 mod n is a normal result
         rts
 
 @cm384_copy_out:
@@ -681,6 +712,7 @@ ec_scalar_mul_384:
         iny
         cpy #144
         bne @cm384_finc
+        clc                     ; C=0: success
         rts
 
 ; --- Comb scalar-mul state vars (384-specific to avoid linker clash with points256) ---
