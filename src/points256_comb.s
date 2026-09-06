@@ -745,16 +745,76 @@ ec_scalar_mul:
         beq @cm_done
         jmp @cm_loop
 
+@cm_bad_slot:
+        ; Issue #148. Zero the output so a caller that ignores C cannot read a
+        ; stale or half-built point, and report the failure in C. This is the
+        ; same 96-byte all-zero Jacobian the k = 0 path returns, so the two are
+        ; distinguished by the carry, not by the buffer.
+        ldy #95
+        lda #0
+@cm_bs_zero:
+        sta ec_p3,y
+        dey
+        bpl @cm_bs_zero
+        sec                     ; C=1: no usable result (see @cm_check_z)
+        rts
+
+@cm_check_z:
+        ; --- Issue #148: fail closed when the accumulator collapsed ---
+        ; The comb seeded R from at least one anchor slot (cm_r_inf is clear
+        ; here), so on a healthy table R is a non-zero multiple of G and its Z
+        ; is non-zero. A zero Z at this point means the evaluation reached the
+        ; point at infinity anyway, and there is no usable result to return.
+        ;
+        ; This is the postcondition, not a per-slot sanity check, and that is
+        ; deliberate: it closes the whole fail-open class at once rather than
+        ; the one entry shape #148 happened to describe. `sm256_reu_fetch_affine`
+        ; DMAs 64 bytes out of the REU and validates nothing, and a slot the
+        ; table cannot vouch for reaches infinity by several routes --
+        ;   * Y = 0        : seeding R = (X, 0, 1) makes the next doubling
+        ;                    compute Z3 = 2*Y1*Z1 = 0;
+        ;   * Y = p        : the same collapse, since the raw Y is never
+        ;                    reduced between the DMA and the seed and the
+        ;                    Solinas tail sends p to 0 -- so a byte-wise
+        ;                    "is Y zero" test misses it, one representable
+        ;                    value wide;
+        ;   * T[b] = -R    : `ec_point_add`'s H == 0, R != 0 branch zeroes
+        ;                    ec_p3 outright, with every fetched Y non-zero;
+        ;   * a stale ec_p2: a timed-out DMA leaves the previous column's slot
+        ;                    in place, which can add to infinity the same way.
+        ; Every one of them ends here, and none of them can walk past a Z test.
+        ;
+        ; Left open by design: a corrupt table that yields a WRONG but non-zero
+        ; point. That is not a fail-open path -- verify then compares r against
+        ; the wrong x and rejects -- so it is out of scope for this guard.
+        ;
+        ; False positives: on a healthy table this fires only for a scalar that
+        ; is a non-zero multiple of n, which has no usable result either
+        ; (k*G = O has no affine form -- the same contract
+        ; `ec_jacobian_to_affine` adopted for issue #132). `ecdsa_verify_256`
+        ; cannot reach even that: it passes u1 = h*w mod n, which is < n, and
+        ; u1 = 0 leaves cm_r_inf SET and never arrives here.
+        ldy #31
+        lda #0
+@cm_zscan:
+        ora ec_p1+64,y
+        dey
+        bpl @cm_zscan
+        cmp #0
+        beq @cm_bad_slot
+        jmp @cm_copy_out
+
 @cm_done:
         ; --- If R is still infinity, return all-zero point. ---
         lda cm_r_inf
-        beq @cm_copy_out
+        beq @cm_check_z
         ldy #95
         lda #0
 @cm_zinf:
         sta ec_p3,y
         dey
         bpl @cm_zinf
+        clc                     ; C=0: k ≡ 0 mod n is a normal result
         rts
 
 @cm_copy_out:
@@ -765,6 +825,7 @@ ec_scalar_mul:
         sta ec_p3,y
         dey
         bpl @cm_finc
+        clc                     ; C=0: success
         rts
 
 ; --- Comb scalar-mul state vars ---

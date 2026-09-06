@@ -53,20 +53,12 @@ nistcurves_mul_src2_buf:
                                ; (32 bytes + 3 pad zeros so fp_sqr 4x-unroll
                                ; can over-read past j=31 into zeros for fast-skip)
 
-; --- SPEC v0.13.0 §8.2 DMA completion confirm state (issue #130) ---
-; nistcurves_reu_wait_cnt: 16-bit bounded-spin / settle counter used by
-;   nistcurves_reu_dma_wait (src/mul_8x8.s). Scratch; no init needed.
-; nistcurves_reu_dma_timeout: sticky, 1 once any bounded spin on $DF00
-;   bit 6 has expired without END OF BLOCK. Zero at load because this
-;   segment is `type = rw` (in the image); a consumer whose cfg makes it
-;   `bss` must zero it before init and may test it after (the clause's
-;   SHOULD: surface a bounded-spin failure like a missing REU at init).
-nistcurves_reu_wait_cnt:
-        .res 2, 0
-.export nistcurves_reu_wait_cnt
-.export nistcurves_reu_dma_timeout
-nistcurves_reu_dma_timeout:
-        .byte 0
+; The SPEC §8.2 DMA completion-confirm state (nistcurves_reu_wait_cnt /
+; nistcurves_reu_dma_timeout) used to live here. Issue #149 moved it to
+; src/data_reu_wait.s: it is library-private plumbing, whereas the
+; mul_dma_lo/hi buffers below are an APP_OWNED surface a consumer may define
+; itself. Sharing one TU meant referencing the settle state pulled this member
+; into the link and duplicated those buffer definitions. Do not merge them back.
 
 ; --- REU DMA target buffers (page-aligned for LDA abs,Y without penalty) ---
 ; SHARED between P-256 and P-384 code paths - see re-entrancy note above.

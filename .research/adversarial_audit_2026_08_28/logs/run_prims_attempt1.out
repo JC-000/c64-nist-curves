@@ -1,0 +1,258 @@
+VICE PID=73133, port=6518; waiting for $02A7
+Init complete after 340.3s
+=== SHA-384 ===
+[PASS] sha384 :: len=0
+[PASS] sha384 :: len=1
+[PASS] sha384 :: len=55
+[PASS] sha384 :: len=56
+[PASS] sha384 :: len=57
+[PASS] sha384 :: len=63
+[PASS] sha384 :: len=64
+[PASS] sha384 :: len=65
+[PASS] sha384 :: len=111
+[PASS] sha384 :: len=112
+[PASS] sha384 :: len=113
+[PASS] sha384 :: len=119
+[PASS] sha384 :: len=120
+[PASS] sha384 :: len=127
+[PASS] sha384 :: len=128
+[PASS] sha384 :: len=129
+[PASS] sha384 :: len=191
+[PASS] sha384 :: len=192
+[PASS] sha384 :: len=239
+[PASS] sha384 :: len=240
+[PASS] sha384 :: len=241
+[PASS] sha384 :: len=255
+[PASS] sha384 :: len=256
+[PASS] sha384 :: len=1023
+[PASS] sha384 :: len=1024
+[PASS] sha384 :: len=1025
+[PASS] sha384 :: len=2048
+[PASS] sha384 :: len=2047
+[PASS] sha384 :: chained updates splits=(0,) (300 B)
+[PASS] sha384 :: chained updates splits=(1,) (300 B)
+[PASS] sha384 :: chained updates splits=(64,) (300 B)
+[PASS] sha384 :: chained updates splits=(100,) (300 B)
+[PASS] sha384 :: chained updates splits=(128,) (300 B)
+[PASS] sha384 :: chained updates splits=(1, 1, 1) (300 B)
+[PASS] sha384 :: chained updates splits=(0, 0) (300 B)
+[PASS] sha384 :: chained updates splits=(128, 128) (300 B)
+[PASS] sha384 :: chained updates splits=(127, 1) (300 B)
+[PASS] sha384 :: chained updates splits=(111, 1) (300 B)
+[PASS] sha384 :: chained updates splits=(112, 0, 1) (300 B)
+[PASS] sha384 :: chained updates splits=(255, 45) (300 B)
+[PASS] sha384 :: init; update(len=0); final == sha384(b'')
+[PASS] sha384 :: 1024 + 1 chained
+[INFO] sha384 :: final twice without re-init (behaviour)
+    expected='cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7'
+    got     ='cc63528d778b88ad3fa8674926647f6d3ec77dfb82559ed1af82f6290c5a1486cfd0555a72ecccc5600a1ecd175bf56c'
+[PASS] sha384 :: re-init discards previous partial data
+[PASS] sha384 :: len=4133 in 1024-chunks
+  sha section took 18s
+=== field p256 ===
+[PASS] field-p256 :: mod_add (p-1)+(p-1)
+[PASS] field-p256 :: mod_add (p-1)+1
+[PASS] field-p256 :: mod_add 0+0
+[PASS] field-p256 :: mod_add a+a
+[PASS] field-p256 :: mod_add NONRED p+0
+[PASS] field-p256 :: mod_add NONRED p+1
+[INFO] field-p256 :: mod_add NONRED (p+1)+(p-1)
+    expected=0
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853951
+    detail  ={'a': '0xffffffff00000001000000000000000000000001000000000000000000000000', 'b': '0xffffffff00000001000000000000000000000000fffffffffffffffffffffffe', 'got-exp': '0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff'}
+[INFO] field-p256 :: mod_add NONRED W+W
+    expected=53919893321747076118560668646367682500700499687847905398092063571968
+    got     =26959946660873538059280334323183841250350249843923952699046031785983
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'got-exp': '-0xfffffffeffffffffffffffffffffffff000000000000000000000001'}
+[PASS] field-p256 :: mod_add NONRED W+0
+[PASS] field-p256 :: mod_add NONRED W+1
+[PASS] field-p256 :: mod_sub 0-(p-1)
+[PASS] field-p256 :: mod_sub 0-1
+[PASS] field-p256 :: mod_sub 1-1
+[PASS] field-p256 :: mod_sub (p-1)-(p-1)
+[INFO] field-p256 :: mod_sub NONRED 1-W
+    expected=115792089183396302101823908890127239206902302164940064351609678609821066067968
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853953
+    detail  ={'a': '0x1', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[INFO] field-p256 :: mod_sub NONRED p-0
+    expected=0
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853951
+    detail  ={'a': '0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff', 'b': '0x0'}
+[INFO] field-p256 :: mod_sub NONRED (p+1)-1
+    expected=0
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853951
+    detail  ={'a': '0xffffffff00000001000000000000000000000001000000000000000000000000', 'b': '0x1'}
+[PASS] field-p256 :: mod_sub NONRED W-W
+[INFO] field-p256 :: mod_sub NONRED 0-W
+    expected=115792089183396302101823908890127239206902302164940064351609678609821066067967
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853952
+    detail  ={'a': '0x0', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[PASS] field-p256 :: mod_sub NONRED 0-p
+[PASS] field-p256 :: mod_reduce 2^(2w)-1
+[PASS] field-p256 :: mod_reduce (p-1)^2
+[PASS] field-p256 :: mod_reduce p*(W)
+[PASS] field-p256 :: mod_reduce W*W
+[PASS] field-p256 :: mod_reduce p*p
+[PASS] field-p256 :: mod_reduce p<<(8nb)
+[PASS] field-p256 :: mod_reduce W<<(8nb)
+[PASS] field-p256 :: mod_reduce p
+[PASS] field-p256 :: mod_reduce p+1
+[PASS] field-p256 :: mod_reduce 2p
+[PASS] field-p256 :: mod_reduce W
+[PASS] field-p256 :: mod_reduce p-1
+[PASS] field-p256 :: mod_reduce limb0 all-ones
+[PASS] field-p256 :: mod_reduce limb1 all-ones
+[PASS] field-p256 :: mod_reduce limb2 all-ones
+[PASS] field-p256 :: mod_reduce limb3 all-ones
+[PASS] field-p256 :: mod_reduce limb4 all-ones
+[PASS] field-p256 :: mod_reduce limb5 all-ones
+[PASS] field-p256 :: mod_reduce limb6 all-ones
+[PASS] field-p256 :: mod_reduce limb7 all-ones
+[PASS] field-p256 :: mod_reduce limb8 all-ones
+[PASS] field-p256 :: mod_reduce limb9 all-ones
+[PASS] field-p256 :: mod_reduce limb10 all-ones
+[PASS] field-p256 :: mod_reduce limb11 all-ones
+[PASS] field-p256 :: mod_reduce limb12 all-ones
+[PASS] field-p256 :: mod_reduce limb13 all-ones
+[PASS] field-p256 :: mod_reduce limb14 all-ones
+[PASS] field-p256 :: mod_reduce limb15 all-ones
+[PASS] field-p256 :: mod_reduce high limbs 8.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 9.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 10.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 11.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 12.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 13.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 14.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 15.. all ones
+[PASS] field-p256 :: mod_reduce rand wide #0
+[PASS] field-p256 :: mod_reduce rand wide #1
+[PASS] field-p256 :: mod_reduce rand wide #2
+[PASS] field-p256 :: mod_reduce rand wide #3
+[PASS] field-p256 :: mod_mul (p-1)*(p-1)
+[PASS] field-p256 :: mod_mul (p-1)*1
+[PASS] field-p256 :: mod_mul 0*(p-1)
+[PASS] field-p256 :: mod_mul rand*rand
+[PASS] field-p256 :: mod_mul rand*(p-1)
+[PASS] field-p256 :: mod_mul NONRED p*1
+[PASS] field-p256 :: mod_mul NONRED (p+1)*1
+[PASS] field-p256 :: mod_mul NONRED W*W
+[PASS] field-p256 :: mod_mul NONRED W*1
+[PASS] field-p256 :: mod_mul NONRED p*p
+[PASS] field-p256 :: mod_mul NONRED W*(p-1)
+[PASS] field-p256 :: mod_sqr rand
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency rand
+[PASS] field-p256 :: mod_sqr p-1
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency p-1
+[PASS] field-p256 :: mod_sqr 2^(8nb-1)
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency 2^(8nb-1)
+[PASS] field-p256 :: mod_sqr NONRED W
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency NONRED W
+[PASS] field-p256 :: mod_sqr NONRED p
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency NONRED p
+[PASS] field-p256 :: mod_mul_n (n-1)*(n-1)
+[PASS] field-p256 :: mod_mul_n h=W * w<n (documented ok)
+[PASS] field-p256 :: mod_mul_n h=n * w<n
+[PASS] field-p256 :: mod_mul_n h=n+1 * w<n
+[PASS] field-p256 :: mod_mul_n h=p * w<n
+[PASS] field-p256 :: mod_mul_n w<n * h=W (swapped)
+[PASS] field-p256 :: mod_mul_n h=W * (n-1)
+[PASS] field-p256 :: mod_mul_n n*1
+[PASS] field-p256 :: mod_mul_n 1*n
+[PASS] field-p256 :: mod_mul_n n*0
+[PASS] field-p256 :: mod_mul_n n * (n-1)
+[PASS] field-p256 :: mod_mul_n UNDOC both>=n: n*n
+[INFO] field-p256 :: mod_mul_n UNDOC both>=n: W*W
+    expected=46533765685486420976373960648590330115880715495550109517277871136144600611141
+    got     =54280313433391309938440071228399361756227110381254775847119952608386376650411
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[PASS] field-p256 :: mod_mul_n UNDOC both>=n: (n+1)*(n+1)
+[INFO] field-p256 :: mod_mul_n UNDOC both>=n: W*(n+1)
+    expected=26959946660873538059280334323273029441504803697035324946844617595566
+    got     =115792089237316195423570985008687907853269984665640564039457584007913129639935
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632552'}
+[PASS] field-p256 :: mod_inv p-1
+[PASS] field-p256 :: mod_inv 2
+[PASS] field-p256 :: mod_inv 2^(8nb-1)
+[PASS] field-p256 :: mod_inv rand
+[PASS] field-p256 :: mod_inv mod n: (n-1)^-1
+[PASS] field-p256 :: mod_inv mod n: rand^-1
+[PASS] field-p256 :: is_zero(0) -> A
+[FAIL] field-p256 :: is_zero(1) -> A
+    expected=255
+    got     =1
+    detail  ={'C': 1, 'Z': 0}
+[FAIL] field-p256 :: is_zero(2^(8nb-1)) -> A
+    expected=255
+    got     =128
+    detail  ={'C': 1, 'Z': 0}
+[FAIL] field-p256 :: is_zero(1<<8) -> A
+    expected=255
+    got     =1
+    detail  ={'C': 1, 'Z': 0}
+[PASS] field-p256 :: is_zero(W) -> A
+[PASS] field-p256 :: cmp a<b -> (C,Z)
+[FAIL] field-p256 :: cmp a==b -> (C,Z)
+    expected=(1, 1)
+    got     =(1, 0)
+    detail  ={'regs': {'PC': 823, 'A': 7, 'X': 0, 'Y': 255, 'SP': 246, '00': 47, '01': 55, 'FL': 161, 'LIN': 173, 'CYC': 13}}
+[PASS] field-p256 :: cmp a>b -> (C,Z)
+[PASS] field-p256 :: cmp p-1 vs p -> (C,Z)
+[FAIL] field-p256 :: cmp p vs p -> (C,Z)
+    expected=(1, 1)
+    got     =(1, 0)
+    detail  ={'regs': {'PC': 823, 'A': 255, 'X': 0, 'Y': 255, 'SP': 246, '00': 47, '01': 55, 'FL': 161, 'LIN': 204, 'CYC': 54}}
+[PASS] field-p256 :: cmp p+1 vs p -> (C,Z)
+[PASS] field-p256 :: cmp W vs 0 -> (C,Z)
+[PASS] field-p256 :: cmp 0 vs W -> (C,Z)
+[FAIL] field-p256 :: cmp n vs n -> (C,Z)
+    expected=(1, 1)
+    got     =(1, 0)
+    detail  ={'regs': {'PC': 823, 'A': 81, 'X': 0, 'Y': 255, 'SP': 246, '00': 47, '01': 55, 'FL': 161, 'LIN': 220, 'CYC': 61}}
+[PASS] field-p256 :: cmp n-1 vs n -> (C,Z)
+[PASS] field-p256 :: cmp n+1 vs n -> (C,Z)
+[PASS] field-p256 :: cmp hi-byte-only 1<<(8nb-8) vs 1 -> (C,Z)
+[PASS] field-p256 :: cmp 1 vs 1<<(8nb-8) -> (C,Z)
+  field section p256 took 7s
+=== points p256 ===
+[PASS] point-p256 :: point_add P(Z=1) + P  (must double)
+[PASS] point-p256 :: point_add lift(P,z) + P  (H==0 with Z!=1)
+[PASS] point-p256 :: point_add P + (-P) -> infinity
+[PASS] point-p256 :: point_add P + (-P) -> infinity: Z==0 encoding
+[PASS] point-p256 :: point_add lift(P,z) + (-P) -> infinity
+[PASS] point-p256 :: point_add lift(P,z) + (-P) -> infinity: Z==0 encoding
+[PASS] point-p256 :: point_add inf(Z=0,X=Y=garbage) + P -> P
+[PASS] point-p256 :: point_add inf(all zero) + P -> P
+[PASS] point-p256 :: point_add lift(P,z) + Q random
+[PASS] point-p256 :: point_add P + G
+[PASS] point-p256 :: point_add G + G (double via add)
+[PASS] point-p256 :: point_double P Z=1
+[PASS] point-p256 :: point_double lift(P,z)
+[PASS] point-p256 :: point_double Z=0 garbage -> infinity
+[PASS] point-p256 :: point_double Z=0 all zero -> infinity
+[INFO] point-p256 :: point_double X=Y=0,Z=1 (off-curve junk) (behaviour only)
+    expected='n/a'
+    got     =['0x9', '0x1b', '0x0']
+[PASS] point-p256 :: point_add_jj lift(P,z)+lift(P,z2) same point -> 2P
+[PASS] point-p256 :: point_add_jj lift(P,z)+lift(-P,z2) -> inf
+[PASS] point-p256 :: point_add_jj lift(P,z)+lift(G,z2)
+[PASS] point-p256 :: point_add_jj P + inf(Z=0 garbage) -> P
+[PASS] point-p256 :: point_add_jj inf(Z=0 garbage) + lift(P,z) -> P
+[PASS] point-p256 :: scalar_mul_var k=n+1 -> P (33.8s)
+[PASS] point-p256 :: scalar_mul_var k=n+2 -> 2P (mid-ladder R==P mixed add) (33.6s)
+SUMMARY pass=172 fail=6 info=10
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 571, in <module>
+    main()
+    ~~~~^^
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 559, in main
+    point_section(D, log, curve, n_smul, n_smulv)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 394, in point_section
+    jac = D.smulv(k, P[0], P[1])
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 160, in smulv
+    write_bytes(self.t, SCALAR_BUF, be(k, self.nb))
+                                    ~~^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_common.py", line 137, in be
+    return v.to_bytes(n, "big")
+           ~~~~~~~~~~^^^^^^^^^^
+OverflowError: int too big to convert

@@ -1,0 +1,101 @@
+VICE PID=71816, port=6512; waiting for $02A7
+Init complete after 321.6s
+=== p256 ===
+[PASS] ecdsa-p256 :: baseline valid (hazmat key, manual k) (35.2s)
+[PASS] ecdsa-p256 :: malleable (r, n-s) must VERIFY (35.3s)
+[PASS] ecdsa-p256 :: r = n-1 (random) (34.2s)
+[PASS] ecdsa-p256 :: s = n-1 (random) (36.1s)
+[PASS] ecdsa-p256 :: r = n (0.3s)
+[PASS] ecdsa-p256 :: s = n (0.0s)
+[PASS] ecdsa-p256 :: r = n+1 (0.0s)
+[PASS] ecdsa-p256 :: s = n+1 (0.6s)
+[PASS] ecdsa-p256 :: r = 2^bits-1 (0.0s)
+[PASS] ecdsa-p256 :: s = 2^bits-1 (0.0s)
+[PASS] ecdsa-p256 :: r = 0 (0.1s)
+[PASS] ecdsa-p256 :: s = 0 (0.0s)
+[PASS] ecdsa-p256 :: r = 1 (random sig) (34.7s)
+[PASS] ecdsa-p256 :: s = 1 (random sig) (35.2s)
+[PASS] ecdsa-p256 :: h = 0 via signing (u1 = 0 path) (30.9s)
+[PASS] ecdsa-p256 :: h = n (≡0 mod n, unreduced input) (31.2s)
+[PASS] ecdsa-p256 :: h = n+1 (33.5s)
+[PASS] ecdsa-p256 :: h = 2^bits-1 (>= n, unreduced) (34.1s)
+[PASS] ecdsa-p256 :: h = n-1 (33.6s)
+[PASS] ecdsa-p256 :: h = 1 (32.8s)
+[PASS] ecdsa-p256 :: h = 2^(bits-1) (top bit only) (34.8s)
+[PASS] ecdsa-p256 :: h = p (field prime as hash) (33.5s)
+[PASS] ecdsa-p256 :: h = 2^bits - (2^bits - n) - 1 + ... random >= n (34.0s)
+[PASS] ecdsa-p256 :: h = 0 with baseline sig (must reject) (28.9s)
+[PASS] ecdsa-p256 :: h = 2^bits-1 with baseline sig (must reject) (33.8s)
+[PASS] ecdsa-p256 :: h=0 constructed sig, random Q (28.4s)
+[PASS] ecdsa-p256 :: h=0 constructed sig, Q = G (28.3s)
+[PASS] ecdsa-p256 :: h=0 constructed sig, Q = -G (27.7s)
+[PASS] ecdsa-p256 :: h=0 constructed sig, Q = 2G (29.3s)
+[PASS] ecdsa-p256 :: h=0, (r,s)=(Qx,Qx): u2=1, R=Q, x(R)=r (0.2s)
+[PASS] ecdsa-p256 :: cofactor fallback: Q.x in [n,p), r = Qx-n, s = r, h=0 (0.2s)
+[PASS] ecdsa-p256 :: cofactor fallback negative: r = Qx-n+1 (28.4s)
+[PASS] ecdsa-p256 :: cofactor fallback via u2=2: Q=(1/2)R, r=Qx(R)-n, s=r/2, h=0 (0.2s)
+[PASS] ecdsa-p256 :: u1*G + u2*Q = infinity (h = -r*d mod n) must REJECT (34.4s)
+[PASS] ecdsa-p256 :: u1*G == u2*Q (J+J doubling path), valid (32.9s)
+[PASS] ecdsa-p256 :: h=0 constructed sig, Q with smallest x=0 (28.3s)
+[PASS] ecdsa-p256 :: same but Qx+p (non-canonical) must REJECT (0.0s)
+[PASS] ecdsa-p256 :: h=0 constructed sig, Q = (x0, -y0) (27.1s)
+[PASS] ecdsa-p256 :: same but Qx+p (non-canonical) must REJECT (0.0s)
+[PASS] ecdsa-p256 :: Q = (0,0) infinity-ish encoding (0.0s)
+[PASS] ecdsa-p256 :: Q = (p, p) (0.0s)
+[PASS] ecdsa-p256 :: Q = (2^bits-1, 2^bits-1) (0.0s)
+[PASS] ecdsa-p256 :: Q off-curve (qy+1) (0.0s)
+[PASS] ecdsa-p256 :: Q = (qx, -qy) i.e. -Q with Q's sig (33.4s)
+[PASS] ecdsa-p256 :: Q on wrong curve (b+1) (0.0s)
+[PASS] ecdsa-p256 :: valid sig, d=1 (Q=G) (33.0s)
+[PASS] ecdsa-p256 :: valid sig, d=2 (34.2s)
+[PASS] ecdsa-p256 :: valid sig, d=n-1 (Q=-G) (33.0s)
+[PASS] ecdsa-p256 :: valid sig, d=n-2 (33.1s)
+[PASS] ecdsa-p256 :: valid sig with r top byte 0 (r=0xf34d9502c2c2d3416e202ebd2713afd4e5eb9549e96f958970d6588d1ab773) (32.4s)
+[PASS] ecdsa-p256 :: valid sig with s top byte 0 (s=0xceffb67e720cc14c85b2bc7c01900879d6b3ca030de3a1162a9aa5d3aa242) (33.9s)
+[PASS] ecdsa-p256 :: valid sig with r top 2 bytes 0 (r=0xc36c5c6aa7cc1713add140ec77a1b548f232993888a0ec6b3a6de98a47d4) (34.4s)
+[PASS] ecdsa-p256 :: valid sig with k=1 (r = Gx mod n) (32.8s)
+[PASS] ecdsa-p256 :: valid sig with k=n-1 (33.7s)
+[PASS] ecdsa-p256 :: hazmat random valid #0 (33.5s)
+[PASS] ecdsa-p256 :: hazmat random #0, r bit flipped (31.7s)
+[PASS] ecdsa-p256 :: hazmat random valid #1 (31.4s)
+[PASS] ecdsa-p256 :: hazmat random #1, h bit flipped (31.5s)
+[PASS] ecdsa-p256 :: hazmat random valid #2 (30.7s)
+[PASS] ecdsa-p256 :: hazmat random #2, s bit flipped (32.4s)
+[PASS] ecdsa-p256 :: hazmat random valid #3 (31.6s)
+[PASS] ecdsa-p256 :: hazmat random #3, r bit flipped (32.5s)
+=== mutation phase (P-256) ===
+  PASS (0.0s) [p256] RFC 6979 p256 sample (positive): oracle=VALID, C64=C0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: LSB flip r: oracle=INVALID (C=1), C64 returned C=0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: LSB flip s: oracle=INVALID (C=1), C64 returned C=0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: r = 0: oracle=INVALID (C=1), C64 returned C=0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: s = 0: oracle=INVALID (C=1), C64 returned C=0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: r = n: oracle=INVALID (C=1), C64 returned C=0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: s = n: oracle=INVALID (C=1), C64 returned C=0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: flip bit in Qx: oracle=INVALID (C=1), C64 returned C=0
+  FAIL (0.0s) [p256] RFC 6979 p256 neg: flip bit in hash: oracle=INVALID (C=1), C64 returned C=0
+    suite group 'p256 RFC6979 under clc;rts mutant': 1 passed, 8 failed
+[PASS] mutation :: suite detects verify_256 := always-VALID (clc;rts)
+  FAIL (0.0s) [p256] RFC 6979 p256 sample (positive): oracle=VALID (C=0), C64 returned C=1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: LSB flip r: oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: LSB flip s: oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: r = 0: oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: s = 0: oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: r = n: oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: s = n: oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: flip bit in Qx: oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] RFC 6979 p256 neg: flip bit in hash: oracle=INVALID, C64=C1
+    suite group 'p256 RFC6979 under sec;rts mutant': 8 passed, 1 failed
+[PASS] mutation :: suite detects verify_256 := always-INVALID (sec;rts)
+    fp_cmp/bcc/jmp gate sites in ecdsa_verify_256: ['0x2e1f', '0x2e37', '0x2e4f', '0x2e67', '0x3076']
+  PASS (30.4s) [p256] issue66 p256 Q-gate: non-canonical Qx (= x + p, on-curve x): oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] issue66 p256 Q-gate: off-curve Qy (bit flip): oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] issue66 p256 Q-gate: Qx >= p (random): oracle=INVALID, C64=C1
+  PASS (0.0s) [p256] issue66 p256 Q-gate: Qy >= p (random): oracle=INVALID, C64=C1
+    suite group 'p256 issue#66 group under Qx-gate-removed': 4 passed, 0 failed
+[FAIL] mutation :: suite issue#66 group detects Qx range gate removal
+    expected='fails>0'
+    got     ='fails=0'
+    detail  ={'passed': 4, 'failed': 0, 'note': "FAIL here = the suite's Q-gate cases are vacuous (they'd reject anyway because the RFC signature is invalid under the modified key)"}
+[PASS] mutation :: gate-removed mutant ACCEPTS Qx+p with h=0 sig (shows constructed case is load-bearing) (25.7s)
+[PASS] mutation :: restored build rejects the same Qx+p case (0.0s)
+SUMMARY pass=66 fail=1 info=0

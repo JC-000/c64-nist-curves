@@ -1,0 +1,464 @@
+VICE PID=74504, port=6515; waiting for $02A7
+Init complete after 317.9s
+=== field p256 ===
+[PASS] field-p256 :: mod_add (p-1)+(p-1)
+[PASS] field-p256 :: mod_add (p-1)+1
+[PASS] field-p256 :: mod_add 0+0
+[PASS] field-p256 :: mod_add a+a
+[PASS] field-p256 :: mod_add NONRED p+0
+[PASS] field-p256 :: mod_add NONRED p+1
+[INFO] field-p256 :: mod_add NONRED (p+1)+(p-1)
+    expected=0
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853951
+    detail  ={'a': '0xffffffff00000001000000000000000000000001000000000000000000000000', 'b': '0xffffffff00000001000000000000000000000000fffffffffffffffffffffffe', 'got-exp': '0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff'}
+[INFO] field-p256 :: mod_add NONRED W+W
+    expected=53919893321747076118560668646367682500700499687847905398092063571968
+    got     =26959946660873538059280334323183841250350249843923952699046031785983
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'got-exp': '-0xfffffffeffffffffffffffffffffffff000000000000000000000001'}
+[PASS] field-p256 :: mod_add NONRED W+0
+[PASS] field-p256 :: mod_add NONRED W+1
+[PASS] field-p256 :: mod_sub 0-(p-1)
+[PASS] field-p256 :: mod_sub 0-1
+[PASS] field-p256 :: mod_sub 1-1
+[PASS] field-p256 :: mod_sub (p-1)-(p-1)
+[INFO] field-p256 :: mod_sub NONRED 1-W
+    expected=115792089183396302101823908890127239206902302164940064351609678609821066067968
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853953
+    detail  ={'a': '0x1', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[INFO] field-p256 :: mod_sub NONRED p-0
+    expected=0
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853951
+    detail  ={'a': '0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff', 'b': '0x0'}
+[INFO] field-p256 :: mod_sub NONRED (p+1)-1
+    expected=0
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853951
+    detail  ={'a': '0xffffffff00000001000000000000000000000001000000000000000000000000', 'b': '0x1'}
+[PASS] field-p256 :: mod_sub NONRED W-W
+[INFO] field-p256 :: mod_sub NONRED 0-W
+    expected=115792089183396302101823908890127239206902302164940064351609678609821066067967
+    got     =115792089210356248762697446949407573530086143415290314195533631308867097853952
+    detail  ={'a': '0x0', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[PASS] field-p256 :: mod_sub NONRED 0-p
+[PASS] field-p256 :: mod_reduce 2^(2w)-1
+[PASS] field-p256 :: mod_reduce (p-1)^2
+[PASS] field-p256 :: mod_reduce p*(W)
+[PASS] field-p256 :: mod_reduce W*W
+[PASS] field-p256 :: mod_reduce p*p
+[PASS] field-p256 :: mod_reduce p<<(8nb)
+[PASS] field-p256 :: mod_reduce W<<(8nb)
+[PASS] field-p256 :: mod_reduce p
+[PASS] field-p256 :: mod_reduce p+1
+[PASS] field-p256 :: mod_reduce 2p
+[PASS] field-p256 :: mod_reduce W
+[PASS] field-p256 :: mod_reduce p-1
+[PASS] field-p256 :: mod_reduce limb0 all-ones
+[PASS] field-p256 :: mod_reduce limb1 all-ones
+[PASS] field-p256 :: mod_reduce limb2 all-ones
+[PASS] field-p256 :: mod_reduce limb3 all-ones
+[PASS] field-p256 :: mod_reduce limb4 all-ones
+[PASS] field-p256 :: mod_reduce limb5 all-ones
+[PASS] field-p256 :: mod_reduce limb6 all-ones
+[PASS] field-p256 :: mod_reduce limb7 all-ones
+[PASS] field-p256 :: mod_reduce limb8 all-ones
+[PASS] field-p256 :: mod_reduce limb9 all-ones
+[PASS] field-p256 :: mod_reduce limb10 all-ones
+[PASS] field-p256 :: mod_reduce limb11 all-ones
+[PASS] field-p256 :: mod_reduce limb12 all-ones
+[PASS] field-p256 :: mod_reduce limb13 all-ones
+[PASS] field-p256 :: mod_reduce limb14 all-ones
+[PASS] field-p256 :: mod_reduce limb15 all-ones
+[PASS] field-p256 :: mod_reduce high limbs 8.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 9.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 10.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 11.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 12.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 13.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 14.. all ones
+[PASS] field-p256 :: mod_reduce high limbs 15.. all ones
+[PASS] field-p256 :: mod_reduce rand wide #0
+[PASS] field-p256 :: mod_reduce rand wide #1
+[PASS] field-p256 :: mod_reduce rand wide #2
+[PASS] field-p256 :: mod_reduce rand wide #3
+[PASS] field-p256 :: mod_mul (p-1)*(p-1)
+[PASS] field-p256 :: mod_mul (p-1)*1
+[PASS] field-p256 :: mod_mul 0*(p-1)
+[PASS] field-p256 :: mod_mul rand*rand
+[PASS] field-p256 :: mod_mul rand*(p-1)
+[PASS] field-p256 :: mod_mul NONRED p*1
+[PASS] field-p256 :: mod_mul NONRED (p+1)*1
+[PASS] field-p256 :: mod_mul NONRED W*W
+[PASS] field-p256 :: mod_mul NONRED W*1
+[PASS] field-p256 :: mod_mul NONRED p*p
+[PASS] field-p256 :: mod_mul NONRED W*(p-1)
+[PASS] field-p256 :: mod_sqr rand
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency rand
+[PASS] field-p256 :: mod_sqr p-1
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency p-1
+[PASS] field-p256 :: mod_sqr 2^(8nb-1)
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency 2^(8nb-1)
+[PASS] field-p256 :: mod_sqr NONRED W
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency NONRED W
+[PASS] field-p256 :: mod_sqr NONRED p
+[PASS] field-p256 :: mod_sqr vs mod_mul consistency NONRED p
+[PASS] field-p256 :: mod_mul_n (n-1)*(n-1)
+[PASS] field-p256 :: mod_mul_n h=W * w<n (documented ok)
+[PASS] field-p256 :: mod_mul_n h=n * w<n
+[PASS] field-p256 :: mod_mul_n h=n+1 * w<n
+[PASS] field-p256 :: mod_mul_n h=p * w<n
+[PASS] field-p256 :: mod_mul_n w<n * h=W (swapped)
+[PASS] field-p256 :: mod_mul_n h=W * (n-1)
+[PASS] field-p256 :: mod_mul_n n*1
+[PASS] field-p256 :: mod_mul_n 1*n
+[PASS] field-p256 :: mod_mul_n n*0
+[PASS] field-p256 :: mod_mul_n n * (n-1)
+[PASS] field-p256 :: mod_mul_n UNDOC both>=n: n*n
+[INFO] field-p256 :: mod_mul_n UNDOC both>=n: W*W
+    expected=46533765685486420976373960648590330115880715495550109517277871136144600611141
+    got     =54280313433391309938440071228399361756227110381254775847119952608386376650411
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[PASS] field-p256 :: mod_mul_n UNDOC both>=n: (n+1)*(n+1)
+[INFO] field-p256 :: mod_mul_n UNDOC both>=n: W*(n+1)
+    expected=26959946660873538059280334323273029441504803697035324946844617595566
+    got     =115792089237316195423570985008687907853269984665640564039457584007913129639935
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632552'}
+[PASS] field-p256 :: mod_inv p-1
+[PASS] field-p256 :: mod_inv 2
+[PASS] field-p256 :: mod_inv 2^(8nb-1)
+[PASS] field-p256 :: mod_inv rand
+[PASS] field-p256 :: mod_inv mod n: (n-1)^-1
+[PASS] field-p256 :: mod_inv mod n: rand^-1
+[PASS] field-p256 :: is_zero(0) -> Z flag
+[PASS] field-p256 :: is_zero(1) -> Z flag
+[PASS] field-p256 :: is_zero(2^(8nb-1)) -> Z flag
+[PASS] field-p256 :: is_zero(1<<8) -> Z flag
+[PASS] field-p256 :: is_zero(W) -> Z flag
+[PASS] field-p256 :: cmp a<b -> C
+[PASS] field-p256 :: cmp a==b -> C
+[INFO] field-p256 :: cmp a==b: documented 'Z=1 if equal'
+    expected=1
+    got     =0
+[PASS] field-p256 :: cmp a>b -> C
+[PASS] field-p256 :: cmp p-1 vs p -> C
+[PASS] field-p256 :: cmp p vs p -> C
+[INFO] field-p256 :: cmp p vs p: documented 'Z=1 if equal'
+    expected=1
+    got     =0
+[PASS] field-p256 :: cmp p+1 vs p -> C
+[PASS] field-p256 :: cmp W vs 0 -> C
+[PASS] field-p256 :: cmp 0 vs W -> C
+[PASS] field-p256 :: cmp n vs n -> C
+[INFO] field-p256 :: cmp n vs n: documented 'Z=1 if equal'
+    expected=1
+    got     =0
+[PASS] field-p256 :: cmp n-1 vs n -> C
+[PASS] field-p256 :: cmp n+1 vs n -> C
+[PASS] field-p256 :: cmp hi-byte-only 1<<(8nb-8) vs 1 -> C
+[PASS] field-p256 :: cmp 1 vs 1<<(8nb-8) -> C
+  field section p256 took 1s
+=== points p256 ===
+[PASS] point-p256 :: point_add P(Z=1) + P  (must double)
+[PASS] point-p256 :: point_add lift(P,z) + P  (H==0 with Z!=1)
+[PASS] point-p256 :: point_add P + (-P) -> infinity
+[PASS] point-p256 :: point_add P + (-P) -> infinity: Z==0 encoding
+[PASS] point-p256 :: point_add lift(P,z) + (-P) -> infinity
+[PASS] point-p256 :: point_add lift(P,z) + (-P) -> infinity: Z==0 encoding
+[PASS] point-p256 :: point_add inf(Z=0,X=Y=garbage) + P -> P
+[PASS] point-p256 :: point_add inf(all zero) + P -> P
+[PASS] point-p256 :: point_add lift(P,z) + Q random
+[PASS] point-p256 :: point_add P + G
+[PASS] point-p256 :: point_add G + G (double via add)
+[PASS] point-p256 :: point_double P Z=1
+[PASS] point-p256 :: point_double lift(P,z)
+[PASS] point-p256 :: point_double Z=0 garbage -> infinity
+[PASS] point-p256 :: point_double Z=0 all zero -> infinity
+[INFO] point-p256 :: point_double X=Y=0,Z=1 (off-curve junk) (behaviour only)
+    expected='n/a'
+    got     =['0x9', '0x1b', '0x0']
+[PASS] point-p256 :: point_add_jj lift(P,z)+lift(P,z2) same point -> 2P
+[PASS] point-p256 :: point_add_jj lift(P,z)+lift(-P,z2) -> inf
+[PASS] point-p256 :: point_add_jj lift(P,z)+lift(G,z2)
+[PASS] point-p256 :: point_add_jj P + inf(Z=0 garbage) -> P
+[PASS] point-p256 :: point_add_jj inf(Z=0 garbage) + lift(P,z) -> P
+[PASS] point-p256 :: scalar_mul_var k=n+1 -> P (31.8s)
+[PASS] point-p256 :: scalar_mul_var k=n+2 -> 2P (mid-ladder R==P mixed add) (32.1s)
+[PASS] point-p256 :: scalar_mul_var k=2^(8nb)-1 (39.8s)
+[PASS] point-p256 :: scalar_mul_var k=2^(8nb-1) (top bit only) (16.7s)
+[PASS] point-p256 :: scalar_mul_var k=(n-1)/2 (31.3s)
+[PASS] point-p256 :: scalar_mul_var k=(n+1)/2 (31.6s)
+[PASS] point-p256 :: scalar_mul_var k=n-2 (31.8s)
+[INFO] point-p256 :: scalar_mul_var k=2, base=(0,0) off-curve (behaviour)
+    expected='n/a'
+    got     =['0x9', '0x1b', '0x0']
+[PASS] point-p256 :: scalar_mul_var k=n-1, base=-G -> G
+[PASS] point-p256 :: scalar_mul(comb) k=0 -> inf (0.0s)
+[PASS] point-p256 :: scalar_mul(comb) k=0 -> inf: Z==0 encoding
+[PASS] point-p256 :: scalar_mul(comb) k=1 -> G (0.0s)
+[PASS] point-p256 :: scalar_mul(comb) k=n -> inf (4.8s)
+[PASS] point-p256 :: scalar_mul(comb) k=n -> inf: Z==0 encoding
+[PASS] point-p256 :: scalar_mul(comb) k=n-1 -> -G (4.9s)
+[PASS] point-p256 :: scalar_mul(comb) k=n+1 -> G (4.9s)
+[PASS] point-p256 :: scalar_mul(comb) k=2^(8nb)-1 (4.8s)
+[PASS] point-p256 :: scalar_mul(comb) k=2^(8nb-1) (2.0s)
+[PASS] point-p256 :: scalar_mul(comb) k=all sub-scalars K_i=1 (idx 255 at col 0) (0.0s)
+[PASS] point-p256 :: scalar_mul(comb) k=all sub-scalars top bit (idx 255 at col 31) (2.1s)
+[PASS] point-p256 :: scalar_mul(comb) k=2^32-1 (K0 all ones) (4.9s)
+[PASS] point-p256 :: scalar_mul(comb) k=(2^32-1)<<(8nb-32) (top limb all ones) (4.9s)
+[PASS] point-p256 :: scalar_mul(comb) k=2 -> 2G (0.1s)
+[PASS] point-p256 :: scalar_mul(comb) k=2^32 -> A2 (0.0s)
+[PASS] point-p256 :: comb vs var-base agree on random k (and vs hazmat)
+[PASS] point-p256 :: var-base(G) vs hazmat on same k
+  point section p256 took 315s
+=== field p384 ===
+[PASS] field-p384 :: mod_add (p-1)+(p-1)
+[PASS] field-p384 :: mod_add (p-1)+1
+[PASS] field-p384 :: mod_add 0+0
+[PASS] field-p384 :: mod_add a+a
+[PASS] field-p384 :: mod_add NONRED p+0
+[PASS] field-p384 :: mod_add NONRED p+1
+[INFO] field-p384 :: mod_add NONRED (p+1)+(p-1)
+    expected=0
+    got     =39402006196394479212279040100143613805079739270465446667948293404245721771496870329047266088258938001861606973112319
+    detail  ={'a': '0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff000000000000000100000000', 'b': '0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000fffffffe', 'got-exp': '0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff'}
+[INFO] field-p384 :: mod_add NONRED W+W
+    expected=680564734000333251955277890042034388992
+    got     =340282367000166625977638945021017194495
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'got-exp': '-0x100000000ffffffffffffffff00000001'}
+[PASS] field-p384 :: mod_add NONRED W+0
+[PASS] field-p384 :: mod_add NONRED W+1
+[PASS] field-p384 :: mod_sub 0-(p-1)
+[PASS] field-p384 :: mod_sub 0-1
+[PASS] field-p384 :: mod_sub 1-1
+[PASS] field-p384 :: mod_sub (p-1)-(p-1)
+[INFO] field-p384 :: mod_sub NONRED 1-W
+    expected=39402006196394479212279040100143613805079739270465446667948293404245721771496530046680265921632960362916585955917824
+    got     =39402006196394479212279040100143613805079739270465446667948293404245721771496870329047266088258938001861606973112321
+    detail  ={'a': '0x1', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[INFO] field-p384 :: mod_sub NONRED p-0
+    expected=0
+    got     =39402006196394479212279040100143613805079739270465446667948293404245721771496870329047266088258938001861606973112319
+    detail  ={'a': '0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff', 'b': '0x0'}
+[INFO] field-p384 :: mod_sub NONRED (p+1)-1
+    expected=0
+    got     =39402006196394479212279040100143613805079739270465446667948293404245721771496870329047266088258938001861606973112319
+    detail  ={'a': '0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff000000000000000100000000', 'b': '0x1'}
+[PASS] field-p384 :: mod_sub NONRED W-W
+[INFO] field-p384 :: mod_sub NONRED 0-W
+    expected=39402006196394479212279040100143613805079739270465446667948293404245721771496530046680265921632960362916585955917823
+    got     =39402006196394479212279040100143613805079739270465446667948293404245721771496870329047266088258938001861606973112320
+    detail  ={'a': '0x0', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[PASS] field-p384 :: mod_sub NONRED 0-p
+[PASS] field-p384 :: mod_reduce 2^(2w)-1
+[PASS] field-p384 :: mod_reduce (p-1)^2
+[PASS] field-p384 :: mod_reduce p*(W)
+[PASS] field-p384 :: mod_reduce W*W
+[PASS] field-p384 :: mod_reduce p*p
+[PASS] field-p384 :: mod_reduce p<<(8nb)
+[PASS] field-p384 :: mod_reduce W<<(8nb)
+[PASS] field-p384 :: mod_reduce p
+[PASS] field-p384 :: mod_reduce p+1
+[PASS] field-p384 :: mod_reduce 2p
+[PASS] field-p384 :: mod_reduce W
+[PASS] field-p384 :: mod_reduce p-1
+[PASS] field-p384 :: mod_reduce limb0 all-ones
+[PASS] field-p384 :: mod_reduce limb1 all-ones
+[PASS] field-p384 :: mod_reduce limb2 all-ones
+[PASS] field-p384 :: mod_reduce limb3 all-ones
+[PASS] field-p384 :: mod_reduce limb4 all-ones
+[PASS] field-p384 :: mod_reduce limb5 all-ones
+[PASS] field-p384 :: mod_reduce limb6 all-ones
+[PASS] field-p384 :: mod_reduce limb7 all-ones
+[PASS] field-p384 :: mod_reduce limb8 all-ones
+[PASS] field-p384 :: mod_reduce limb9 all-ones
+[PASS] field-p384 :: mod_reduce limb10 all-ones
+[PASS] field-p384 :: mod_reduce limb11 all-ones
+[PASS] field-p384 :: mod_reduce limb12 all-ones
+[PASS] field-p384 :: mod_reduce limb13 all-ones
+[PASS] field-p384 :: mod_reduce limb14 all-ones
+[PASS] field-p384 :: mod_reduce limb15 all-ones
+[PASS] field-p384 :: mod_reduce limb16 all-ones
+[PASS] field-p384 :: mod_reduce limb17 all-ones
+[PASS] field-p384 :: mod_reduce limb18 all-ones
+[PASS] field-p384 :: mod_reduce limb19 all-ones
+[PASS] field-p384 :: mod_reduce limb20 all-ones
+[PASS] field-p384 :: mod_reduce limb21 all-ones
+[PASS] field-p384 :: mod_reduce limb22 all-ones
+[PASS] field-p384 :: mod_reduce limb23 all-ones
+[PASS] field-p384 :: mod_reduce high limbs 12.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 13.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 14.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 15.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 16.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 17.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 18.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 19.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 20.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 21.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 22.. all ones
+[PASS] field-p384 :: mod_reduce high limbs 23.. all ones
+[PASS] field-p384 :: mod_reduce rand wide #0
+[PASS] field-p384 :: mod_reduce rand wide #1
+[PASS] field-p384 :: mod_reduce rand wide #2
+[PASS] field-p384 :: mod_reduce rand wide #3
+[PASS] field-p384 :: mod_mul (p-1)*(p-1)
+[PASS] field-p384 :: mod_mul (p-1)*1
+[PASS] field-p384 :: mod_mul 0*(p-1)
+[PASS] field-p384 :: mod_mul rand*rand
+[PASS] field-p384 :: mod_mul rand*(p-1)
+[PASS] field-p384 :: mod_mul NONRED p*1
+[PASS] field-p384 :: mod_mul NONRED (p+1)*1
+[PASS] field-p384 :: mod_mul NONRED W*W
+[PASS] field-p384 :: mod_mul NONRED W*1
+[PASS] field-p384 :: mod_mul NONRED p*p
+[PASS] field-p384 :: mod_mul NONRED W*(p-1)
+[PASS] field-p384 :: mod_sqr rand
+[PASS] field-p384 :: mod_sqr vs mod_mul consistency rand
+[PASS] field-p384 :: mod_sqr p-1
+[PASS] field-p384 :: mod_sqr vs mod_mul consistency p-1
+[PASS] field-p384 :: mod_sqr 2^(8nb-1)
+[PASS] field-p384 :: mod_sqr vs mod_mul consistency 2^(8nb-1)
+[PASS] field-p384 :: mod_sqr NONRED W
+[PASS] field-p384 :: mod_sqr vs mod_mul consistency NONRED W
+[PASS] field-p384 :: mod_sqr NONRED p
+[PASS] field-p384 :: mod_sqr vs mod_mul consistency NONRED p
+[PASS] field-p384 :: mod_mul_n (n-1)*(n-1)
+[PASS] field-p384 :: mod_mul_n h=W * w<n (documented ok)
+[PASS] field-p384 :: mod_mul_n h=n * w<n
+[PASS] field-p384 :: mod_mul_n h=n+1 * w<n
+[PASS] field-p384 :: mod_mul_n h=p * w<n
+[PASS] field-p384 :: mod_mul_n w<n * h=W (swapped)
+[PASS] field-p384 :: mod_mul_n h=W * (n-1)
+[PASS] field-p384 :: mod_mul_n n*1
+[PASS] field-p384 :: mod_mul_n 1*n
+[PASS] field-p384 :: mod_mul_n n*0
+[PASS] field-p384 :: mod_mul_n n * (n-1)
+[PASS] field-p384 :: mod_mul_n UNDOC both>=n: n*n
+[INFO] field-p384 :: mod_mul_n UNDOC both>=n: W*W
+    expected=1926889955270807207284364373743377144127886613064468223888004761295266478525700464744477830438080253127592205245584
+    got     =39402006196394479212279040100143613805079739270465446667946905279627659399113263569398956308152294913554433653942644
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'}
+[PASS] field-p384 :: mod_mul_n UNDOC both>=n: (n+1)*(n+1)
+[INFO] field-p384 :: mod_mul_n UNDOC both>=n: W*(n+1)
+    expected=1388124618062372383947042015309946732620727252194336364172
+    got     =39402006196394479212279040100143613805079739270465446667948293404245721771497210611414266254884915640806627990306815
+    detail  ={'a': '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'b': '0xffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52974'}
+[PASS] field-p384 :: mod_inv p-1
+[PASS] field-p384 :: mod_inv 2
+[PASS] field-p384 :: mod_inv 2^(8nb-1)
+[PASS] field-p384 :: mod_inv rand
+[PASS] field-p384 :: mod_inv mod n: (n-1)^-1
+[PASS] field-p384 :: mod_inv mod n: rand^-1
+[PASS] field-p384 :: is_zero(0) -> Z flag
+[PASS] field-p384 :: is_zero(1) -> Z flag
+[PASS] field-p384 :: is_zero(2^(8nb-1)) -> Z flag
+[PASS] field-p384 :: is_zero(1<<8) -> Z flag
+[PASS] field-p384 :: is_zero(W) -> Z flag
+[PASS] field-p384 :: cmp a<b -> C
+[PASS] field-p384 :: cmp a==b -> C
+[INFO] field-p384 :: cmp a==b: documented 'Z=1 if equal'
+    expected=1
+    got     =0
+[PASS] field-p384 :: cmp a>b -> C
+[PASS] field-p384 :: cmp p-1 vs p -> C
+[PASS] field-p384 :: cmp p vs p -> C
+[INFO] field-p384 :: cmp p vs p: documented 'Z=1 if equal'
+    expected=1
+    got     =0
+[PASS] field-p384 :: cmp p+1 vs p -> C
+[PASS] field-p384 :: cmp W vs 0 -> C
+[PASS] field-p384 :: cmp 0 vs W -> C
+[PASS] field-p384 :: cmp n vs n -> C
+[INFO] field-p384 :: cmp n vs n: documented 'Z=1 if equal'
+    expected=1
+    got     =0
+[PASS] field-p384 :: cmp n-1 vs n -> C
+[PASS] field-p384 :: cmp n+1 vs n -> C
+[PASS] field-p384 :: cmp hi-byte-only 1<<(8nb-8) vs 1 -> C
+[PASS] field-p384 :: cmp 1 vs 1<<(8nb-8) -> C
+  field section p384 took 3s
+=== points p384 ===
+[PASS] point-p384 :: point_add P(Z=1) + P  (must double)
+[PASS] point-p384 :: point_add lift(P,z) + P  (H==0 with Z!=1)
+[PASS] point-p384 :: point_add P + (-P) -> infinity
+[PASS] point-p384 :: point_add P + (-P) -> infinity: Z==0 encoding
+[PASS] point-p384 :: point_add lift(P,z) + (-P) -> infinity
+[PASS] point-p384 :: point_add lift(P,z) + (-P) -> infinity: Z==0 encoding
+[PASS] point-p384 :: point_add inf(Z=0,X=Y=garbage) + P -> P
+[PASS] point-p384 :: point_add inf(all zero) + P -> P
+[PASS] point-p384 :: point_add lift(P,z) + Q random
+[PASS] point-p384 :: point_add P + G
+[PASS] point-p384 :: point_add G + G (double via add)
+[PASS] point-p384 :: point_double P Z=1
+[PASS] point-p384 :: point_double lift(P,z)
+[PASS] point-p384 :: point_double Z=0 garbage -> infinity
+[PASS] point-p384 :: point_double Z=0 all zero -> infinity
+[INFO] point-p384 :: point_double X=Y=0,Z=1 (off-curve junk) (behaviour only)
+    expected='n/a'
+    got     =['0x9', '0x1b', '0x0']
+[PASS] point-p384 :: point_add_jj lift(P,z)+lift(P,z2) same point -> 2P
+[PASS] point-p384 :: point_add_jj lift(P,z)+lift(-P,z2) -> inf
+[PASS] point-p384 :: point_add_jj lift(P,z)+lift(G,z2)
+[PASS] point-p384 :: point_add_jj P + inf(Z=0 garbage) -> P
+[PASS] point-p384 :: point_add_jj inf(Z=0 garbage) + lift(P,z) -> P
+[PASS] point-p384 :: scalar_mul_var k=n+1 -> P (95.0s)
+[PASS] point-p384 :: scalar_mul_var k=n+2 -> 2P (mid-ladder R==P mixed add) (95.4s)
+[PASS] point-p384 :: scalar_mul_var k=2^(8nb)-1 (109.6s)
+[PASS] point-p384 :: scalar_mul_var k=2^(8nb-1) (top bit only) (43.6s)
+[INFO] point-p384 :: scalar_mul_var k=2, base=(0,0) off-curve (behaviour)
+    expected='n/a'
+    got     =['0x9', '0x1b', '0x0']
+[PASS] point-p384 :: scalar_mul_var k=n-1, base=-G -> G
+[PASS] point-p384 :: scalar_mul(comb) k=0 -> inf (0.0s)
+[PASS] point-p384 :: scalar_mul(comb) k=0 -> inf: Z==0 encoding
+[PASS] point-p384 :: scalar_mul(comb) k=1 -> G (0.0s)
+[PASS] point-p384 :: scalar_mul(comb) k=n -> inf (12.8s)
+[PASS] point-p384 :: scalar_mul(comb) k=n -> inf: Z==0 encoding
+[PASS] point-p384 :: scalar_mul(comb) k=n-1 -> -G (13.0s)
+[PASS] point-p384 :: scalar_mul(comb) k=n+1 -> G (13.0s)
+[PASS] point-p384 :: scalar_mul(comb) k=2^(8nb)-1 (12.9s)
+[PASS] point-p384 :: scalar_mul(comb) k=2^(8nb-1) (5.4s)
+[PASS] point-p384 :: comb vs var-base agree on random k (and vs hazmat)
+[PASS] point-p384 :: var-base(G) vs hazmat on same k
+  point section p384 took 576s
+=== hang probes (last) ===
+SUMMARY pass=317 fail=0 info=26
+Traceback (most recent call last):
+  File "/Users/someone/Documents/c64-test-harness/src/c64_test_harness/backends/vice_binary.py", line 302, in _recv_exact
+    chunk = self._sock.recv(n - len(buf))
+TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/someone/Documents/c64-test-harness/src/c64_test_harness/backends/vice_binary.py", line 800, in wait_for_stopped
+    resp = self._recv_response()
+  File "/Users/someone/Documents/c64-test-harness/src/c64_test_harness/backends/vice_binary.py", line 333, in _recv_response
+    header = self._recv_exact(RESPONSE_HEADER_SIZE)
+  File "/Users/someone/Documents/c64-test-harness/src/c64_test_harness/backends/vice_binary.py", line 305, in _recv_exact
+    raise TimeoutError(
+    ...<2 lines>...
+    ) from e
+c64_test_harness.transport.TimeoutError: Timed out reading from VICE binary monitor (got 0/12 bytes)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 572, in <module>
+    main()
+    ~~~~^^
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 564, in main
+    if hang_section(D, log, "p256"):
+       ~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 519, in hang_section
+    got = D.unop_r0("mod_inv", a, timeout=90.0)
+  File "/private/tmp/claude-501/-Users-someone-Documents-c64-nist-curves/d7b94edb-f409-4de4-a582-b86f3ff5a8d3/scratchpad/audit/audit_prims.py", line 90, in unop_r0
+    jsr(self.t, self.L[c[routine]], timeout=timeout)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/someone/Documents/c64-test-harness/src/c64_test_harness/execute.py", line 127, in jsr
+    return wait_for_pc(transport, bp_addr, timeout=timeout)
+  File "/Users/someone/Documents/c64-test-harness/src/c64_test_harness/execute.py", line 83, in wait_for_pc
+    pc = transport.wait_for_stopped(timeout=timeout)
+  File "/Users/someone/Documents/c64-test-harness/src/c64_test_harness/backends/vice_binary.py", line 802, in wait_for_stopped
+    raise TimeoutError(
+        f"No stopped event within {timeout}s"
+    )
+c64_test_harness.transport.TimeoutError: No stopped event within 90.0s

@@ -406,6 +406,12 @@ ecdsa_verify_256:
         sta ec_scalar_ptr+1
 .ifndef ECDSA_NO_COMB
         jsr ec_scalar_mul       ; ec_p3 = u1 * G (Jacobian, fixed-base comb)
+        ; Issue #148: the comb reports an unusable anchor-table slot with C=1.
+        ; Reject rather than proceed -- a collapsed u1*G makes this verify
+        ; accept any signature for a known Q. @ev_fail is out of branch range.
+        bcc @ev_u1g_ok
+        jmp @ev_fail
+@ev_u1g_ok:
 .else
         ; Issue #61 fallback: no comb linked. Seed the variable-base ladder
         ; at G (LE affine constants from curve256.o, already in the verify

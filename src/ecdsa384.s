@@ -415,6 +415,12 @@ ecdsa_verify_384:
         sta ec_scalar_ptr+1
 .ifndef ECDSA_NO_COMB
         jsr ec_scalar_mul_384   ; ec384_p3 = u1 * G (Jacobian, fixed-base comb)
+        ; Issue #148: the comb reports an unusable anchor-table slot with C=1.
+        ; Reject rather than proceed -- a collapsed u1*G makes this verify
+        ; accept any signature for a known Q. The fail label is out of range.
+        bcc @ev384_u1g_ok
+        jmp @ev_fail
+@ev384_u1g_ok:
 .else
         ; Issue #61 fallback: no comb linked — seed the variable-base
         ; ladder at G. See the ecdsa256.s twin for the full rationale.
