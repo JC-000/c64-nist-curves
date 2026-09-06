@@ -88,7 +88,7 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   source-level stepping / breakpoints / span lookup. `.dbg` is a separate
   artifact; the .prg is byte-identical with or without `-g` (verified by
   sha256 round-trip).
-Current PRG size: ~36.6 KB (37483 bytes as of issue #130's SPEC v0.13.0 §8.2 completion confirm, +3 B over the 37480 of v0.10.0's issue #98 P384_BSS fix — 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801.
+Current PRG size: ~36.9 KB (37739 bytes as of issue #148's comb post-condition guard; 37483 through v0.12.0 — the guard adds ~64 B of code but the page-aligned LIB_NISTCURVES_TABLES segment rounds that up to +256 B of image. Earlier: 37480 at v0.10.0's issue #98 P384_BSS fix, 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801. **Slack under the §4 `__MAIN_LAST__ <= sqtab_lo` link guard is now 150 bytes** (`$9B6A` vs `$9C00`), down from 406; anything that grows MAIN much further needs the buffers moved first, not a bigger guard.
 
 `src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
 ACME build path used in side-by-side diff testing only — do not edit
@@ -607,24 +607,30 @@ keep all library calls on a single thread of control.
 - **Lim-Lee comb accepted an unusable anchor slot — verify failed OPEN
   (issue #148, reported by c64-https — FIXED).** `sm256_reu_fetch_affine` /
   `sm384w_fetch_to_p2` DMA 64/96 B out of the REU and validate nothing, so a
-  corrupt or never-written comb slot was consumed as a point. The dangerous
-  shape is `Y = 0`: seeding `R = (X, 0, 1)` makes the next doubling compute
-  `Z3 = 2·Y1·Z1 = 0`, so `R` becomes the infinity encoding;
-  `ecdsa_verify_*` then took `ec_point_add_jj`'s P1-infinity branch,
-  `R := u2·Q`, and the check no longer involved `G` or the message — the
-  textbook `u1·G = O` forgery, satisfiable by anyone holding `Q`. **Both
-  curves were affected; the report covered P-256 only.**
-  `ec_scalar_mul[_384]` now OR-scans the fetched `Y` and returns **C=1 with
-  the output zeroed**, **C=0** on every normal path (including `k ≡ 0`, which
-  keeps its all-zero Jacobian — the two are distinguished by carry, not by the
-  buffer); `ecdsa_verify_256/384` reject on C=1. `Y = 0` is the exact collapse
-  condition and cannot occur in a healthy table (it denotes a point of order 2;
-  both curves have prime order), so there are no false positives. The
-  `ECDSA_NO_COMB` variants route `u1·G` through the variable-base ladder and
-  never reach this path. Cost ~18 kcy per scalar mul (~0.1%). Giving these two
-  entry points a defined carry where none was documented is a SPEC v1.1.0 §7
-  ABI-counter event — `LIB_NISTCURVES_ABI_VERSION` moved 2 → 3. Contract:
-  API.md §5.3 and the comb-table-integrity note below it.
+  corrupt or never-written comb slot was consumed as a point. If the
+  accumulator collapsed to infinity, `ecdsa_verify_*` took
+  `ec_point_add_jj`'s P1-infinity branch, `R := u2·Q`, and the check no longer
+  involved `G` or the message — the textbook `u1·G = O` forgery, satisfiable
+  by anyone holding `Q`. **Both curves were affected; the report covered
+  P-256 only.**
+  The guard is a **post-condition, not a per-slot test**: having seeded from
+  at least one anchor, the result must not be infinity, checked once on `Z`,
+  returning **C=1 with the output zeroed**. That choice is load-bearing — the
+  first attempt here tested each fetched `Y` for zero bytes and was **wrong**:
+  the collapse condition is `Y ≡ 0 (mod p)`, and `Y = p` is representable and
+  is never reduced between the DMA and the seed, so a byte test missed it by
+  exactly one value; a slot equal to the negation of the accumulator collapses
+  through `ec_point_add`'s `H = 0` branch with every `Y` non-zero; and a
+  timed-out DMA leaves the previous slot in `ec_p2`. All routes end at `Z = 0`,
+  so the post-condition closes the class the per-slot test could not. **Do not
+  "simplify" it back into a per-slot check.** Not covered by design: a corrupt
+  table yielding a wrong but non-zero point — that fails closed already.
+  `ecdsa_verify_256/384` reject on C=1; `u1 = 0` still returns the infinity
+  encoding with C=0, which is correct. The `ECDSA_NO_COMB` variants route
+  `u1·G` through the variable-base ladder and never reach this path. Giving
+  these entry points a defined carry where none was documented is a SPEC
+  v1.1.0 §7 ABI-counter event — `LIB_NISTCURVES_ABI_VERSION` moved 2 → 3.
+  Contract: API.md §5.3 and the comb-table-integrity note below it.
 - **`fp_mod_inv` residue-class-0 guard / `ec_jacobian_to_affine` Z=0
   guard (issue #132, adversarial audit F-1 — FIXED).** The binary
   extended GCD in `fp_mod_inv[_384]` only exits through `u == 1` /

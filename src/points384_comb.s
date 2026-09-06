@@ -618,23 +618,6 @@ ec_scalar_mul_384:
         lda cm384_idx
         jsr sm384w_fetch_to_p2
 
-        ; --- Issue #148: fail closed on an unusable table slot ---
-        ; P-384 mirror of the points256_comb.s gate; see that file for the full
-        ; rationale. sm384w_fetch_to_p2 validates nothing, and a slot with
-        ; Y == 0 seeds R = (X, 0, 1), which the next ec_point_double_384 sends
-        ; to Z3 = 2*Y1*Z1 = 0 -- the infinity encoding -- making
-        ; ecdsa_verify_384 fail OPEN via the u1*G = O forgery. Y == 0 is
-        ; impossible for a legitimate entry (prime group order has no
-        ; 2-torsion), so this cannot reject a healthy table.
-        ldy #47
-        lda #0
-@cm384_slot_y_nz:
-        ora ec384_p2+48,y
-        dey
-        bpl @cm384_slot_y_nz
-        cmp #0
-        beq @cm384_bad_slot
-
         ; --- If R was infinity, seed R = T[idx] and clear flag ---
         lda cm384_r_inf
         beq @cm384_real_add
@@ -690,10 +673,28 @@ ec_scalar_mul_384:
         sec                     ; C=1: comb table slot unusable
         rts
 
+@cm384_check_z:
+        ; --- Issue #148: fail closed when the accumulator collapsed ---
+        ; P-384 mirror of the points256_comb.s postcondition; see that file for
+        ; the full rationale and the routes it closes (Y = 0, Y = p, a slot
+        ; that is the negation of the accumulator, a stale ec384_p2 from a
+        ; timed-out DMA). cm384_r_inf is clear here, so on a healthy table R is
+        ; a non-zero multiple of G and Z is non-zero; a zero Z means there is
+        ; no usable result to return.
+        ldy #47
+        lda #0
+@cm384_zscan:
+        ora ec384_p1+96,y
+        dey
+        bpl @cm384_zscan
+        cmp #0
+        beq @cm384_bad_slot
+        jmp @cm384_copy_out
+
 @cm384_done:
         ; --- If R is still infinity, return all-zero point. ---
         lda cm384_r_inf
-        beq @cm384_copy_out
+        beq @cm384_check_z
         ldy #0
         lda #0
 @cm384_zinf:
