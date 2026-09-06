@@ -189,9 +189,18 @@ def main():
         write_bytes(transport, 0x0339, bytes([0x4C, 0x39, 0x03]))
 
         # --- 1. reu_fetch_mul_row ---
-        # Setup: mul_cached_a = arbitrary nonzero value (cycle count is
-        # input-independent, but we want a representative DMA target).
-        write_bytes(transport, labels["mul_cached_a"], bytes([0x42]))
+        # Since issue #153 the row index arrives in A, per SPEC §8.2; the
+        # routine no longer reads nistcurves_mul_cached_a on entry, it WRITES
+        # it from A. The old `write_bytes(mul_cached_a, 0x42)` setup here was
+        # therefore selecting nothing -- it was overwritten before the fetch --
+        # and the comment claiming it picked "a representative DMA target" was
+        # false the moment #153 landed.
+        #
+        # build_nested_trampoline's inner counter reset is `LDA #$FF` /
+        # `STA $C020`, so A is $FF at the JSR and row 255 is what gets fetched.
+        # That is fine and is now deliberate rather than accidental: the DMA
+        # cost is a fixed 512-byte transfer regardless of row, which is why
+        # this failed silently instead of showing up as a wrong number.
         # outer=20 → 5120 iters. Per iter ≈ JSR(6)+body(20)+RTS(6)+DEC(6)+BNE(3)
         # + DMA stall (~512 cy for the 512-byte REU→C64 transfer) ≈ 553 cy.
         # Total ≈ 2.83 M cy ≈ 166 jiffies.

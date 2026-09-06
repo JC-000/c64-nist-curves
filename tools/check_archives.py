@@ -1649,6 +1649,75 @@ def packaging_check(failures, archives):
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
 
 
+def sibling_bare_collision_check(failures):
+    """§6.1: importing a §8.2 output equate must not drag a bare `mul_` name in.
+
+    `LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO`/`_HI` are output equates a consumer
+    is told to import to verify that two co-linked §8.2 libraries agree on the
+    landing page. They are NOT prefixed counterparts of anything displaceable --
+    they are different names that happen to hold the same address -- so 1.2.1's
+    carve-out does not cover them, and while they shared a TU with the bare
+    `mul_dma_lo`/`_hi` aliases, importing one pulled the member and its bare
+    names with it.
+
+    Against c64-x25519, which exports `mul_dma_lo`, `mul_dma_hi` and
+    `mul_dma_carry` from its own src/mul_stage.s, that is:
+
+        ld65: Error: Duplicate external identifier: 'mul_dma_hi'
+
+    Same failure class and symbol family as the c64-https v0.12.0 outage §6.1
+    exists for. The aliases now live alone in src/mul_aliases.s.
+
+    The probe stands in for that composed link: a consumer importing ONLY the
+    §8.2 output equate, a sibling exporting the bare pair, and our archive.
+
+    Negative-tested: putting the aliases back into src/data_mul_stage.s
+    reproduces the duplicate-external on every archive below."""
+    import tempfile
+    print("\n=== §6.1 sibling bare-name collision (mul_dma_*) ===")
+    sibling = ('; stand-in for c64-x25519 src/mul_stage.s\n'
+               '.export mul_dma_lo, mul_dma_hi\n'
+               '.segment "SIB"\n'
+               'mul_dma_lo:\n\t.res 256, 0\n'
+               'mul_dma_hi:\n\t.res 256, 0\n')
+    consumer = ('.import LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO\n'
+                '.segment "CODE"\n'
+                'entry:\n'
+                '\tlda #<LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO\n'
+                '\trts\n')
+    cfg = CONSUMER_CFG.replace(
+        "SEGMENTS {",
+        "SEGMENTS {\n    SIB: load = MAIN, type = rw, align = $100, optional = yes;")
+    for name in ("nistcurves.a", "nistcurves-onchip.a", "nistcurves-p256-verify.a"):
+        archive = LIBDIR / name
+        if not archive.exists():
+            failures.append(f"sibling collision: {name} not built")
+            print(f"  SIBLING FAIL [{name}]: archive missing")
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / "cfg").write_text(cfg)
+            (td / "s.s").write_text(sibling)
+            (td / "c.s").write_text(consumer)
+            rc1, _ = sh(["ca65", "--cpu", "6502", "-o", str(td / "s.o"), str(td / "s.s")])
+            rc2, _ = sh(["ca65", "--cpu", "6502", "-o", str(td / "c.o"), str(td / "c.s")])
+            if rc1 or rc2:
+                failures.append(f"sibling collision: probe does not assemble ({name})")
+                print(f"  SIBLING FAIL [{name}]: probe assemble error")
+                continue
+            _, out = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "o.prg"),
+                         str(td / "c.o"), str(td / "s.o"), str(archive)])
+        if "Duplicate external identifier" in out:
+            dup = sorted(set(re.findall(
+                r"Duplicate external identifier: '([^']+)'", out)))
+            failures.append(
+                f"sibling collision: {name} forces bare {dup} on a consumer that "
+                f"imported only a §8.2 output equate (§6.1 member isolation)")
+            print(f"  SIBLING FAIL [{name}]: duplicate {dup}")
+        else:
+            print(f"  sibling OK [{name}] (§8.2 output equate pulls no bare name)")
+
+
 def od65_extraction_canary(failures):
     """Pin the assumption every other leg here rests on: that we see every name
     od65 prints.
@@ -2229,6 +2298,7 @@ def main():
     # Runs last by design: its knob-change legs wipe build/*.o via the
     # Makefile stamp, and the final default-build leg restores only the
     # object it exercises.
+    sibling_bare_collision_check(failures)
     od65_extraction_canary(failures)
     app_owned_buffer_ownership_check(failures)
     defines_staleness_check(failures)
