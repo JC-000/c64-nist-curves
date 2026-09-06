@@ -212,8 +212,34 @@ No symbol was removed or renamed. Additions: `mul_tables_init`,
   still exports them, gated under `LIB_NO_BARE_EXPORTS` and now also suppressed
   in the `SHARED_SQTAB_INIT` deferral arm. A §6.5 deprecation window is a
   schedule, not conformance — they go at the next MAJOR.
-- Whether §2's dedicated `zp_config.s` can satisfy §6.1 member isolation is
-  open upstream as contract#188.
+- **`zp_config.o` does not satisfy §6.1 member isolation**, and this is the
+  one known non-conformance in the release. Its deprecated bare `zp_tmp1` /
+  `zp_tmp2` / `zp_ptr1` / `zp_ptr2` aliases share a translation unit with the
+  sixteen importable `fp_*` / `ec_*` / `sha_*` slots, so a consumer importing
+  `fp_src1` pulls the member and its bare names collide with a sibling library
+  exporting the same four.
+
+  Raised as contract#188 and **ruled at SPEC v1.2.2**: §2's dedicated
+  `src/zp_config.s` governs *claimed slots*, and a deprecated bare alias is not
+  one — §2's registry requires every exported slot name to carry a registered
+  prefix, which no bare `zp_` name does. So §2 never required the alias to live
+  there, and it may be exported from a separate **archived** TU. Upstream
+  measured the fleet before ruling: of five adopters only this one is affected.
+
+  Deliberately **not** in this release. The move is a file split across the six
+  variant gates, it changes no name, value or archive and is therefore not a
+  §6.5 event, and it has no ABI consequence — so there is no reason to hold a
+  security fix and a consumer's total link failure behind it. Tracked as #154.
+
+  **Composing consumers are already covered**: `-D LIB_NO_BARE_EXPORTS=1`
+  suppresses all four, which is what a consumer linking two libraries does
+  anyway.
 - `reu_fetch_mul_row`'s documented `A = a` entry convention is implemented by
-  neither §8.2 provider in the fleet; raised as contract#182 rather than
-  changed one-sidedly, which would break the pairing rather than fix it.
+  neither §8.2 provider in the fleet — both read a library-private byte and the
+  two bytes have different names, so cross-adopter fetch deferral is nominal
+  rather than real. Raised as contract#182 rather than changed one-sidedly,
+  which would move which side is wrong instead of fixing the pairing. Now
+  tracked here as **#153**: upstream ruled there is no ordering against
+  c64-x25519 — each provider fixing itself completely makes deferral work
+  whichever lands first — and that the entry shim and a caller audit must land
+  together, since a shim alone turns a stale-row read into a garbage-row read.

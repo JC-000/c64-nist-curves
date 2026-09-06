@@ -9,11 +9,26 @@
 ; its own tree, and §8.2 lets it place them here instead via
 ; LIB_SHARED_REU_MUL_STAGE_LO/_HI.
 ;
-; SPEC 1.2.0 §6.1 (member isolation) is why they are alone:
+; SPEC §6.1 (member isolation) is why they are alone. Quoting the CURRENT text,
+; as of the frozen v1.2.2 tag, because the wording moved twice after the clause
+; landed at 1.2.0 and the differences decide this file:
 ;
-;   "A symbol a consumer may displace [...] MUST live in a translation unit
+;   "A symbol a consumer may displace -- suppress under LIB_NO_BARE_EXPORTS, or
+;    define itself under APP_OWNED (§8.0) -- MUST live in a translation unit
 ;    that exports nothing else a consumer may import -- other displaceable
-;    names included -- and defines nothing the library's own code references."
+;    names included, their own prefixed counterparts excepted -- and defines
+;    nothing else the library's own code references."
+;
+; Both amendments matter here, which is why the tag is worth stating:
+;   1.2.1 added "their own prefixed counterparts excepted". Without it this
+;         file would be non-conformant against its own header comment, since it
+;         exports bare `mul_dma_lo`/`_hi` beside the prefixed names they alias.
+;   1.2.2 added "or with the identical bare name a sibling library exports" to
+;         the rationale, naming the library-versus-library direction as well as
+;         the consumer-versus-library one. That is the direction that applies to
+;         the bare `mul_` aliases below: `mul_` is registered to c64-x25519 in
+;         the §2 registry, so a sibling can export the identical names with no
+;         consumer definition involved anywhere.
 ;
 ; ld65 links whole members, so any library-private symbol sharing this TU
 ; drags it into a link that already has the consumer's own definitions, and

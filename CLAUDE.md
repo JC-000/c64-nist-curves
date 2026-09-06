@@ -8,11 +8,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v1.2.1**, verified clause-by-clause from built
+— conformant through **SPEC v1.2.2** (the contract is FROZEN there), verified clause-by-clause from built
 objects rather than from source comments (the alignment baseline lives in the
 session memory's lib-contract-alignment-monitor note).
 
-**One disclosed exception**, so "conformant" is not read as unqualified: §8.1
+**Two disclosed exceptions**, so "conformant" is not read as unqualified.
+First, `zp_config.o` fails §6.1 member isolation: its bare `zp_*` aliases share
+a TU with the importable `fp_*`/`ec_*`/`sha_*` slots. contract#188 raised it and
+**SPEC v1.2.2 ruled** that §2 never required the aliases to live there (§2
+governs *claimed slots*, and a bare alias carries no registered prefix, so it is
+not one) — they may move to a separate archived TU, which is not a §6.5 event.
+Deferred to the next release as issue #154, because it is a six-variant file
+split with no ABI consequence. Upstream measured that of five adopters only this
+one is affected. Second, §8.1
 says `sqtab_lo` / `sqtab_hi` MUST NOT be exported, and the default archive
 still exports them. They are gated under `LIB_NO_BARE_EXPORTS` and now also
 suppressed in the `SHARED_SQTAB_INIT` deferral arm (where a provider collision

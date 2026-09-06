@@ -63,7 +63,8 @@ nistcurves_mul_src2_buf:
 ; The §8.2 staging buffers (nistcurves_mul_dma_lo / _hi) used to live here too.
 ; They are in src/data_mul_stage.s now, and must stay there: they are an
 ; APP_OWNED surface, the two cells above are library-private and imported by
-; fp256.o / fp384.o / mul_8x8.o, and SPEC 1.2.0 §6.1 forbids the combination --
+; fp256.o / fp384.o / mul_8x8.o, and SPEC §6.1 member isolation forbids the combination (clause added at
+; contract 1.2.0, wording amended at 1.2.1 and 1.2.2; frozen at v1.2.2) --
 ; ld65 links whole members, so a consumer owning the buffers and calling any
 ; field op pulled this member and collided. Splitting the settle state out
 ; (issue #149, src/data_reu_wait.s) fixed only half of that. Do not merge them
