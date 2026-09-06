@@ -1653,11 +1653,23 @@ def od65_extraction_canary(failures):
     """Pin the assumption every other leg here rests on: that we see every name
     od65 prints.
 
-    od65 pads the `Name:` field to a fixed column, and at a name length of
-    EXACTLY 24 characters the padding computes to zero, so the line is emitted
-    as `Name:"LIB_NISTCURVES_P256_CODE"` with no space at all. Anything that
+    od65 emits the field as `printf("Name:%*s\"%s\"", 24 - Len, "", Name)`.
+    The padding is therefore `|24 - Len|`, NOT a fixed column: it shrinks to
+    zero at Len == 24 and grows again above it, because a negative `%*s` width
+    left-justifies rather than truncating. Measured here across name lengths 4
+    to 47, every one matching `|24 - Len|`.
+
+    At Len == 24 exactly, the padding is zero and the line is emitted as
+    `Name:"LIB_NISTCURVES_P256_CODE"` with no space at all. Anything that
     splits on whitespace -- `awk '/Name:/{print $2}'`, or a regex with
     `Name:\s+"` -- then yields an empty field and drops the symbol SILENTLY.
+
+    The mechanism matters because a fixed-column model licenses two false
+    inferences. It suggests the quote sits at a stable offset, so a `cut -c` or
+    column-based extraction would be safe -- it is not, the quote column moves
+    with every name. And it suggests LONG names are the hazard, so one checks
+    the 47-character prefixed names and misses the 24-character bare ones,
+    which are the only ones that actually break.
 
     This is not hypothetical here and it is not harmless. Seven names in this
     tree are exactly 24 characters, and they are precisely the ones the two
