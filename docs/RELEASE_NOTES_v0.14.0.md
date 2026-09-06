@@ -142,10 +142,28 @@ fail:
   suppressed in the `SHARED_SQTAB_INIT` deferral arm, and with no in-tree
   importer left — but a §6.5 deprecation window is a schedule, not conformance.
   They go at the next MAJOR.
-- **`mul_8x8.o` is not §6.1-conformant** (issue #155): it exports the whole
-  §8.1/§8.2/§8.3 surface from one TU that every field-op link pulls. Repairable
-  by rebuild under `LIB_NO_BARE_EXPORTS`, no demonstrated failure, and upstream
-  ruled it stays with us rather than earning contract text.
+- **`mul_8x8.o` is not §6.1-conformant, and it is a hard link failure with no
+  consumer-side remedy** (issue #155, HIGH). It exports the §8.1 pair, the §8.2
+  fetch and the six §8.3 names from one translation unit, dropped by three
+  *different* switches — so a consumer owning any one of the three while
+  deferring another collides. Measured on the shipped default archive, no
+  rebuild and no defines:
+
+      ld65: Error: Duplicate external identifier: 'smc_diff_a_imm'
+
+  `sqtab_init` is exported by only this object, so importing it necessarily
+  pulls the member, which arrives defining the whole §8.3 surface. **This was
+  filed LOW on the grounds that `LIB_NO_BARE_EXPORTS` repairs it; that is
+  wrong** — the define suppresses the bare aliases, not the §8.x canonical
+  names, and the collision is unchanged with it set. The only define that helps
+  is `-D SHARED_CT_MUL_8X8`, which is a rebuild of the library, and §6.1 bans
+  member surgery, so a consumer taking the archive as shipped has no way out.
+
+  c64-x25519 measured the identical shape and spent a tag on it. Not fixed here
+  because adding a third TU split on a different axis after adversarial review
+  had completed would put unreviewed work into a settling tag; it earns its
+  own. **If you own any §8.x primitive and defer another, do not take this
+  release** — v0.13.0 and earlier have the same defect.
 - **The `check-archives` per-leg audit is incomplete** (issue #142, deliberately
   left open). Every leg added since this work began carries a negative test;
   the legs that predate it do not all have one, and claiming otherwise would be
