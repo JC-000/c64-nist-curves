@@ -24,7 +24,11 @@
 ; definition along with it, so the settle state lives here, alone.
 ;
 ; Do not add anything to this file that a consumer might legitimately want to
-; own. Its whole purpose is to be safe to pull into any link.
+; own. Its whole purpose is to be safe to pull into any link -- which is also
+; why issue #155 moved `nistcurves_reu_dma_wait` INTO it (below): fp256.o and
+; fp384.o import that routine, so wherever it lives is pulled by every field
+; operation, and in `mul_8x8.s` it arrived carrying displaceable names.
+; Library-private plumbing is welcome here; anything ownable is not.
 ; =============================================================================
 
 .segment "LIB_NISTCURVES_BSS"
