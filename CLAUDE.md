@@ -129,9 +129,19 @@ Write the test that fails **first**, watch it fail, and record *how* it
 failed — **the mutation and the exact failure text belong in the commit or
 PR body**, not just in the session. Only then write the fix. A test authored after a passing fix has
 never been observed to fail, and this tree has shipped several checks that
-examined nothing (see `reference_check_evidence_taxonomy` in session memory
-for the five shapes). The rule that generalises it: **a check you have not
+examined nothing. The rule that generalises it: **a check you have not
 watched fail is not a check.**
+
+The seven shapes a green check can take while examining nothing, enumerated
+in full in `.claude/agents/adversarial-reviewer.md` lane 4: self-comparison
+(a value validated against itself), unlinked config (a `.cfg` or knob the
+build never reads), empty-population absence (a "zero X found" gate over an
+empty list), an invariant a refactor silently ate, a claim nothing depends
+on, a gate whose fixture encodes the defect it should catch (our issue #149
+probe stood in for a consumer that links nothing), and a failure branch that
+cannot propagate (`cmd || (echo FAIL; exit 1)` mid-`;`-chain exits 0 — the
+checks here use a Python `failures` accumulator, so re-flag any shell-side
+leg that does not).
 
 - **Red rows are carried, not deleted.** `tools/test_prims_adversarial.py`
   and `tools/test_ecdsa_adversarial.py` keep known-red rows in the suite and
