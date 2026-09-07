@@ -1284,6 +1284,9 @@ def gated_surface_check(failures):
     print("\n=== LIB_NO_BARE_EXPORTS gated surface ===")
     bad = []
     owned = {}
+    lost = {}
+    gained = {}
+    survivors = {}
     with tempfile.TemporaryDirectory() as td:
         for tu in GATE_TUS:
             # SENTINEL: assemble the TU UNGATED first and require it to export
@@ -1327,18 +1330,72 @@ def gated_surface_check(failures):
                 failures.append(f"gated surface: {tu}.s does not assemble under the gate")
                 print(f"  GATE FAIL: {tu}.s does not assemble: {out.splitlines()[0] if out else ''}")
                 continue
-            leaked = bare_gated(od65_names(obj, "--dump-exports"))
+            # Same trustworthy reader on BOTH sides. The gated dump used to go
+            # through od65_names(), which has no Count cross-check -- so a
+            # truncated gated dump under-reported, and every assertion below is
+            # a set difference that a short read makes LOOK better. Asymmetric
+            # extractors are the "diff whose readers break symmetrically and
+            # agree" shape; here they would not even break symmetrically.
+            gnames = od65_export_names(obj)
+            if gnames is COUNT_MISMATCH:
+                failures.append(f"gated surface: {tu}.o -- gated name extraction "
+                                "disagrees with od65's declared export Count; "
+                                "the file assembles, the reader is broken")
+                print(f"  GATE FAIL: {tu}.o gated extraction dropped names vs Count")
+                continue
+            if gnames is None:
+                failures.append(f"gated surface: {tu}.o gated dump is unreadable")
+                print(f"  GATE FAIL: {tu}.o gated dump unreadable")
+                continue
+
+            leaked = bare_gated(gnames)
             if leaked:
                 bad.append((tu, sorted(leaked)))
+
+            # POSITIVE half (issue #158). The assertions above are all
+            # absence-shaped: they say the gate removed what it must remove.
+            # Nothing said it KEPT what it must keep -- and the prefixed
+            # exports are the entire surface a composing consumer imports in
+            # this mode, since LIB_NO_BARE_EXPORTS=1 is exactly what a
+            # four-library link builds with. Moving a prefixed .export inside
+            # the `.ifndef LIB_NO_BARE_EXPORTS` block (fifteen lines away in
+            # lib_version.s) deleted LIB_NISTCURVES_VERSION_PATCH from every
+            # gated build and BOTH gates stayed green; a consumer would have
+            # met it as an ld65 unresolved external.
+            #
+            # The gate's whole contract, as one equation:
+            #     gated exports == ungated exports - names the gate suppresses
+            # "<=" is the leak check above; this is ">=". Neither direction
+            # alone is the contract.
+            expected = set(unames) - owns
+            survivors[tu] = sorted(expected)
+            dropped = expected - gnames
+            if dropped:
+                lost[tu] = sorted(dropped)
+            extra = gnames - set(unames)
+            if extra:
+                gained[tu] = sorted(extra)
     for tu, names in bad:
         failures.append(f"gated surface: {tu}.o exports bare {names}")
         print(f"  GATE FAIL: {tu}.o exports bare names under the gate: {names}")
-    if not bad and len(owned) == len(GATE_TUS):
+    for tu, names in lost.items():
+        failures.append(f"gated surface: {tu}.o LOSES {names} under the gate -- "
+                        "the gate may only suppress deprecated bare names, and "
+                        "these are the surface a composing consumer imports")
+        print(f"  GATE FAIL: {tu}.o drops non-bare exports under the gate: {names}")
+    for tu, names in gained.items():
+        failures.append(f"gated surface: {tu}.o GAINS {names} under the gate -- "
+                        "the gated build must be a subset of the ungated one")
+        print(f"  GATE FAIL: {tu}.o exports names only under the gate: {names}")
+    if not bad and not lost and not gained and len(owned) == len(GATE_TUS):
         total = sum(len(v) for v in owned.values())
+        kept = sum(len(v) for v in survivors.values())
         print(f"  gated surface OK ({len(GATE_TUS)} TUs owning {total} bare "
-              "names ungated, 0 under the gate)")
+              f"names ungated, 0 under the gate; {kept} non-bare exports "
+              "kept intact across the gate)")
         for tu in GATE_TUS:
             print(f"    {tu:20s} suppresses {owned[tu]}")
+            print(f"    {'':20s} keeps     {survivors[tu]}")
 
 
 APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",
