@@ -18,7 +18,7 @@
 .importzp fp_src1, fp_src2, fp_dst, fp_carry, fp_mul_i, fp_mul_j
 
 ; --- Imports: data ---
-.import fp384_wide, nistcurves_mul_cached_a, poly_prod_lo, poly_prod_hi
+.import fp384_wide, nistcurves_mul_cached_a, fp384_diag_lo, fp384_diag_hi
 .import nistcurves_mul_dma_lo, nistcurves_mul_dma_hi
 
 ; --- Imports: constants ---
@@ -808,9 +808,9 @@ fp_sqr_384:
 
         ldy nistcurves_mul_cached_a
         lda nistcurves_mul_dma_lo,y
-        sta poly_prod_lo
+        sta fp384_diag_lo
         lda nistcurves_mul_dma_hi,y
-        sta poly_prod_hi
+        sta fp384_diag_hi
 
         ; Add to fp384_wide[2*i]
         lda fp_mul_i
@@ -819,11 +819,11 @@ fp_sqr_384:
 
         clc
         lda fp384_wide,x
-        adc poly_prod_lo
+        adc fp384_diag_lo
         sta fp384_wide,x
         inx
         lda fp384_wide,x
-        adc poly_prod_hi
+        adc fp384_diag_hi
         sta fp384_wide,x
         bcc @diag_skip
 

@@ -25,8 +25,9 @@
 # the claim out of the notes so the fill-in step cannot be dropped
 # again, because there is no longer a step to drop.
 #
-# File list: the canonical v0.3.0+ vendoring set. `src/*.s` (canonical
-# ca65 sources only; legacy `.asm` ACME variants are excluded), the
+# File list: the canonical v0.3.0+ vendoring set. `src/*.s` (the only
+# sources there are; the legacy `.asm` ACME variants were deleted, see
+# the archive/acme-legacy-build branch), the
 # linker config, the exports header, and the top-level docs that
 # consumers reference. The Makefile is included so consumers can
 # `make` from the extracted tarball without re-deriving the build
@@ -102,7 +103,7 @@ git archive \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
   src/precalc_manifest.s src/precalc_table.inc src/sqtab_base.inc \
   src/reu_dma_done.inc \
-  src/main.s src/mul_8x8.s src/reu_mul_init.s \
+  src/main.s src/mul_8x8.s src/sqtab_aliases.s src/reu_mul_init.s \
   src/fp256.s src/mod256.s src/curve256.s src/inv256.s \
   src/points256_core.s src/points256_comb.s src/ecdsa256.s \
   src/fp384.s src/mod384.s src/curve384.s \

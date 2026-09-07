@@ -1,4 +1,3 @@
-ACME = acme
 CA65 = ca65
 
 # Consumer-supplied assembler defines, forwarded to EVERY ca65 invocation
@@ -70,7 +69,7 @@ CFG = $(SRC_DIR)/c64.cfg
 # doesn't touch (Lim-Lee anchors, the other curve's state, SHA buffers,
 # test-driver scratch).
 MODULES = main constants zp_config zp_aliases lib_version reu_config lib_manifest \
-          precalc_manifest mul_8x8 reu_mul_init \
+          precalc_manifest mul_8x8 sqtab_aliases reu_mul_init \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
@@ -79,7 +78,6 @@ MODULES = main constants zp_config zp_aliases lib_version reu_config lib_manifes
 
 CA65_SRCS = $(addprefix $(SRC_DIR)/,$(addsuffix .s,$(MODULES)))
 OBJECTS   = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(MODULES)))
-ASM_SRCS  = $(wildcard $(SRC_DIR)/*.asm)
 
 LIB_DIR = $(BUILD_DIR)/lib
 
@@ -119,7 +117,7 @@ $(shell mkdir -p $(BUILD_DIR); rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a \
         printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP))
 endif
 
-.PHONY: all clean build-acme bench-u64 dist \
+.PHONY: all clean bench-u64 dist \
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
         lib-app-owned lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
         lib-p384-curve-onchip lib-p256-comb lib-p256-comb-onchip \
@@ -214,10 +212,6 @@ $(PRG_ONCHIP_NOCOMB): $(ONCHIP_NOCOMB_OBJECTS) $(CFG) | $(BUILD_DIR)
 $(PRG_ONCHIP): $(ONCHIP_OBJECTS) $(CFG) | $(BUILD_DIR)
 	$(LD65) -o $@ -C $(CFG) -Ln $(BUILD_DIR)/labels_onchip_raw.txt $(ONCHIP_OBJECTS)
 	sed 's/^al \([0-9a-fA-F]\{2\}\)\([0-9a-fA-F]\{4\}\) /al C:\2 /' $(BUILD_DIR)/labels_onchip_raw.txt > $(BUILD_DIR)/labels_onchip.txt
-
-# --- ACME build (legacy, for side-by-side testing) ---
-build-acme: $(ASM_SRCS) | $(BUILD_DIR)
-	cd $(SRC_DIR) && $(ACME) -f cbm -o ../$(PRG) --vicelabels ../$(LABELS) main.asm
 
 # --- U64E ECDSA / scalar_mul_var bench (requires live Ultimate 64 hardware) ---
 # The `bench_*_tramp` wrappers in src/main.s emit $BFFF markers for the
@@ -459,7 +453,8 @@ LIB_CORE_P384CURVE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
 # the REU multiply table (issues #69/#78; verify-onchip archives contain
 # zero REU DMA code, API.md §8.4.2).
 LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
-                $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/reu_mul_init.o \
+                $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/sqtab_aliases.o \
+                $(BUILD_DIR)/reu_mul_init.o \
                 $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
                 $(BUILD_DIR)/data_mul_stage.o \
@@ -594,7 +589,8 @@ LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/zp_config.o \
                 $(BUILD_DIR)/zp_aliases.o
 LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
-                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o \
+                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/sqtab_aliases.o \
+                $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
                 $(BUILD_DIR)/data_mul_stage.o \
                 $(BUILD_DIR)/mul_aliases.o

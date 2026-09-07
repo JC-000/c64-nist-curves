@@ -12,6 +12,55 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **§6.1 member isolation: the mandatory boot call no longer drags displaceable
+  names into a consumer's link (#155).** `mul_8x8.o` exported the gated bare
+  `sqtab_lo` / `sqtab_hi` beside the §8.1 init pair, the §8.3 provider surface
+  and the §8.2 row fetch. ld65 links whole members, so a consumer doing the
+  documented boot sequence (`jsr sqtab_init`, API.md step 2, mandatory for any
+  multiply) pulled the member and both names, and a sibling library deriving
+  the same two canonical names from the same `LIB_SHARED_SQTAB_BASE` collided:
+  `ld65: Error: Duplicate external identifier: 'sqtab_hi'` — with no consumer
+  definition involved anywhere. The names now live alone in
+  `src/sqtab_aliases.s`, the shape SPEC 1.2.2 blessed for `zp_aliases.s`.
+  **Relocation, not removal:** same values, same export gate, still exported by
+  the same archives, still riding the §6.5 window to the next MAJOR.
+  Verified across 78 archive-instances × three consumer fixtures, zero
+  collisions.
+
+### Changed
+
+- **APP_OWNED consumers owe two fewer definitions (#155).**
+  `nistcurves-app-owned.a` no longer carries `poly_prod_lo` / `poly_prod_hi` as
+  unresolved externals. `fp_sqr` / `fp_sqr_384` had been borrowing the §8.3
+  product cells as two bytes of local diagonal scratch — write-then-read within
+  three instructions, never as the §8.3 product channel — and now use their own
+  `fp_diag_lo/_hi` (`data_p256.s`) and `fp384_diag_lo/_hi` (`data_p384.s`).
+  `mul_8x8_appowned.o` now has zero exports and zero imports. The #123
+  invariant is unchanged: the cells still travel with the `SHARED_CT_MUL_8X8`
+  body for `og_common`, which calls the deferred body for real.
+- `nistcurves_reu_dma_wait` moved from `src/mul_8x8.s` to `src/data_reu_wait.s`,
+  beside the state it uses. No behaviour change; the §8.3 canonical body is
+  byte-identical (59 B at `$0A16`).
+- New source file `src/sqtab_aliases.s`; PRG 37739 → 37743 B (the two scratch
+  pairs). `sqtab_aliases.o` contributes 0 bytes, so no §5 footprint figure
+  moves.
+
+### Removed
+
+- **The legacy ACME build path.** All fourteen `src/*.asm` files and the
+  `make build-acme` target are deleted. The ca65 migration finished long ago
+  and the side-by-side diff path had not been run in months — issue #155
+  caught it silently diverging, the ACME diagonal passes still referencing
+  `poly_prod_lo/hi` after the ca65 sources had moved off them. A dead build
+  path nobody runs does not catch drift; it manufactures it. The files are
+  preserved verbatim on the `archive/acme-legacy-build` branch.
+  No consumer impact: the `.asm` files were never shipped in a release tarball
+  (`tools/build_release.sh` has excluded them since v0.3.0) and never
+  contributed to any archive or to the PRG, which is byte-identical across
+  this removal.
+
 ## [0.14.0] — 2026-09-06
 
 MINOR, and the settling release against the frozen c64-lib-contract **SPEC
