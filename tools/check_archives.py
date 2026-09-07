@@ -2045,6 +2045,145 @@ def footprint_basis_check(failures):
               f"so the only fill is inter-segment and is charged)")
 
 
+def sibling_sqtab_collision_check(failures):
+    """§6.1 + §8.1: the MANDATORY boot call must not drag a bare sqtab name in.
+
+    The sibling arm above probes one symbol family (`mul_dma_*`) reached through
+    a §8.2 output equate. That left this repo's other §6.1 instance unguarded,
+    and it was a live defect for the whole of issue #155: `mul_8x8.o` exported
+    the displaceable bare `sqtab_lo`/`sqtab_hi` beside `sqtab_init`, and API.md
+    step 2 makes `jsr sqtab_init` mandatory for any multiply. So EVERY
+    conforming consumer pulled that member and both names, and any sibling
+    library deriving the same two canonical names from the same
+    LIB_SHARED_SQTAB_BASE collided -- with no consumer definition involved.
+
+    The probe calls `sqtab_init`, deliberately. A probe calling only `fp_mul`
+    passes today and proves nothing: in the default profile that link never
+    builds the multiply table, so it is a configuration no consumer ships --
+    the "fixture encodes the defect it should catch" shape. #155's first fix
+    passed exactly that fixture while still colliding for every real consumer.
+
+    Runs over EVERY built archive, not a sample: the same issue's first fix was
+    green in the default profile and broken in all five onchip archives, which
+    a three-archive sample would have missed.
+
+    Second obligation, same leg (the drift the split introduced): `sqtab_lo`
+    used to be one symbol serving as both the equate the body indexes and the
+    name the archive exports. Since #155 they are two definitions that happen
+    to agree -- `mul_8x8.s` derives its own from `sqtab_base.inc`, and
+    `sqtab_aliases.s` derives and exports the exported pair. A `-D` cannot
+    split them (CONTRACT_DEFINES reaches both TUs) but a source edit to one
+    file silently can, and #154's "values are derived, never restated" is the
+    standing warning. So every archive that exports the pair is link-resolved
+    and compared against the base parsed out of src/sqtab_base.inc."""
+    import tempfile
+    print("\n=== §6.1 sibling bare-name collision + §8.1 value pin (sqtab_*) ===")
+
+    inc = (REPO / "src" / "sqtab_base.inc").read_text()
+    m = re.search(r"LIB_SHARED_SQTAB_BASE\s*=\s*\$([0-9a-fA-F]+)", inc)
+    if not m:
+        failures.append("sqtab collision: cannot parse the default base out of "
+                        "src/sqtab_base.inc -- the value pin below would be "
+                        "comparing against nothing")
+        print("  SQTAB FAIL: base unparsed from sqtab_base.inc")
+        return
+    base = int(m.group(1), 16)
+
+    sibling = ('; stand-in for a sibling §8.1 adopter deriving the same two names\n'
+               '.export sqtab_lo, sqtab_hi\n'
+               'sqtab_lo = $a000\n'
+               'sqtab_hi = $a200\n')
+    # The DOCUMENTED boot call (API.md step 2), not a bare field op.
+    consumer = ('.import sqtab_init\n'
+                '.segment "CODE"\n'
+                'entry:\n\tjsr sqtab_init\n\trts\n')
+    # Value pin: import the exported name and read what it resolves to.
+    valprobe = ('.import sqtab_lo\n'
+                '.segment "CODE"\n'
+                'entry:\n\tlda sqtab_lo\n\trts\n')
+
+    archives = sorted(LIBDIR.glob("*.a"))
+    if not archives:
+        failures.append("sqtab collision: no archives built -- leg is vacuous")
+        print("  SQTAB FAIL: no archives found")
+        return
+
+    checked = pinned = 0
+    for archive in archives:
+        name = archive.name
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / "cfg").write_text(CONSUMER_CFG)
+            (td / "s.s").write_text(sibling)
+            (td / "c.s").write_text(consumer)
+            (td / "v.s").write_text(valprobe)
+            bad = False
+            for f in ("s", "c", "v"):
+                rc, _ = sh(["ca65", "--cpu", "6502", "-o", str(td / f"{f}.o"),
+                            str(td / f"{f}.s")])
+                if rc:
+                    failures.append(f"sqtab collision: probe {f}.s does not "
+                                    f"assemble ({name})")
+                    print(f"  SQTAB FAIL [{name}]: probe {f}.s assemble error")
+                    bad = True
+            if bad:
+                continue
+
+            _, out = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "o.prg"),
+                         str(td / "c.o"), str(td / "s.o"), str(archive)])
+            if "Duplicate external identifier" in out:
+                dup = sorted(set(re.findall(
+                    r"Duplicate external identifier: '([^']+)'", out)))
+                failures.append(
+                    f"sqtab collision: {name} forces bare {dup} on a consumer "
+                    f"performing the documented sqtab_init boot call "
+                    f"(§6.1 member isolation)")
+                print(f"  SQTAB FAIL [{name}]: duplicate {dup}")
+                continue
+            checked += 1
+
+            # Value pin, on archives that export the pair at all. app-owned
+            # gates the export out under SHARED_SQTAB_INIT, so an unresolved
+            # external there is the CORRECT result, not a failure.
+            mp = td / "v.map"
+            _, vout = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "v.prg"),
+                          "-m", str(mp), str(td / "v.o"), str(archive)])
+            if "Unresolved external" in vout or "unresolved external" in vout:
+                print(f"  sqtab OK [{name}] (no collision; exports no bare "
+                      "sqtab_lo, so nothing to pin)")
+                continue
+            if not mp.exists():
+                failures.append(f"sqtab collision: {name} value probe produced "
+                                "no map, so the pin below examined nothing")
+                print(f"  SQTAB FAIL [{name}]: no map from the value probe")
+                continue
+            vm = re.search(r"^sqtab_lo\s+([0-9A-F]{6})", mp.read_text(), re.M)
+            if not vm:
+                failures.append(f"sqtab collision: {name} links sqtab_lo but it "
+                                "is absent from the map -- pin is vacuous")
+                print(f"  SQTAB FAIL [{name}]: sqtab_lo not in map")
+                continue
+            got = int(vm.group(1), 16)
+            if got != base:
+                failures.append(
+                    f"sqtab collision: {name} exports sqtab_lo = ${got:04x} but "
+                    f"src/sqtab_base.inc says ${base:04x} -- the alias TU and "
+                    "mul_8x8.s have drifted (values are derived, never restated)")
+                print(f"  SQTAB FAIL [{name}]: sqtab_lo ${got:04x} != base ${base:04x}")
+                continue
+            pinned += 1
+            print(f"  sqtab OK [{name}] (boot call pulls no bare name; "
+                  f"sqtab_lo = ${got:04x} matches sqtab_base.inc)")
+
+    if checked == 0:
+        failures.append("sqtab collision: no archive completed the probe -- "
+                        "the leg passed without examining anything")
+        print("  SQTAB FAIL: nothing examined")
+    else:
+        print(f"  sqtab summary: {checked} archive(s) collision-free, "
+              f"{pinned} value-pinned against sqtab_base.inc")
+
+
 def sibling_bare_collision_check(failures):
     """§6.1: importing a §8.2 output equate must not drag a bare `mul_` name in.
 
@@ -2731,6 +2870,7 @@ def main():
     zp_roster_reconciliation_check(failures)
     footprint_basis_check(failures)
     sibling_bare_collision_check(failures)
+    sibling_sqtab_collision_check(failures)
     od65_extraction_canary(failures)
     app_owned_buffer_ownership_check(failures)
     defines_staleness_check(failures)
