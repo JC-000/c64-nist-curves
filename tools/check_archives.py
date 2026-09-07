@@ -947,6 +947,39 @@ def od65_export_names(obj):
     return names
 
 
+def _vfmt(v):
+    return "(label)" if v is None else f"{v}"
+
+
+def od65_export_records(obj):
+    """{name: value-or-None} for one object's exports, or None / COUNT_MISMATCH
+    on the same terms as od65_export_names().
+
+    Values exist only for constant equates -- a label's address is unresolved
+    until link, so od65 prints no Value: line for one. That is precisely the
+    class at risk here: the SPEC 1 version and ABI equates, the SPEC 8.4
+    precalc triples and the SPEC 3 placement equates are all constants a
+    consumer compiles against, and a name-only comparison cannot see one of
+    them change value across the gate (issue #158 review finding F3).
+    """
+    rc, out = sh(["od65", "--dump-exports", str(obj)])
+    if rc or "(no xo65 object file)" in out:
+        return None
+    m = re.search(r"Exports:\s*\n\s*Count:\s*(\d+)", out)
+    if not m:
+        return None
+    recs = {}
+    for block in re.split(r"\n\s*Index:", out)[1:]:
+        nm = re.search(r'Name:\s*"([^"]+)"', block)
+        if not nm:
+            continue
+        vm = re.search(r"Value:\s*(0x[0-9a-fA-F]+)", block)
+        recs[nm.group(1)] = int(vm.group(1), 16) if vm else None
+    if len(recs) != int(m.group(1)):
+        return COUNT_MISMATCH
+    return recs
+
+
 def zp_alias_audit(failures):
     """Issue #113 + #154: per variant arm --
 
@@ -1284,6 +1317,10 @@ def gated_surface_check(failures):
     print("\n=== LIB_NO_BARE_EXPORTS gated surface ===")
     bad = []
     owned = {}
+    lost = {}
+    gained = {}
+    shifted = {}
+    survivors = {}
     with tempfile.TemporaryDirectory() as td:
         for tu in GATE_TUS:
             # SENTINEL: assemble the TU UNGATED first and require it to export
@@ -1297,7 +1334,8 @@ def gated_surface_check(failures):
             uobj = Path(td) / (tu + "_ungated.o")
             rc, out = sh(["ca65", "--cpu", "6502",
                           "-I", "src", "-o", str(uobj), f"src/{tu}.s"])
-            unames = od65_export_names(uobj) if not rc else None
+            urecs = od65_export_records(uobj) if not rc else None
+            unames = set(urecs) if isinstance(urecs, dict) else urecs
             if unames is COUNT_MISMATCH:
                 failures.append(f"gated surface: {tu}.s -- name extraction "
                                 "disagrees with od65's declared export Count; "
@@ -1327,18 +1365,113 @@ def gated_surface_check(failures):
                 failures.append(f"gated surface: {tu}.s does not assemble under the gate")
                 print(f"  GATE FAIL: {tu}.s does not assemble: {out.splitlines()[0] if out else ''}")
                 continue
-            leaked = bare_gated(od65_names(obj, "--dump-exports"))
+            # Same trustworthy reader on BOTH sides. The gated dump used to go
+            # through od65_names(), which has no Count cross-check -- so a
+            # truncated gated dump under-reported, and every assertion below is
+            # a set difference that a short read makes LOOK better. Asymmetric
+            # extractors are the "diff whose readers break symmetrically and
+            # agree" shape; here they would not even break symmetrically.
+            grecs = od65_export_records(obj)
+            gnames = set(grecs) if isinstance(grecs, dict) else grecs
+            if gnames is COUNT_MISMATCH:
+                failures.append(f"gated surface: {tu}.o -- gated name extraction "
+                                "disagrees with od65's declared export Count; "
+                                "the file assembles, the reader is broken")
+                print(f"  GATE FAIL: {tu}.o gated extraction dropped names vs Count")
+                continue
+            if gnames is None:
+                failures.append(f"gated surface: {tu}.o gated dump is unreadable")
+                print(f"  GATE FAIL: {tu}.o gated dump unreadable")
+                continue
+
+            leaked = bare_gated(gnames)
             if leaked:
                 bad.append((tu, sorted(leaked)))
+
+            # POSITIVE half (issue #158). The assertions above are all
+            # absence-shaped: they say the gate removed what it must remove.
+            # Nothing said it KEPT what it must keep -- and the prefixed
+            # exports are the entire surface a composing consumer imports in
+            # this mode, since LIB_NO_BARE_EXPORTS=1 is exactly what a
+            # four-library link builds with. Moving a prefixed .export inside
+            # the `.ifndef LIB_NO_BARE_EXPORTS` block (fifteen lines away in
+            # lib_version.s) deleted LIB_NISTCURVES_VERSION_PATCH from every
+            # gated build and BOTH gates stayed green; a consumer would have
+            # met it as an ld65 unresolved external.
+            #
+            # The gate's whole contract, as one equation:
+            #     gated exports == ungated exports - names the gate suppresses
+            # "<=" is the leak check above; this is ">=". Neither direction
+            # alone is the contract.
+            # NOTE (review finding F4): `expected` is the roster's
+            # COMPLEMENT, so every ungated export not in BARE_GATED is now
+            # asserted to survive the gate -- including deprecated spellings
+            # not yet on the roster, e.g. mul_8x8's `mul_8x8` (a back-compat
+            # alias of ct_mul_8x8) and `sqtab_init` / `mul_tables_init`. When
+            # those are gated at the next MAJOR, BARE_GATED must be updated in
+            # the SAME commit as the source, or this leg reddens with a
+            # message that misdescribes a correct change. Fail-closed, but the
+            # diagnostic points the wrong way.
+            expected = set(unames) - owns
+            survivors[tu] = sorted(expected)
+            dropped = expected - gnames
+            if dropped:
+                lost[tu] = sorted(dropped)
+            extra = gnames - set(unames)
+            if extra:
+                gained[tu] = sorted(extra)
+
+            # Values, not just names (review finding F3). A name-set equation
+            # is satisfied by an equate that survives the gate holding a
+            # DIFFERENT value -- and a composing consumer compiles against the
+            # value. Planting
+            #     .ifdef LIB_NO_BARE_EXPORTS / ABI_VERSION = 99 / .else / = 4
+            # kept every name in place and passed every leg, while the gated
+            # object really did export 99. The SPEC 7 counter that CLAUDE.md
+            # calls load-bearing is exported from this very TU.
+            for nm in sorted(expected & gnames):
+                uv, gv = urecs.get(nm), grecs.get(nm)
+                if uv != gv:
+                    shifted.setdefault(tu, []).append(
+                        f"{nm} {_vfmt(uv)} -> {_vfmt(gv)}")
     for tu, names in bad:
         failures.append(f"gated surface: {tu}.o exports bare {names}")
         print(f"  GATE FAIL: {tu}.o exports bare names under the gate: {names}")
-    if not bad and len(owned) == len(GATE_TUS):
+    for tu, names in lost.items():
+        failures.append(f"gated surface: {tu}.o LOSES {names} under the gate -- "
+                        "the gate may only suppress deprecated bare names, and "
+                        "these are the surface a composing consumer imports")
+        print(f"  GATE FAIL: {tu}.o drops non-bare exports under the gate: {names}")
+    for tu, names in gained.items():
+        failures.append(f"gated surface: {tu}.o GAINS {names} under the gate -- "
+                        "the gated build must be a subset of the ungated one")
+        print(f"  GATE FAIL: {tu}.o exports names only under the gate: {names}")
+    # Completion is keyed off `survivors`, not `owned`. `owned[tu]` is
+    # recorded BEFORE the gated assemble, so every skip after that point
+    # (gated assemble fails, COUNT_MISMATCH, unreadable dump) leaves `owned`
+    # complete for a TU that was never examined under the gate. Keying the
+    # banner off it printed "0 under the gate" for a TU whose gated build was
+    # never read -- an absence assertion over a dump that does not exist, the
+    # exact shape this leg's sentinel exists to prevent, one level up. Once
+    # the success branch also indexed `survivors`, that latent false-OK became
+    # a KeyError that aborted the whole ratchet and swallowed the seven legs
+    # after it. `survivors[tu]` is assigned only on the path that read both
+    # dumps, so it is the honest completion record.
+    for tu, entries in shifted.items():
+        failures.append(f"gated surface: {tu}.o CHANGES exported values under "
+                        f"the gate: {entries} -- the gate may only suppress "
+                        "deprecated bare names, never restate a value")
+        print(f"  GATE FAIL: {tu}.o exports different values under the gate: {entries}")
+    if (not bad and not lost and not gained and not shifted
+            and len(survivors) == len(GATE_TUS)):
         total = sum(len(v) for v in owned.values())
+        kept = sum(len(v) for v in survivors.values())
         print(f"  gated surface OK ({len(GATE_TUS)} TUs owning {total} bare "
-              "names ungated, 0 under the gate)")
+              f"names ungated, 0 under the gate; {kept} non-bare exports "
+              "kept intact across the gate)")
         for tu in GATE_TUS:
             print(f"    {tu:20s} suppresses {owned[tu]}")
+            print(f"    {'':20s} keeps     {survivors[tu]}")
 
 
 APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",

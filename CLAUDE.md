@@ -116,6 +116,94 @@ Companion docs (read alongside this file):
 - `CHANGELOG.md` — release history with wave-by-wave optimization log.
 - `tools/vectors/README.md` — oracle invariant + KAT refresh procedure.
 
+## Working practice (repo standard — applies to every feature and issue)
+
+Two gates are **mandatory** on any change to `src/`, `tools/`, the Makefile,
+or a check: a **red/green test** and an **adversarial review**. They are not
+optional for "small" changes — every defect in the Known-issues section below
+looked small.
+
+### 1. Red/green before the fix
+
+Write the test that fails **first**, watch it fail, and record *how* it
+failed — **the mutation and the exact failure text belong in the commit or
+PR body**, not just in the session. Only then write the fix. A test authored after a passing fix has
+never been observed to fail, and this tree has shipped several checks that
+examined nothing. The rule that generalises it: **a check you have not
+watched fail is not a check.**
+
+The seven shapes a green check can take while examining nothing, enumerated
+in full in `.claude/agents/adversarial-reviewer.md` lane 4: self-comparison
+(a value validated against itself), unlinked config (a `.cfg` or knob the
+build never reads), empty-population absence (a "zero X found" gate over an
+empty list), an invariant a refactor silently ate, a claim nothing depends
+on, a gate whose fixture encodes the defect it should catch (our issue #149
+probe stood in for a consumer that links nothing), and a failure branch that
+cannot propagate (`cmd || (echo FAIL; exit 1)` mid-`;`-chain exits 0 — the
+checks here use a Python `failures` accumulator, so re-flag any shell-side
+leg that does not).
+
+- **Red rows are carried, not deleted.** `tools/test_prims_adversarial.py`
+  and `tools/test_ecdsa_adversarial.py` keep known-red rows in the suite and
+  gate them with `--strict`, so a fix flips a row green in place and a
+  regression turns it red again. Add new adversarial cases there rather than
+  in a throwaway script.
+- **Red for the right reason.** Confirm the failure is the one you intend.
+  Issue #139's `jmp`→`nop` mutation re-exposed the hang (right reason); the
+  weaker `sec`→`clc` mutation only reddened the row (wrong reason, weaker
+  evidence).
+- **Red in the right configuration.** A demonstration that a check can fail
+  is scoped to the configuration it ran in. State which of the twelve
+  archives / which profile (`FP_ONCHIP_MUL`, `ECDSA_NO_COMB`, the `SHARED_*`
+  deferral arms, `APP_OWNED`) carried the red.
+- **New checks owe a negative test, per leg.** When adding a leg to
+  `make check-archives` or `make check-docs`, mutate the artifact and prove
+  that leg — not a neighbouring one — fires. A negative test that fails on
+  the wrong leg proves nothing. Issue #142 tracks the legs that still have
+  no negative test; do not add to that backlog.
+- **Negative tests are destructive.** Copy the file aside before mutating and
+  restore from the copy — `git checkout <file>` has destroyed uncommitted
+  work here twice. Any test that perturbs image size trips the
+  `__MAIN_LAST__ <= sqtab_lo` link guard first (150 bytes of slack); pass
+  `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom or you are re-testing that
+  guard. After a `git stash` round-trip, always `make clean` — same-second
+  mtimes leave stale objects and produce misleading "unresolved" lists.
+- **VICE cannot redden everything.** It sets REU `$DF00` bit 6 immediately
+  and has no post-transfer restore window, so the §8.2 confirm/settle clause
+  has no VICE-visible red. Say so explicitly rather than claiming coverage.
+
+### 2. Adversarial review before the PR
+
+Run the project's `adversarial-reviewer` subagent
+(`.claude/agents/adversarial-reviewer.md`) against the branch diff before
+opening a PR, and again on any new check or gate. It attacks the change —
+the input the guard misses by one, the configuration nothing was proven in,
+the assertion that passes because it reads nothing — and reports without
+fixing.
+
+- Its findings are **triaged, not auto-applied**: fix, or record why not.
+- Fix and review stay separate (issue #148's guard was reviewed into its
+  correct post-condition shape only because the review was a distinct step).
+- Read its **tables**, not its conclusions; verify claims from built objects
+  (`od65`, `ld65`, the linked PRG), never from source comments.
+- **Citation duty**: grep every quote and every `file:line` an agent hands
+  you. Fabricated verbatim quotes have been produced across this fleet,
+  attached to otherwise-sound substance — the surrounding argument being
+  correct is not evidence the citation is.
+- After fixing a defect the review found, **re-run the check that found it**.
+
+`/code-review` is a complement, not a substitute: it looks for defects in the
+code as written, while the adversarial reviewer looks for the case the code
+was never asked about.
+
+### 3. Measurement is an input to merge, not a prediction
+
+Any change costing PRG or DATA bytes, or claiming a speedup, must cite
+**measured** cycles/jiffies before and after on the compound caller
+(`bench_ecdsa_u64.py`, `bench_p256/p384_u64.py`), in one bench invocation.
+Primitive benchmarks have misled this repo in both directions — see the
+Wave 8a `beq` and PR #26/#34 entries under "Negative findings" below.
+
 ## Build
 ```sh
 make clean && make           # ca65/ld65 build → build/nist-curves.prg
