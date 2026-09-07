@@ -947,6 +947,39 @@ def od65_export_names(obj):
     return names
 
 
+def _vfmt(v):
+    return "(label)" if v is None else f"{v}"
+
+
+def od65_export_records(obj):
+    """{name: value-or-None} for one object's exports, or None / COUNT_MISMATCH
+    on the same terms as od65_export_names().
+
+    Values exist only for constant equates -- a label's address is unresolved
+    until link, so od65 prints no Value: line for one. That is precisely the
+    class at risk here: the SPEC 1 version and ABI equates, the SPEC 8.4
+    precalc triples and the SPEC 3 placement equates are all constants a
+    consumer compiles against, and a name-only comparison cannot see one of
+    them change value across the gate (issue #158 review finding F3).
+    """
+    rc, out = sh(["od65", "--dump-exports", str(obj)])
+    if rc or "(no xo65 object file)" in out:
+        return None
+    m = re.search(r"Exports:\s*\n\s*Count:\s*(\d+)", out)
+    if not m:
+        return None
+    recs = {}
+    for block in re.split(r"\n\s*Index:", out)[1:]:
+        nm = re.search(r'Name:\s*"([^"]+)"', block)
+        if not nm:
+            continue
+        vm = re.search(r"Value:\s*(0x[0-9a-fA-F]+)", block)
+        recs[nm.group(1)] = int(vm.group(1), 16) if vm else None
+    if len(recs) != int(m.group(1)):
+        return COUNT_MISMATCH
+    return recs
+
+
 def zp_alias_audit(failures):
     """Issue #113 + #154: per variant arm --
 
@@ -1286,6 +1319,7 @@ def gated_surface_check(failures):
     owned = {}
     lost = {}
     gained = {}
+    shifted = {}
     survivors = {}
     with tempfile.TemporaryDirectory() as td:
         for tu in GATE_TUS:
@@ -1300,7 +1334,8 @@ def gated_surface_check(failures):
             uobj = Path(td) / (tu + "_ungated.o")
             rc, out = sh(["ca65", "--cpu", "6502",
                           "-I", "src", "-o", str(uobj), f"src/{tu}.s"])
-            unames = od65_export_names(uobj) if not rc else None
+            urecs = od65_export_records(uobj) if not rc else None
+            unames = set(urecs) if isinstance(urecs, dict) else urecs
             if unames is COUNT_MISMATCH:
                 failures.append(f"gated surface: {tu}.s -- name extraction "
                                 "disagrees with od65's declared export Count; "
@@ -1336,7 +1371,8 @@ def gated_surface_check(failures):
             # a set difference that a short read makes LOOK better. Asymmetric
             # extractors are the "diff whose readers break symmetrically and
             # agree" shape; here they would not even break symmetrically.
-            gnames = od65_export_names(obj)
+            grecs = od65_export_records(obj)
+            gnames = set(grecs) if isinstance(grecs, dict) else grecs
             if gnames is COUNT_MISMATCH:
                 failures.append(f"gated surface: {tu}.o -- gated name extraction "
                                 "disagrees with od65's declared export Count; "
@@ -1367,6 +1403,15 @@ def gated_surface_check(failures):
             #     gated exports == ungated exports - names the gate suppresses
             # "<=" is the leak check above; this is ">=". Neither direction
             # alone is the contract.
+            # NOTE (review finding F4): `expected` is the roster's
+            # COMPLEMENT, so every ungated export not in BARE_GATED is now
+            # asserted to survive the gate -- including deprecated spellings
+            # not yet on the roster, e.g. mul_8x8's `mul_8x8` (a back-compat
+            # alias of ct_mul_8x8) and `sqtab_init` / `mul_tables_init`. When
+            # those are gated at the next MAJOR, BARE_GATED must be updated in
+            # the SAME commit as the source, or this leg reddens with a
+            # message that misdescribes a correct change. Fail-closed, but the
+            # diagnostic points the wrong way.
             expected = set(unames) - owns
             survivors[tu] = sorted(expected)
             dropped = expected - gnames
@@ -1375,6 +1420,20 @@ def gated_surface_check(failures):
             extra = gnames - set(unames)
             if extra:
                 gained[tu] = sorted(extra)
+
+            # Values, not just names (review finding F3). A name-set equation
+            # is satisfied by an equate that survives the gate holding a
+            # DIFFERENT value -- and a composing consumer compiles against the
+            # value. Planting
+            #     .ifdef LIB_NO_BARE_EXPORTS / ABI_VERSION = 99 / .else / = 4
+            # kept every name in place and passed every leg, while the gated
+            # object really did export 99. The SPEC 7 counter that CLAUDE.md
+            # calls load-bearing is exported from this very TU.
+            for nm in sorted(expected & gnames):
+                uv, gv = urecs.get(nm), grecs.get(nm)
+                if uv != gv:
+                    shifted.setdefault(tu, []).append(
+                        f"{nm} {_vfmt(uv)} -> {_vfmt(gv)}")
     for tu, names in bad:
         failures.append(f"gated surface: {tu}.o exports bare {names}")
         print(f"  GATE FAIL: {tu}.o exports bare names under the gate: {names}")
@@ -1398,7 +1457,13 @@ def gated_surface_check(failures):
     # a KeyError that aborted the whole ratchet and swallowed the seven legs
     # after it. `survivors[tu]` is assigned only on the path that read both
     # dumps, so it is the honest completion record.
-    if not bad and not lost and not gained and len(survivors) == len(GATE_TUS):
+    for tu, entries in shifted.items():
+        failures.append(f"gated surface: {tu}.o CHANGES exported values under "
+                        f"the gate: {entries} -- the gate may only suppress "
+                        "deprecated bare names, never restate a value")
+        print(f"  GATE FAIL: {tu}.o exports different values under the gate: {entries}")
+    if (not bad and not lost and not gained and not shifted
+            and len(survivors) == len(GATE_TUS)):
         total = sum(len(v) for v in owned.values())
         kept = sum(len(v) for v in survivors.values())
         print(f"  gated surface OK ({len(GATE_TUS)} TUs owning {total} bare "
