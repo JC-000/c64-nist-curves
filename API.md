@@ -1476,13 +1476,24 @@ imports the five-symbol §8.3 provider surface — `ct_mul_8x8`, the two
 `smc_*_a_imm` SMC bake sites, and the `poly_prod_lo/hi` product cells —
 instead of defining it, so APP_OWNED × onchip is reachable per §6.3.
 The product cells travel with the body: a deferring build's runtime
-callers must read the cells the *provider's* body writes. Consequence:
-the app-owned archive carries `poly_prod_lo`/`poly_prod_hi` as
-documented unresolved externals (the app's §8.3 provider exports them,
-as both fleet providers already do); `make check-archives` pins the
-surface exported from every owning archive, absent from the deferring
-one, and assembles APP_OWNED × both profiles as a standing
-reachability leg.
+callers must read the cells the *provider's* body writes. That is why
+`og_common` under `FP_ONCHIP_MUL` still resolves them against the app's
+provider — it calls the deferred body for real.
+
+**Changed in issue #155:** the app-owned archive no longer carries
+`poly_prod_lo`/`poly_prod_hi` as unresolved externals, so an APP_OWNED
+consumer owes two fewer definitions in the default profile. They were
+unresolved only because `fp_sqr` / `fp_sqr_384` borrowed the two cells
+as local scratch for the diagonal pass — write-then-read within three
+instructions, never as the §8.3 product channel. The borrow was safe
+but it made `fp256.o` / `fp384.o` import a `mul_8x8.o` symbol, so every
+link that called any field operation pulled that member in and with it
+the displaceable bare `sqtab_lo` / `sqtab_hi`. The curves now use their
+own `fp_diag_lo`/`_hi` and `fp384_diag_lo`/`_hi`.
+
+`make check-archives` pins the surface exported from every owning
+archive, absent from the deferring one, and assembles APP_OWNED × both
+profiles as a standing reachability leg.
 
 **§8.0 precalc-table manifest** (`src/precalc_manifest.s`): alongside
 the equates above, every archive ships the SPEC §8.0 precalculated-table

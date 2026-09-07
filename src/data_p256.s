@@ -121,3 +121,19 @@ ecdsa_u1g_jac:  .res 96, 0      ; Jacobian u1*G (X@0, Y@32, Z@64), held
 ; --- fp_reverse32 staging buffer (one 32-byte scratch). Owned by ecdsa256.s.
 .export fp_rev_buf
 fp_rev_buf:     .res 32, 0
+
+
+; --- fp_sqr diagonal scratch (issue #155). Two bytes holding one a[i]^2
+;     product across the accumulate chain in the fp_sqr diagonal pass.
+;     These used to be `poly_prod_lo` / `poly_prod_hi`, the SPEC §8.3 product
+;     cells that travel with the ct_mul_8x8 body in mul_8x8.s -- borrowed as
+;     local scratch, write-then-read within three instructions, never as the
+;     §8.3 product channel. The borrow was safe but it made fp256.o/fp384.o
+;     IMPORT a mul_8x8.o symbol, so every link that called any field op pulled
+;     that member in and with it the displaceable bare `sqtab_lo`/`sqtab_hi`
+;     -- the §6.1 collision #155 demonstrates. Private scratch here breaks the
+;     pull path and stops the field layer writing through an APP_OWNED
+;     consumer's provider cells for its own purposes.
+.export fp_diag_lo, fp_diag_hi
+fp_diag_lo:      .byte 0
+fp_diag_hi:      .byte 0

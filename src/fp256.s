@@ -7,7 +7,7 @@
 
 ; Imports from data
 .import fp_wide, nistcurves_mul_src2_buf, nistcurves_mul_dma_lo, nistcurves_mul_dma_hi
-.import nistcurves_mul_cached_a, poly_prod_lo, poly_prod_hi
+.import nistcurves_mul_cached_a, fp_diag_lo, fp_diag_hi
 
 ; Imports from constants
 .import reu_reu_hi, reu_reu_bank, reu_command
@@ -734,9 +734,9 @@ fp_sqr:
 
         ldy nistcurves_mul_cached_a
         lda nistcurves_mul_dma_lo,y
-        sta poly_prod_lo
+        sta fp_diag_lo
         lda nistcurves_mul_dma_hi,y
-        sta poly_prod_hi
+        sta fp_diag_hi
 
         lda fp_mul_i
         asl
@@ -744,11 +744,11 @@ fp_sqr:
 
         clc
         lda fp_wide,x
-        adc poly_prod_lo
+        adc fp_diag_lo
         sta fp_wide,x
         inx
         lda fp_wide,x
-        adc poly_prod_hi
+        adc fp_diag_hi
         sta fp_wide,x
         bcc @diag_skip
 

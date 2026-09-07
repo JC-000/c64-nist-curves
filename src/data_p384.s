@@ -156,3 +156,19 @@ fp_rev_buf_384: .res 48, 0
 ;     non-re-entrant (matches the rest of the library's calling contract).
 .export ecdsa384_msg_struct_ptr
 ecdsa384_msg_struct_ptr: .res 2, 0
+
+
+; --- fp_sqr diagonal scratch (issue #155). Two bytes holding one a[i]^2
+;     product across the accumulate chain in the fp_sqr diagonal pass.
+;     These used to be `poly_prod_lo` / `poly_prod_hi`, the SPEC §8.3 product
+;     cells that travel with the ct_mul_8x8 body in mul_8x8.s -- borrowed as
+;     local scratch, write-then-read within three instructions, never as the
+;     §8.3 product channel. The borrow was safe but it made fp256.o/fp384.o
+;     IMPORT a mul_8x8.o symbol, so every link that called any field op pulled
+;     that member in and with it the displaceable bare `sqtab_lo`/`sqtab_hi`
+;     -- the §6.1 collision #155 demonstrates. Private scratch here breaks the
+;     pull path and stops the field layer writing through an APP_OWNED
+;     consumer's provider cells for its own purposes.
+.export fp384_diag_lo, fp384_diag_hi
+fp384_diag_lo:      .byte 0
+fp384_diag_hi:      .byte 0

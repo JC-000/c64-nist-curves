@@ -81,12 +81,20 @@ KNOWN_EXTERNAL = {
     # in-archive caller of ct_mul_8x8 was reu_mul_init.o (excluded under
     # SHARED_REU_MUL_INIT), the fetch has no callers at all, and sqtab_init /
     # reu_mul_tables_init are called only from the never-archived main.s.
-    # poly_prod_lo/hi ARE unresolved since issue #123 moved the §8.3 product
-    # cells inside the deferral gate (they are the canonical body's output
-    # interface -- the provider that owns the body owns the cells it writes,
-    # and both fleet providers export them): fp256.o/fp384.o read them as
-    # diagonal-squaring scratch, and the app's §8.3 provider supplies them.
-    "nistcurves-app-owned.a": {"poly_prod_lo", "poly_prod_hi"},
+    # poly_prod_lo/hi WERE unresolved here from issue #123 until issue #155.
+    # #123 moved the §8.3 product cells inside the deferral gate, correctly:
+    # they are the canonical body's output interface, so a deferring runtime
+    # caller must read the PROVIDER's cells. That still holds for og_common
+    # under FP_ONCHIP_MUL, which calls the deferred body for real.
+    # What did NOT hold was fp256.o/fp384.o importing them: fp_sqr's diagonal
+    # pass only ever used them as two bytes of local scratch, write-then-read
+    # within three instructions, never as the §8.3 product channel. That
+    # borrow made every field-op link pull mul_8x8.o and, with it, the
+    # displaceable bare sqtab_lo/sqtab_hi -- issue #155's §6.1 collision.
+    # The curves now carry their own fp_diag_lo/_hi (data_p256.s) and
+    # fp384_diag_lo/_hi (data_p384.s), so this archive resolves closed and an
+    # APP_OWNED consumer owes two fewer definitions than before.
+    "nistcurves-app-owned.a": set(),
     "nistcurves-onchip.a": set(),
     "nistcurves-p256-verify-onchip.a": set(),
     "nistcurves-p384-verify-onchip.a": set(),
