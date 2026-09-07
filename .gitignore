@@ -6,4 +6,8 @@ __pycache__/
 .serena/
 c64-nist-curves-v*.tar.gz
 .ca65-ls/
-.claude/
+# .claude/ is session-local (settings.local.json, worktrees, lock files) with
+# one exception: agents/ holds checked-in subagent definitions that are part of
+# the repo's working standard, so every clone gets them.
+.claude/*
+!.claude/agents/
