@@ -1387,7 +1387,18 @@ def gated_surface_check(failures):
         failures.append(f"gated surface: {tu}.o GAINS {names} under the gate -- "
                         "the gated build must be a subset of the ungated one")
         print(f"  GATE FAIL: {tu}.o exports names only under the gate: {names}")
-    if not bad and not lost and not gained and len(owned) == len(GATE_TUS):
+    # Completion is keyed off `survivors`, not `owned`. `owned[tu]` is
+    # recorded BEFORE the gated assemble, so every skip after that point
+    # (gated assemble fails, COUNT_MISMATCH, unreadable dump) leaves `owned`
+    # complete for a TU that was never examined under the gate. Keying the
+    # banner off it printed "0 under the gate" for a TU whose gated build was
+    # never read -- an absence assertion over a dump that does not exist, the
+    # exact shape this leg's sentinel exists to prevent, one level up. Once
+    # the success branch also indexed `survivors`, that latent false-OK became
+    # a KeyError that aborted the whole ratchet and swallowed the seven legs
+    # after it. `survivors[tu]` is assigned only on the path that read both
+    # dumps, so it is the honest completion record.
+    if not bad and not lost and not gained and len(survivors) == len(GATE_TUS):
         total = sum(len(v) for v in owned.values())
         kept = sum(len(v) for v in survivors.values())
         print(f"  gated surface OK ({len(GATE_TUS)} TUs owning {total} bare "
