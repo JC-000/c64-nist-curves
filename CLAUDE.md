@@ -207,7 +207,6 @@ Wave 8a `beq` and PR #26/#34 entries under "Negative findings" below.
 ## Build
 ```sh
 make clean && make           # ca65/ld65 build → build/nist-curves.prg
-make build-acme              # legacy ACME build of *.asm (diff testing only)
 make bench-u64               # alias for tools/bench_ecdsa_u64.py (needs U64_HOST)
 ```
 Assembler: ca65/ld65 (cc65 toolchain). Multi-object build: each .s file compiles
@@ -222,15 +221,15 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   sha256 round-trip).
 Current PRG size: ~36.9 KB (37739 bytes as of issue #148's comb post-condition guard; 37483 through v0.12.0 — the guard adds ~64 B of code but the page-aligned LIB_NISTCURVES_TABLES segment rounds that up to +256 B of image. Earlier: 37480 at v0.10.0's issue #98 P384_BSS fix, 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801. **Any negative test that perturbs image size trips this guard first** — it has intercepted three such tests aimed at other asserts. Pass `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom, or you are re-testing the guard you already have. **Slack under the §4 `__MAIN_LAST__ <= sqtab_lo` link guard is now 150 bytes** (`$9B6A` vs `$9C00`), down from 406; anything that grows MAIN much further needs the buffers moved first, not a bigger guard.
 
-`src/*.s` is canonical (ca65). `src/*.asm` files exist for the legacy
-ACME build path used in side-by-side diff testing only — do not edit
-them for new work. **Known divergence since issue #155:** the ACME
-`fp256.asm` / `fp384.asm` diagonal passes still use `poly_prod_lo/hi`
-where the ca65 sources now use their own `fp_diag_lo/_hi` /
-`fp384_diag_lo/_hi`, so a side-by-side diff shows four operand
-addresses differing per curve. The generated code is otherwise
-unchanged; treat those eight operands as expected diff noise, or bring
-the `.asm` copies forward if the diff path is used in anger.
+`src/*.s` (ca65) is the only source set. The legacy ACME `src/*.asm`
+files and the `make build-acme` target were **deleted** — the toolchain
+migration finished long ago, the diff path had not been used in months,
+and issue #155 caught it silently diverging (the ACME diagonal passes
+still referenced `poly_prod_lo/hi` after the ca65 sources moved off
+them). A dead build path that no one runs does not catch drift; it
+manufactures it. Preserved verbatim on the **`archive/acme-legacy-build`**
+branch if they are ever wanted again — do not resurrect them into
+`master`.
 
 ## Test
 

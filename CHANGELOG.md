@@ -47,11 +47,19 @@ contract).
   pairs). `sqtab_aliases.o` contributes 0 bytes, so no §5 footprint figure
   moves.
 
-### Known divergence
+### Removed
 
-- The legacy ACME `src/fp256.asm` / `src/fp384.asm` diagonal passes still use
-  `poly_prod_lo/hi`, so the side-by-side diff path shows four operand addresses
-  differing per curve. Expected noise, not a defect in either build.
+- **The legacy ACME build path.** All fourteen `src/*.asm` files and the
+  `make build-acme` target are deleted. The ca65 migration finished long ago
+  and the side-by-side diff path had not been run in months — issue #155
+  caught it silently diverging, the ACME diagonal passes still referencing
+  `poly_prod_lo/hi` after the ca65 sources had moved off them. A dead build
+  path nobody runs does not catch drift; it manufactures it. The files are
+  preserved verbatim on the `archive/acme-legacy-build` branch.
+  No consumer impact: the `.asm` files were never shipped in a release tarball
+  (`tools/build_release.sh` has excluded them since v0.3.0) and never
+  contributed to any archive or to the PRG, which is byte-identical across
+  this removal.
 
 ## [0.14.0] — 2026-09-06
 

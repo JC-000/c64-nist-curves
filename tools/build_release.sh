@@ -25,8 +25,9 @@
 # the claim out of the notes so the fill-in step cannot be dropped
 # again, because there is no longer a step to drop.
 #
-# File list: the canonical v0.3.0+ vendoring set. `src/*.s` (canonical
-# ca65 sources only; legacy `.asm` ACME variants are excluded), the
+# File list: the canonical v0.3.0+ vendoring set. `src/*.s` (the only
+# sources there are; the legacy `.asm` ACME variants were deleted, see
+# the archive/acme-legacy-build branch), the
 # linker config, the exports header, and the top-level docs that
 # consumers reference. The Makefile is included so consumers can
 # `make` from the extracted tarball without re-deriving the build
