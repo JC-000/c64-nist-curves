@@ -847,8 +847,12 @@ def bare_gated(names):
 # it must export no bare name in either configuration -- is asserted by
 # zp_alias_audit() below, which has the populated-dump sentinel that makes an
 # absence assertion mean something.
-GATE_TUS = ["zp_aliases", "mul_aliases", "data_shared", "mul_8x8", "lib_version",
-            "precalc_manifest"]
+GATE_TUS = ["zp_aliases", "mul_aliases", "data_shared", "sqtab_aliases",
+            "lib_version", "precalc_manifest"]
+# `mul_8x8` left this list at issue #155: it owns no bare name any more, the
+# two it used to own (sqtab_lo/sqtab_hi) having moved to `sqtab_aliases.s`.
+# The sentinel above would fail it as a permanently-green entry -- which is
+# the check working, and is how this edit was found rather than remembered.
 
 
 # --- R2 exported-vs-summed ZP audit (issue #113, chacha-template method) -----

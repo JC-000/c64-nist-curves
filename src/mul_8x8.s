@@ -78,9 +78,13 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 ; discover a second gate (`-D LIB_NO_BARE_EXPORTS=1`) to link. There is no
 ; in-tree importer left to protect: src/main.s's sqtab-window guard asserts
 ; against LIB_SHARED_SQTAB_BASE, not against these labels.
-.if (.not .defined(LIB_NO_BARE_EXPORTS)) .and (.not .defined(SHARED_SQTAB_INIT))
-.export sqtab_lo, sqtab_hi
-.endif
+; EXPORTED FROM src/sqtab_aliases.s SINCE ISSUE #155, not from here. The two
+; names stay local equates in this TU (the body below indexes them and the SMC
+; page-delta math is computed from them), but exporting them HERE is what made
+; every reference into this member -- the mandatory `sqtab_init` boot call, the
+; §8.3 body, `og_common` under FP_ONCHIP_MUL -- drag two displaceable names
+; into a consumer's link. Same values, same gate, same archives, own TU.
+; Do not re-add the .export here.
 
 ; =============================================================================
 ; sqtab_init - Build quarter-square lookup table at sqtab_lo / sqtab_hi

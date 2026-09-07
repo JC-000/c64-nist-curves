@@ -102,7 +102,7 @@ git archive \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
   src/precalc_manifest.s src/precalc_table.inc src/sqtab_base.inc \
   src/reu_dma_done.inc \
-  src/main.s src/mul_8x8.s src/reu_mul_init.s \
+  src/main.s src/mul_8x8.s src/sqtab_aliases.s src/reu_mul_init.s \
   src/fp256.s src/mod256.s src/curve256.s src/inv256.s \
   src/points256_core.s src/points256_comb.s src/ecdsa256.s \
   src/fp384.s src/mod384.s src/curve384.s \

@@ -70,7 +70,7 @@ CFG = $(SRC_DIR)/c64.cfg
 # doesn't touch (Lim-Lee anchors, the other curve's state, SHA buffers,
 # test-driver scratch).
 MODULES = main constants zp_config zp_aliases lib_version reu_config lib_manifest \
-          precalc_manifest mul_8x8 reu_mul_init \
+          precalc_manifest mul_8x8 sqtab_aliases reu_mul_init \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
@@ -459,7 +459,8 @@ LIB_CORE_P384CURVE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
 # the REU multiply table (issues #69/#78; verify-onchip archives contain
 # zero REU DMA code, API.md §8.4.2).
 LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
-                $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/reu_mul_init.o \
+                $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/sqtab_aliases.o \
+                $(BUILD_DIR)/reu_mul_init.o \
                 $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
                 $(BUILD_DIR)/data_mul_stage.o \
@@ -594,7 +595,8 @@ LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/zp_config.o \
                 $(BUILD_DIR)/zp_aliases.o
 LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
-                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/data_shared.o \
+                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/sqtab_aliases.o \
+                $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
                 $(BUILD_DIR)/data_mul_stage.o \
                 $(BUILD_DIR)/mul_aliases.o
