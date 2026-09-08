@@ -4,7 +4,7 @@
 ; fp384.s - P-384 48-byte field arithmetic (little-endian)
 ;
 ; All field elements stored LITTLE-ENDIAN: byte 0 = LSB, byte 47 = MSB.
-; Adapted from fp256.asm; loop sizes grown from 32 to 48 and 64 to 96.
+; Adapted from fp256.s; loop sizes grown from 32 to 48 and 64 to 96.
 ;
 ; Optimizations ported from c64-x25519/src/fe25519.asm:
 ;   - REU DMA multiplication table lookup (reu_fetch_mul_row)
