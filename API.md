@@ -1546,10 +1546,34 @@ can `.import` a `_SIZE` equate and `.assert` on it only for tables
 the `od65` dump for that one. The producer-side `.export` is unaffected.
 
 **§6.6 consumer footprint assert** (SPEC v0.10.0). The §5 figures are
-per-archive (§6.4) and safe-direction (each ≥ the measured sum for that
-archive), so a consumer can gate its build on them: `declared ≤ budget`
-implies `actual ≤ budget`, and a library bump that outgrows the budget fails
-the link with a named cause instead of an opaque segment overflow.
+per-archive (§6.4) and safe-direction (each ≥ the measured code+rodata for
+that archive), so a consumer can gate its build on them, and a library bump
+that outgrows the budget fails the link with a named cause instead of an
+opaque segment overflow.
+
+**What the figures do and do not cover — corrected, issue #161.** They
+measure what is placed *inside* each segment. They deliberately do **not**
+include alignment padding that falls *between or before* segments: that pad
+is `(-previous_end) mod alignment`, fixed by where the consumer places the
+segments and in what order, so it is a consumer property the archive cannot
+know. One footprint segment is page-aligned —
+`LIB_NISTCURVES_SHA384_TABLES` (`align = $100`, the rotate LUTs) — so for
+the six archives containing `sha384.o` a consumer reserving one contiguous
+region can pay **up to 255 B more** than `RESIDENT + COLD`.
+
+So the assert below is **necessary but not sufficient** for those six: it
+bounds the library's own bytes, not the consumer's placement of them. Either
+leave ≥ 256 B of headroom in the region, or place the aligned segment first
+in the region and assert against the extents your own link map reports —
+those extents exist only in that map, which is why the equates cannot carry
+them. This library's own margins are 399–851 B for the six, which is why no
+in-tree configuration is affected today.
+
+Until issue #161 this section claimed `declared ≤ budget` implies
+`actual ≤ budget`. That held only while `check-archives` charged a
+worst-case 255 B pre-segment pad into the measurement — a charge the §5
+measurand forbids, because it bills every consumer for a page many of them
+never spend.
 
 <!-- check-docs: external="__CRYPTO_HOT_SIZE__" -->
 ```asm
