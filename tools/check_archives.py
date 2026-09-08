@@ -747,9 +747,23 @@ def _makefile_text_and_expand():
     text = MAKEFILE.read_text()
     joined = re.sub(r"\\\n\s*", " ", text)  # fold backslash continuations
 
+    # `:=`, `?=` and `+=` are matched too. Reading only `NAME =` left every
+    # other flavour undefined, and an undefined variable expands to the empty
+    # string -- so one character (`OBJS :=`) silently shrank an archive's
+    # parsed member list, and the tokens that vanished did not end in `.o`, so
+    # nothing downstream noticed. `+=` is accumulated rather than overwritten.
     vars_ = {}
-    for m in re.finditer(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", joined, re.M):
-        vars_[m.group(1)] = m.group(2).strip()
+    for m in re.finditer(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(\+?[:?]?=)\s*(.*)$",
+                         joined, re.M):
+        name, op = m.group(1), m.group(2)
+        # make treats an unescaped `#` as a comment, and several assignments
+        # here carry a trailing one. Reading it as part of the VALUE injected
+        # prose into the expansion of every recipe using the variable.
+        val = re.split(r"(?<!\\)#", m.group(3))[0].strip()
+        if op == "+=":
+            vars_[name] = (vars_.get(name, "") + " " + val).strip()
+        else:
+            vars_[name] = val
 
     def expand(s, depth=0):
         if depth > 20:
@@ -758,16 +772,44 @@ def _makefile_text_and_expand():
                      lambda mm: expand(vars_.get(mm.group(1), ""), depth + 1), s)
         return out
 
-    return joined, expand
+    def expand_checked(s, what):
+        """expand(), but a surviving `$(` is a hard failure.
+
+        Without this the degradation is silent AND in the green direction: an
+        unexpandable token simply does not end in `.o`, so it drops out of a
+        member list and the population shrinks with no diagnostic. Losing one
+        equate-only member (nothing imports it) took a gate-owning arm out of
+        the sweep while every leg still printed OK."""
+        out = expand(s)
+        residue = out.replace("$(SRC_DIR)", "").replace("$(BUILD_DIR)", "")
+        if "$(" in residue or "${" in residue:
+            raise RuntimeError(
+                f"{what}: unexpandable make function or unknown variable "
+                f"survives expansion, so the parsed token list is a SUBSET of "
+                f"the real one: {out!r}")
+        return out
+
+    return joined, expand, expand_checked
 
 
 # Explicit per-object rules: `$(BUILD_DIR)/<obj>.o: $(SRC_DIR)/<tu>.s` with a
 # one-line ca65 recipe. An object NOT matched here is built by the catch-all
 # pattern rule, i.e. the default arm with no variant define.
+#
+# The recipe is the WHOLE block of tab-indented lines that follows, with
+# blank/comment lines between head and body tolerated. Binding only "the one
+# line immediately after the head" made two benign Makefile edits silently
+# wrong in the green direction: prepending an `@echo` to a recipe made the
+# parser read that line, find no `-D`, and sweep the arm as the DEFAULT arm
+# (issue #159's own fixture then passed again); inserting a `# comment` made
+# the rule vanish entirely, dropping the arm from the roster.
 _OBJ_RULE_RE = re.compile(
     r"^\$[({]BUILD_DIR[)}]/(?P<obj>[A-Za-z0-9_]+)\.o:\s*"
     r"\$[({]SRC_DIR[)}]/(?P<src>[A-Za-z0-9_]+)\.s[^\n]*\n"
-    r"\t(?P<recipe>[^\n]*)$", re.M)
+    r"(?P<recipe>(?:[ \t]*#[^\n]*\n|[ \t]*\n)*(?:\t[^\n]*\n)+)", re.M)
+# Any explicit object rule head at all, used to reconcile what the regex above
+# actually matched against what the Makefile actually declares.
+_OBJ_HEAD_RE = re.compile(r"^\$[({]BUILD_DIR[)}]/([A-Za-z0-9_]+)\.o:", re.M)
 
 
 def parse_makefile_object_rules():
@@ -785,18 +827,36 @@ def parse_makefile_object_rules():
     disappears from the Makefile disappears from the sweep instead of sitting
     here proving nothing.
     """
-    joined, expand = _makefile_text_and_expand()
+    joined, _expand, expand_checked = _makefile_text_and_expand()
     rules = {}
     for m in _OBJ_RULE_RE.finditer(joined):
-        recipe = expand(m.group("recipe"))
-        residue = recipe.replace("$(SRC_DIR)", "").replace("$(BUILD_DIR)", "")
-        if "$(" in residue or "${" in residue:
+        obj = m.group("obj")
+        recipe = expand_checked(m.group("recipe"), f"object rule for {obj}.o")
+        # The switch set must come from the ASSEMBLER line, not from whatever
+        # line happened to be first. Requiring exactly one ca65 invocation
+        # means an `@echo` preamble, a second assemble, or a rename of the
+        # assembler variable fails loudly instead of yielding a wrong -- and
+        # always weaker -- arm.
+        ca_lines = [ln for ln in recipe.splitlines() if re.search(r"\bca65\b", ln)]
+        if len(ca_lines) != 1:
             raise RuntimeError(
-                f"object rule for {m.group('obj')}.o has an unexpandable make "
-                f"function in its recipe; its -D set cannot be read and the "
-                f"arm sweep would silently use the default: {recipe!r}")
-        defines = tuple(re.findall(r"-D\s+(\S+)", recipe))
-        rules[m.group("obj")] = (m.group("src"), defines)
+                f"object rule for {obj}.o has {len(ca_lines)} ca65 lines in its "
+                f"recipe; the arm's -D set cannot be read unambiguously and a "
+                f"wrong read is silently the DEFAULT arm: {recipe!r}")
+        defines = tuple(re.findall(r"-D\s+(\S+)", ca_lines[0]))
+        rules[obj] = (m.group("src"), defines)
+    # RECONCILIATION. Everything above is regex against a hand-written
+    # Makefile, and its failure mode is a smaller roster, silently. Every
+    # explicit object-rule head the Makefile declares must have been parsed;
+    # a head the pattern missed is an arm the sweep would never look at while
+    # printing a clean count.
+    heads = set(_OBJ_HEAD_RE.findall(joined))
+    unparsed = sorted(heads - set(rules))
+    if unparsed:
+        raise RuntimeError(
+            f"Makefile declares explicit object rules for {unparsed} that this "
+            f"parser did not match (rule head shape changed?). Their arms would "
+            f"silently fall back to the default arm or vanish from the sweep.")
     return rules
 
 
@@ -830,8 +890,16 @@ def parse_makefile_archives():
     Parses the Make variable assignments (LIB_*_OBJS, BUILD_DIR) with line
     continuations, then the `ar65 a $(LIB_DIR)/<name>.a <tokens>` lines, and
     expands $(VAR) / $(BUILD_DIR) references down to build/<mod>.o paths.
+
+    Expansion is CHECKED. This parser used to drop anything that failed to
+    expand -- an unknown variable became "", a `$(subst ...)` survived
+    literally, and either way the token no longer ended in `.o` and simply
+    left the member list. The population then shrank silently, which every
+    downstream leg reports as a smaller-but-clean count. Losing a single
+    equate-only member that nothing imports took a gate-owning arm out of the
+    sweep with all twelve archives still reporting OK.
     """
-    joined, expand = _makefile_text_and_expand()
+    joined, _expand, expand_checked = _makefile_text_and_expand()
 
     # Each archive rule is `$(LIB_DIR)/<name>.a: <prereqs>` followed by an
     # `ar65 a $@ <tokens>` recipe line ($@ = the archive path). Capture the
@@ -844,8 +912,20 @@ def parse_makefile_archives():
         re.M,
     )
     for m in rule.finditer(joined):
-        name, tokens = m.group("name"), expand(m.group("tokens"))
-        mods = [Path(t).stem for t in tokens.split() if t.endswith(".o")]
+        name = m.group("name")
+        tokens = expand_checked(m.group("tokens"), f"ar65 recipe for {name}")
+        toks = tokens.split()
+        mods = [Path(t).stem for t in toks if t.endswith(".o")]
+        # Every token on an ar65 line is an object path. One that is not means
+        # the expansion produced something this parser does not understand,
+        # and the member list it just built is a subset of the real one.
+        stray = [t for t in toks if not t.endswith(".o")]
+        if stray:
+            raise RuntimeError(
+                f"ar65 recipe for {name} has non-object tokens {stray} after "
+                f"expansion; the parsed member list is a SUBSET of the real one")
+        if not mods:
+            raise RuntimeError(f"ar65 recipe for {name} parsed to zero members")
         archives[name] = mods
     return archives
 
@@ -1458,7 +1538,15 @@ def gated_surface_check(failures, archives):
     correct build. What is still asserted, and is what the sentinel was for,
     is that every roster TU owns at least one bare name in at least one arm,
     that every arm's two dumps were read, and that the ">=" half (survivors
-    and their values) holds in every arm including the empty-owning ones."""
+    and their values) holds in every arm including the empty-owning ones.
+
+    The honest limit of that relaxation: within THIS leg, an arm whose ungated
+    export set had gone empty passes every assertion, because `owns`,
+    `expected`, `dropped`, `gained` and `shifted` are then all empty sets.
+    What rules that out is elsewhere -- MUST_EXPORT pins the bare
+    LIB_PRECALC_* triples per archive and ZP_ALIAS_ARMS pins the exact
+    per-arm alias set, both read from the built build/lib/*.a. That is a real
+    cross-leg dependency, so it is written down rather than left implied."""
     import tempfile
     print("\n=== LIB_NO_BARE_EXPORTS gated surface (all shipped variant arms) ===")
     arms = {obj: rec for obj, rec in shipped_object_arms(archives).items()
@@ -1982,7 +2070,16 @@ def gated_link_check(failures, archives):
     `make lib-<variant> CONTRACT_DEFINES='-D LIB_NO_BARE_EXPORTS=1'` followed
     by a link, and through v0.14.0 no leg ever performed one: the §3 header
     leg resolves nistcurves.inc against the twelve archives UNGATED only.
-    That is the composition c64-https and c64-e2ee-chat perform.
+
+    SCOPE, stated exactly, because the obvious overclaim is wrong. This leg
+    proves the LIBRARY is self-consistent under the gate -- it does not prove
+    a consumer's imports of nistcurves.inc resolve under it. ca65 drops an
+    `.import` nothing references, so the HEADER_STUB object carries exactly
+    one import (`__LOADADDR__`, checked with od65), and the header therefore
+    contributes nothing to the link. A gated defect confined to the header --
+    the header still declaring an import of a name the gate deletes -- stays
+    invisible here. Closing that needs a stub that actually references the
+    public surface (the SMOKE lists are the obvious source); it is not closed.
 
     The gap is not academic, because the object level cannot see it. Each
     object can be individually correct under the gate while the LINK fails:
@@ -2036,6 +2133,65 @@ def gated_link_check(failures, archives):
                         "but built by no ar65 recipe -- a roster entry that "
                         "binds nothing")
         print(f"  GATED LINK FAIL: phantom archives in the switch roster: {phantom}")
+    # ARM-DERIVATION PIN. Everything above -- and the whole arm sweep in
+    # gated_surface_check -- rests on this file's reading of the Makefile
+    # being the same as make's. Both rebuild from source and compare only to
+    # themselves, so a misread switch set is self-consistent and invisible:
+    # the arm is assembled with the wrong -D, swept, and reported OK. (That
+    # was live: the four APP_OWNED switches reach mul_8x8_appowned.o through
+    # a $(APP_OWNED_DEFINES) variable, and reading it wrong swept the
+    # app-owned arm as the default arm.) So compare the ungated rebuild of
+    # each arm against the object `make` actually produced. Different -D,
+    # different export set -- for the manifest and alias TUs whose whole
+    # content is switch-gated, which is exactly the population that matters.
+    drift, unbuilt = [], []
+    for obj, (src, defines, _using) in sorted(arms.items()):
+        real = BUILD / f"{obj}.o"
+        if not real.exists():
+            unbuilt.append(obj)
+            continue
+        dargs = []
+        for d in defines:
+            dargs += ["-D", d]
+        with tempfile.TemporaryDirectory() as ptd:
+            mine = Path(ptd) / f"{obj}.o"
+            rc, out = sh(["ca65", "--cpu", "6502", *dargs, "-I", "src",
+                          "-o", str(mine), f"src/{src}.s"])
+            if rc:
+                drift.append(f"{obj} (rebuild with the parsed -D set fails: "
+                             f"{out.splitlines()[0] if out else ''})")
+                continue
+            a, b = od65_export_names(mine), od65_export_names(real)
+        if not isinstance(a, set) or not isinstance(b, set):
+            drift.append(f"{obj} (dump unreadable on one side)")
+        elif a != b:
+            # Only the first few differing names: a misparse typically hits
+            # every arm at once, and the full symmetric difference of 28 arms
+            # is thousands of characters that bury the object names -- which
+            # are the part you act on.
+            diff = sorted(a ^ b)
+            shown = ", ".join(diff[:4]) + (f", +{len(diff) - 4} more"
+                                           if len(diff) > 4 else "")
+            drift.append(f"{obj} parsed as {list(defines) or '(default)'}: "
+                         f"exports differ from build/{obj}.o ({shown})")
+    if unbuilt:
+        failures.append(f"gated link: {unbuilt} are archive members but were "
+                        "never built, so the arm-derivation pin cannot compare "
+                        "this parser's reading against make's")
+        print(f"  GATED LINK FAIL: unbuilt members {unbuilt}")
+    if drift:
+        head = drift[:5] + ([f"...and {len(drift) - 5} more arms"]
+                            if len(drift) > 5 else [])
+        failures.append(f"gated link: the Makefile switch sets this file parsed "
+                        f"do not reproduce the built objects ({len(drift)} of "
+                        f"{len(arms)} arms): {head}")
+        print(f"  GATED LINK FAIL: arm derivation disagrees with the build "
+              f"({len(drift)} of {len(arms)} arms):")
+        for d in head:
+            print(f"      {d}")
+    elif not unbuilt:
+        print(f"  arm derivation OK ({len(arms)} shipped objects reproduced "
+              "from the parsed -D sets, exports match build/*.o)")
     done = []
     with tempfile.TemporaryDirectory() as topdir:
         topdir = Path(topdir)
@@ -2163,8 +2319,17 @@ def gated_link_check(failures, archives):
             # documented-gap allowlist: the gate may suppress deprecated bare
             # exports, so it may never leave a reference UNRESOLVED that resolved
             # without it. Comparing the two sets rather than demanding a clean
-            # gated link keeps the app-owned archive's documented externals
-            # (poly_prod_lo/hi) from reading as a gate defect.
+            # gated link is what would keep a genuinely documented external
+            # from reading as a gate defect.
+            #
+            # NOTE: every KNOWN_EXTERNAL entry is `set()` today, and every
+            # archive's gated link here resolves closed -- app-owned
+            # included, because in the DMA profile the `.import
+            # poly_prod_lo/hi` is unreferenced and ca65 drops it. So the
+            # `beyond` branch below is an empty-population absence with no
+            # negative test. It is fail-closed, but `new_unres` is what
+            # actually carries this leg; do not read the allowlist as
+            # load-bearing.
             new_unres = sorted(gunres - uunres)
             if new_unres:
                 failures.append(
