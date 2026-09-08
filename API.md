@@ -873,7 +873,10 @@ Exclusion summary (per minimal archive):
   sides were the table: **six of the twelve archives were understating
   their footprint** by 5 to 72 bytes when the measurement leg was first
   run, in the direction that lets a consumer's fit check pass while the
-  library overruns their region. All twelve now carry 0.4–2.1% headroom.
+  library overruns their region. All twelve now carry 1.0-4.4% headroom
+  (issue #161 widened the six sha384-bearing archives by 255 B each when
+  the pre-segment alignment charge left the measurand; it was 0.4-2.1%
+  while that charge was included).
   A segment the classification does not recognise fails the check rather
   than being silently omitted, so a new segment cannot escape the
   accounting.

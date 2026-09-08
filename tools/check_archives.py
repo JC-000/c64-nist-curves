@@ -1999,10 +1999,17 @@ def footprint_basis_check(failures):
     placed sizes exactly. Measured over all 20 segments of a full link, delta
     +0 on every one.
 
-    That is a property, not a guarantee -- adding one `.align` to a segment two
-    objects contribute to would introduce within-segment fill and make every
-    footprint figure quietly low. So this links for real, reads the map, and
-    asserts the identity."""
+    That is a property, not a guarantee. The precise condition, measured during
+    issue #161's review because the looser statement that used to sit here was
+    wrong: fill becomes INVISIBLE only when the `.align` sits at a FRAGMENT
+    HEAD, so ld65 rather than ca65 inserts it. An `.align` mid-file is resolved
+    locally by ca65 into object bytes, so the od65 sum and the placed span grow
+    together and this leg correctly stays green. "Two objects contribute" is
+    neither necessary nor sufficient. A re-runner who mutates the wrong
+    position -- or picks an alignment the fragment head already satisfies, e.g.
+    `.align 16` at an already-16-aligned offset -- will conclude this leg is
+    broken when it is not. So this links for real, reads the map, and asserts
+    the identity."""
     import tempfile
     print("\n=== §5 footprint basis (od65 sums == real placed sizes) ===")
     # Assemble from source into a scratch dir rather than reading build/*.o:
@@ -2086,8 +2093,18 @@ def footprint_basis_check(failures):
             f"re-derive what the §5 measurand covers before trusting it")
         print(f"  BASIS FAIL: inter-segment fill {real_fill} > bound {bound}")
     else:
-        print(f"  inter-segment fill OK (measured {real_fill} B, bound {bound} B "
-              f"-- not charged, tracked for change)")
+        # NOT a pass/fail result -- review finding F4. This number is reported,
+        # not checked: nothing pins it and the comparison against `bound` cannot
+        # redden (the gap is `(-previous_end) mod $100`, so it cannot exceed
+        # 255 by construction). Printing it as "OK" made it read as a passing
+        # check to anyone scanning output, which is the failure mode this file
+        # exists to prevent. Pinning the value exactly was considered and
+        # rejected: any code growth shifts segment offsets, so an exact pin
+        # would redden on ordinary commits and be updated reflexively, which is
+        # a worse kind of dishonest green. Read it as a value to eyeball across
+        # commits, and see issue #159 for the coverage this leg genuinely lacks.
+        print(f"  inter-segment fill (reported, not checked): {real_fill} B "
+              f"-- consumer-side placement, not charged to the §5 measurand")
     bad = [(k, sums.get(k, 0), v) for k, v in sorted(placed.items())
            if sums.get(k, 0) != v]
     if bad:
