@@ -2161,18 +2161,18 @@ def main(argv=None):
                     "ABORT: the table poison is not reaching the REU, so no "
                     "stash-path cell could assert that ITS rebuild wrote the "
                     "table correctly.")
-                # The self-check leaves the table POISONED. Rebuild it before
-                # anything measures, or every later cell reads our own poison
-                # and reports a 100% failure that has nothing to do with the
-                # device (measured 2026-08-30: five bit-identical FAIL cells).
-                print("    rebuilding the table after the poison self-check "
-                      "(OP_INIT)...", flush=True)
-                if dev.call(OP_INIT, timeout_for("init", 1),
-                            poll_interval=0.2) is None:
-                    raise SystemExit(
-                        "ABORT: could not rebuild the multiply table after the "
-                        "poison self-check; the table is left poisoned and no "
-                        "measurement would mean anything.")
+            # The self-check leaves the table POISONED. Rebuild it before
+            # anything measures, or every later cell reads our own poison
+            # and reports a 100% failure that has nothing to do with the
+            # device (measured 2026-08-30: five bit-identical FAIL cells).
+            print("    rebuilding the table after the poison self-check "
+                  "(OP_INIT)...", flush=True)
+            if dev.call(OP_INIT, timeout_for("init", 1),
+                        poll_interval=0.2) is None:
+                raise SystemExit(
+                    "ABORT: could not rebuild the multiply table after the "
+                    "poison self-check; the table is left poisoned and no "
+                    "measurement would mean anything.")
 
             # ---- LEG 4: clock verification ----------------------------
             print("\n  [leg 4] in-band clock verification (CIA Timer A "
