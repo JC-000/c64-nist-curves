@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Fault-injecting od65 shim for negative-testing check_archives.py.
+
+Env:
+  OD65_REAL    path to the real od65
+  OD65_TARGET  basename of the object to corrupt (exact match)
+  OD65_MODE    "count"  -> delete one Name: line, leaving od65's Count intact
+               "unread" -> exit 1 with no output
+  OD65_ALLOW_BUILD  if set, also corrupt objects living under a build/ dir
+"""
+import os
+import subprocess
+import sys
+
+real = os.environ["OD65_REAL"]
+target = os.environ.get("OD65_TARGET", "")
+mode = os.environ.get("OD65_MODE", "")
+args = sys.argv[1:]
+p = subprocess.run([real] + args, capture_output=True, text=True)
+out, err, rc = p.stdout, p.stderr, p.returncode
+
+path = args[-1] if args else ""
+hit = (target and os.path.basename(path) == target
+       and (os.environ.get("OD65_ALLOW_BUILD") or "/build/" not in path)
+       and "--dump-exports" in args)
+
+if hit and mode == "unread":
+    sys.stderr.write("od65 shim: simulated unreadable dump\n")
+    sys.exit(1)
+if hit and mode == "count":
+    lines = out.splitlines(True)
+    idx = [i for i, l in enumerate(lines) if "Name:" in l]
+    if idx:
+        del lines[idx[-1]]
+    out = "".join(lines)
+
+sys.stdout.write(out)
+sys.stderr.write(err)
+sys.exit(rc)
