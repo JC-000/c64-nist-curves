@@ -670,17 +670,41 @@ _SEG_RE = re.compile(
     r'Name: *"([^"]+)"\s*\n\s*Flags:\s*\d+\s*\n\s*Size:\s*(\d+)')
 
 
-# Segments the cfg page-aligns. ld65 inserts 0-255 bytes of padding ahead of
-# each when it places them, and a per-object size sum cannot see that padding --
-# so the placed span a consumer must budget is larger than the sum. Charged at
-# the worst case, because the actual amount depends on the consumer's own
-# preceding code, which we cannot know and must not assume is favourable.
+# Segments the cfg page-aligns. ld65 inserts 0-255 bytes of padding AHEAD of
+# each when it places them. That padding is NOT part of the §5 measurand and is
+# deliberately not charged here (issue #161): the draft §5 measurand clause --
+# "charge what is inside each segment, and nothing between or before them" --
+# scopes it out, because `(-previous_end) mod alignment` is fixed by where the
+# CONSUMER places our segments and in what order. Reordering relocates such a
+# pad rather than removing it, and only the consumer's own link map has the
+# per-segment extents needed to compute it. Charging it billed every consumer
+# 255 B they may not spend, in an amount they can derive exactly and we cannot.
+#
+# The set is still needed: footprint_basis_check() uses it to locate the
+# page-aligned segments whose real inter-segment gap it measures as a bounded
+# change detector, against INTER_SEGMENT_FILL_BOUND below.
 FOOTPRINT_ALIGNED = {"LIB_NISTCURVES_SHA384_TABLES", "LIB_NISTCURVES_TABLES"}
-ALIGN_WORST_CASE = 255
+# Not a budget line. The most fill a single page-aligned segment boundary can
+# carry; footprint_basis_check() asserts the measured inter-segment fill stays
+# under this so a structural change to the placement shows up as a failure.
+INTER_SEGMENT_FILL_BOUND = 255
 
 
 def measured_code_rodata(mods):
-    """Placed code+rodata bytes an archive's members demand, worst case.
+    """Placed code+rodata bytes an archive's members contain.
+
+    The raw sum of the footprint segments' sizes across the archive's member
+    objects -- no pre-segment alignment padding is added (see FOOTPRINT_ALIGNED
+    above and issue #161).
+
+    §5's measurand is "the placed span ... not the sum of member object sizes",
+    and a sum equals the placed span only while no segment takes fragments from
+    two objects with alignment between them. That is a property of this tree,
+    not a guarantee, so it is verified rather than assumed:
+    footprint_basis_check() links for real, reads the ld65 map, and asserts
+    `od65 sums == placed sizes` over every segment. That leg is what makes this
+    sum-based measurand conformant -- if it goes, so does the basis for this
+    function.
 
     Returns (total, unknown_segment_names). Zero-length segments are ignored --
     ca65 emits placeholders for the default names in every object. Missing
@@ -689,7 +713,6 @@ def measured_code_rodata(mods):
     """
     total = 0
     unknown = set()
-    aligned_present = set()
     for m in mods:
         obj = BUILD / (m + ".o")
         if not obj.exists():
@@ -702,11 +725,8 @@ def measured_code_rodata(mods):
                 continue
             if seg in FOOTPRINT_SEGMENTS:
                 total += size
-                if seg in FOOTPRINT_ALIGNED:
-                    aligned_present.add(seg)
             elif seg not in FOOTPRINT_EXCLUDED:
                 unknown.add(seg)
-    total += ALIGN_WORST_CASE * len(aligned_present)
     return total, unknown
 
 
@@ -1926,31 +1946,70 @@ def footprint_basis_check(failures):
     """The §5 measurement basis is od65 segment sums. Pin that it equals a real
     link, because if it stops doing so the footprint leg understates SILENTLY.
 
+    Since issue #161 this leg is what makes a sum-based measurand legitimate at
+    all. §5 says the basis is "the placed span ... not the sum of member object
+    sizes"; measured_code_rodata() IS such a sum, and equals the placed span
+    only while no segment takes fragments from two objects with alignment
+    between them. Nothing in ca65 or ld65 enforces that -- this leg does, by
+    linking for real and asserting `od65 sums == placed sizes` per segment.
+
     c64-ChaCha20-Poly1305 found all five of their RESIDENT_BYTES under-reporting
     a real link by 39-295 B, in §5's dangerous direction, from exactly this
     basis: Sigma of what each MEMBER contributes excludes the fill ld65 inserts
     when it PLACES them, and `od65 basis + fill = real link` held exactly across
     ten of their rows.
 
-    Two kinds of fill, and only one of them is bounded by what we charge:
+    Two kinds of fill, and they are handled differently:
 
+      WITHIN a segment -- if ld65 aligns each contributing object's fragment.
+        UNBOUNDED in the number of contributing objects. This is what bit CCP,
+        whose fill exceeded 255 and so cannot be a single inter-segment gap. It
+        is inside the segment, so it IS part of §5's measurand, and it is the
+        `od65 sums == placed sizes` identity below that catches it.
       BETWEEN segments -- up to 255 bytes before each page-aligned segment.
-        Bounded, and measured_code_rodata() charges ALIGN_WORST_CASE per
-        aligned footprint segment for it.
-      WITHIN a segment -- if ld65 aligns each object's fragment. UNBOUNDED in
-        the number of contributing objects, and NOT charged. This is what bit
-        CCP, whose fill exceeded 255 and so cannot be a single inter-segment
-        gap.
+        NOT part of the measurand and no longer charged (issue #161): it is
+        `(-previous_end) mod alignment`, fixed by the consumer's own placement
+        and order, derivable only from the consumer's link map. Still measured
+        here, as a bounded CHANGE DETECTOR rather than a budget line -- a gap
+        exceeding INTER_SEGMENT_FILL_BOUND would mean the placement is no
+        longer one page-aligned boundary per segment, i.e. that the reasoning
+        above stopped describing the artifact. Be honest about its strength,
+        because it is deliberately weak: while each aligned segment sits in one
+        MEMORY region behind one $100 boundary, its gap is
+        `(-previous_end) mod $100` and CANNOT exceed the bound, so the
+        comparison reddens only on a cfg-level change (alignment raised past
+        $100, or the segment moved region). It is a printed number to diff
+        across commits, not a guard.
+
+        Do NOT "strengthen" it by asserting the two segments are page-aligned
+        in the map -- that assertion cannot fail, and issue #161 tried it and
+        removed it again. Both are already asserted at LINK time by the
+        library's own source, so the reference link dies before the map is
+        parsed: src/sha384.s (`lo_2_tbl`/`hi_2_tbl`… `must be page-aligned
+        (abs,x rotate LUT)`) covers LIB_NISTCURVES_SHA384_TABLES, and
+        src/data_mul_stage.s:117 (`reu_mul stage_lo must be page-aligned (SPEC
+        §8.2)`) covers LIB_NISTCURVES_TABLES. Deleting `align = $100` from
+        src/c64.cfg was measured: this leg reports
+        `BASIS FAIL: link error` / `ld65: Error: src/sha384.s(1063): lo_2_tbl
+        must be page-aligned (abs,x rotate LUT)`, i.e. the failure is real but
+        arrives through the link step, one leg earlier.
 
     We are clean today: no src file contains a source-level `.align`, and each
     aligned segment takes contributions from one object, so od65 sums equal
     placed sizes exactly. Measured over all 20 segments of a full link, delta
     +0 on every one.
 
-    That is a property, not a guarantee -- adding one `.align` to a segment two
-    objects contribute to would introduce within-segment fill and make every
-    footprint figure quietly low again. So this links for real, reads the map,
-    and asserts the identity."""
+    That is a property, not a guarantee. The precise condition, measured during
+    issue #161's review because the looser statement that used to sit here was
+    wrong: fill becomes INVISIBLE only when the `.align` sits at a FRAGMENT
+    HEAD, so ld65 rather than ca65 inserts it. An `.align` mid-file is resolved
+    locally by ca65 into object bytes, so the od65 sum and the placed span grow
+    together and this leg correctly stays green. "Two objects contribute" is
+    neither necessary nor sufficient. A re-runner who mutates the wrong
+    position -- or picks an alignment the fragment head already satisfies, e.g.
+    `.align 16` at an already-16-aligned offset -- will conclude this leg is
+    broken when it is not. So this links for real, reads the map, and asserts
+    the identity."""
     import tempfile
     print("\n=== §5 footprint basis (od65 sums == real placed sizes) ===")
     # Assemble from source into a scratch dir rather than reading build/*.o:
@@ -2002,11 +2061,13 @@ def footprint_basis_check(failures):
         print("  BASIS FAIL: empty map parse")
         return
 
-    # Second half: the charge must BOUND the real inter-segment fill, measured
-    # rather than argued. measured_code_rodata() adds ALIGN_WORST_CASE per
-    # aligned footprint segment on the reasoning that fill before a
-    # page-aligned segment cannot exceed 255. That reasoning is sound but it is
-    # reasoning; this measures the gap ld65 actually left.
+    # Second half: a bounded change detector on the inter-segment gaps. Those
+    # gaps are NOT charged (issue #161) -- they are the consumer's to compute --
+    # but their staying under one page per aligned footprint segment is the
+    # observable form of "the only fill outside a segment is a single
+    # page-alignment boundary". If that stops holding, the placement changed
+    # shape and this leg's reasoning no longer describes the artifact, so it
+    # fails rather than passing silently. Measured, not argued.
     starts = {}
     for line in mapping_lines:
         m = re.match(r"(LIB_\S+)\s+([0-9A-F]{6})\s+([0-9A-F]{6})\s+([0-9A-F]{6})",
@@ -2022,27 +2083,42 @@ def footprint_basis_check(failures):
                         if e < st and n != seg), default=None)
         if prev_end is not None:
             real_fill += st - prev_end - 1
-    charged = ALIGN_WORST_CASE * len(
+    bound = INTER_SEGMENT_FILL_BOUND * len(
         [x for x in FOOTPRINT_ALIGNED if x in FOOTPRINT_SEGMENTS and x in starts])
-    if real_fill > charged:
+    if real_fill > bound:
         failures.append(
-            f"footprint basis: inter-segment fill measures {real_fill} B but "
-            f"only {charged} B is charged -- every §5 figure is low by the "
-            f"difference")
-        print(f"  BASIS FAIL: fill {real_fill} > charged {charged}")
+            f"footprint basis: inter-segment fill measures {real_fill} B, over "
+            f"the {bound} B bound (one page per aligned footprint segment) -- "
+            f"the placement is no longer one alignment boundary per segment, so "
+            f"re-derive what the §5 measurand covers before trusting it")
+        print(f"  BASIS FAIL: inter-segment fill {real_fill} > bound {bound}")
     else:
-        print(f"  fill charge OK (measured {real_fill} B inter-segment, "
-              f"{charged} B charged)")
+        # NOT a pass/fail result -- review finding F4. This number is reported,
+        # not checked: nothing pins it and the comparison against `bound` cannot
+        # redden (the gap is `(-previous_end) mod $100`, so it cannot exceed
+        # 255 by construction). Printing it as "OK" made it read as a passing
+        # check to anyone scanning output, which is the failure mode this file
+        # exists to prevent. Pinning the value exactly was considered and
+        # rejected: any code growth shifts segment offsets, so an exact pin
+        # would redden on ordinary commits and be updated reflexively, which is
+        # a worse kind of dishonest green. Read it as a value to eyeball across
+        # commits, and see issue #159 for the coverage this leg genuinely lacks.
+        print(f"  inter-segment fill (reported, not checked): {real_fill} B "
+              f"-- consumer-side placement, not charged to the §5 measurand")
     bad = [(k, sums.get(k, 0), v) for k, v in sorted(placed.items())
            if sums.get(k, 0) != v]
     if bad:
         for k, a, b in bad:
-            failures.append(f"footprint basis: {k} od65 sum {a} != placed {b} "
-                            f"(+{b - a} of fill the §5 measurement does not see)")
+            failures.append(
+                f"footprint basis: {k} od65 sum {a} != placed {b} (+{b - a} of "
+                f"WITHIN-segment fill). measured_code_rodata() is a sum of "
+                f"member object sizes and §5's measurand is the placed span; "
+                f"this identity is the only thing making them equal, so every "
+                f"§5 figure is now low by that fill")
             print(f"  BASIS FAIL [{k}]: od65 {a} vs placed {b} (+{b - a})")
     else:
-        print(f"  basis OK ({len(placed)} segments, od65 sums == placed sizes, "
-              f"so the only fill is inter-segment and is charged)")
+        print(f"  basis OK ({len(placed)} segments, od65 sums == placed sizes: "
+              f"the sum-based §5 measurand equals the placed span)")
 
 
 def sibling_sqtab_collision_check(failures):
