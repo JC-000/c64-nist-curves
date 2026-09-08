@@ -1973,7 +1973,26 @@ def footprint_basis_check(failures):
         here, as a bounded CHANGE DETECTOR rather than a budget line -- a gap
         exceeding INTER_SEGMENT_FILL_BOUND would mean the placement is no
         longer one page-aligned boundary per segment, i.e. that the reasoning
-        above stopped describing the artifact.
+        above stopped describing the artifact. Be honest about its strength,
+        because it is deliberately weak: while each aligned segment sits in one
+        MEMORY region behind one $100 boundary, its gap is
+        `(-previous_end) mod $100` and CANNOT exceed the bound, so the
+        comparison reddens only on a cfg-level change (alignment raised past
+        $100, or the segment moved region). It is a printed number to diff
+        across commits, not a guard.
+
+        Do NOT "strengthen" it by asserting the two segments are page-aligned
+        in the map -- that assertion cannot fail, and issue #161 tried it and
+        removed it again. Both are already asserted at LINK time by the
+        library's own source, so the reference link dies before the map is
+        parsed: src/sha384.s (`lo_2_tbl`/`hi_2_tbl`… `must be page-aligned
+        (abs,x rotate LUT)`) covers LIB_NISTCURVES_SHA384_TABLES, and
+        src/data_mul_stage.s:117 (`reu_mul stage_lo must be page-aligned (SPEC
+        §8.2)`) covers LIB_NISTCURVES_TABLES. Deleting `align = $100` from
+        src/c64.cfg was measured: this leg reports
+        `BASIS FAIL: link error` / `ld65: Error: src/sha384.s(1063): lo_2_tbl
+        must be page-aligned (abs,x rotate LUT)`, i.e. the failure is real but
+        arrives through the link step, one leg earlier.
 
     We are clean today: no src file contains a source-level `.align`, and each
     aligned segment takes contributions from one object, so od65 sums equal
