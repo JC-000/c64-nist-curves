@@ -2016,6 +2016,26 @@ def gated_link_check(failures, archives):
     print("\n=== §6.5 gated LINK (every archive rebuilt under the gate) ===")
     arms = shipped_object_arms(archives)
     src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
+    # HEADER_ARCHIVE_SWITCHES is a hand-maintained roster, and it is the
+    # population BOTH this leg and the §3 header leg (3b) iterate. Nothing
+    # reconciled it against the archives the Makefile actually builds, so a
+    # thirteenth archive would be skipped by both while each printed a clean
+    # per-entry OK -- the roster-that-never-grew shape, the same one
+    # gate_tus_derivation_check and zp_roster_reconciliation_check exist to
+    # close for their own rosters. Reconciled here because this leg's result
+    # is meaningless over an incomplete population.
+    uncovered = sorted(set(archives) - set(HEADER_ARCHIVE_SWITCHES))
+    phantom = sorted(set(HEADER_ARCHIVE_SWITCHES) - set(archives))
+    if uncovered:
+        failures.append(f"gated link: {uncovered} are built by the Makefile but "
+                        "absent from HEADER_ARCHIVE_SWITCHES -- this leg and the "
+                        "§3 header leg both skip them silently")
+        print(f"  GATED LINK FAIL: archives with no switch set on record: {uncovered}")
+    if phantom:
+        failures.append(f"gated link: {phantom} are in HEADER_ARCHIVE_SWITCHES "
+                        "but built by no ar65 recipe -- a roster entry that "
+                        "binds nothing")
+        print(f"  GATED LINK FAIL: phantom archives in the switch roster: {phantom}")
     done = []
     with tempfile.TemporaryDirectory() as topdir:
         topdir = Path(topdir)
