@@ -12,6 +12,16 @@ contract).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-09-07
+
+MINOR. `LIB_NISTCURVES_ABI_VERSION` **stays 4** — verified against the frozen
+contract's §7 text rather than recalled: the counter moves only when "a
+consumer conforming to the previously documented contract can be broken", and
+nothing here does that. MINOR because §7's second bullet is "additive (new
+symbols…)" and this adds four.
+
+**Consumers should read the APP_OWNED change below before pinning.**
+
 ### Fixed
 
 - **§6.1 member isolation: the mandatory boot call no longer drags displaceable
@@ -46,6 +56,46 @@ contract).
 - New source file `src/sqtab_aliases.s`; PRG 37739 → 37743 B (the two scratch
   pairs). `sqtab_aliases.o` contributes 0 bytes, so no §5 footprint figure
   moves.
+
+### Gates strengthened
+
+The release's other half is the ratchet, and every leg below was **driven red
+before it was trusted** — the mutation and its exact failure text are in each
+commit body.
+
+- **The `LIB_NO_BARE_EXPORTS` gate now checks what it KEEPS, not only what it
+  removes (#158).** It was absence-shaped: it asserted no deprecated bare name
+  survives, and nothing asserted the prefixed exports — the surface a composing
+  consumer imports in that mode — were still there. Moving one prefixed export
+  into the gated block deleted it from every gated build and passed **both**
+  gates. The leg now enforces the whole equation
+  `gated == ungated - suppressed`, in names **and values**: a gated
+  `ABI_VERSION = 99` against an ungated `4` kept every name in place and passed
+  everything.
+- **The gated legs now sweep every variant arm, and every archive is linked
+  gated (#159).** They read only the default arm, so **11 of 12 shipped
+  archives were never examined**; a bare `LIB_PRECALC_*` planted in the
+  SHA-only arm reached `lib-p384-sha384` with the ratchet green. Coverage goes
+  from 6 default-arm TUs to **21 arms**, GATE_TUS derivation to **74**, and all
+  12 archives are now rebuilt with `-D LIB_NO_BARE_EXPORTS=1` and linked.
+  Arm rosters are *derived* from the Makefile's own recipes and reconciled
+  against `ar65 t` on the archive make actually built.
+- **A standing gate for the §6.1 sqtab collision, with a value pin (#163).**
+  The 78-archive matrix that verified #155 was a one-shot; nothing re-ran it.
+  The new leg uses a consumer performing the **documented** `sqtab_init` boot
+  call — a probe calling `fp_mul` alone links clean and can never compute a
+  correct product, which is the fixture trap #155's first fix fell into.
+- **The §5 measurand no longer charges pre-segment alignment (#161).** That pad
+  is `(-previous_end) mod alignment`, fixed by the consumer's own placement, so
+  billing it charges every consumer for a page many never spend. `API.md` §6.6
+  is corrected in the same change: it had licensed a consumer `.assert` on
+  "declared ≤ budget implies actual ≤ budget", which held **only** while the
+  charge existed. Six archives' margins widen by 255 B each.
+- **A leg audit with verdicts (#142)**, plus checked-in negative-test tooling:
+  30 legs tested, 17 proposed, 3 that structurally cannot fail (#167), 3
+  defects (#168, #170). The result worth keeping: mutating `RESIDENT_BYTES`
+  *and its pinned table together* left the value pins silent while the
+  measurement leg failed alone — settling by evidence what each is worth.
 
 ### Removed
 
