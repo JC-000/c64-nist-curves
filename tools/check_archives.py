@@ -730,19 +730,51 @@ def measured_code_rodata(mods):
     return total, unknown
 
 
-def parse_makefile_archives():
-    """Map archive filename -> [object module names], from the ar65 recipes.
+def _makefile_text_and_expand():
+    """(joined Makefile text, expand()) -- shared by the archive-member parser
+    and the object-rule parser below.
 
-    Parses the Make variable assignments (LIB_*_OBJS, BUILD_DIR) with line
-    continuations, then the `ar65 a $(LIB_DIR)/<name>.a <tokens>` lines, and
-    expands $(VAR) / $(BUILD_DIR) references down to build/<mod>.o paths.
+    `expand` resolves simple `$(VAR)` / `${VAR}` references only. A GNU make
+    function call (`$(subst ...)`, `$(patsubst ...)`) contains commas and so
+    does NOT match the name pattern -- it survives expansion literally, and
+    the object-rule parser treats a surviving `$(` as a hard failure rather
+    than quietly reading the wrong switches. That is deliberate: the Makefile
+    writes its archive member lists and its per-variant `-D` sets out longhand
+    for exactly this reason (see the comment above LIB_CORE_APP_OWNED_OBJS),
+    and a parser that silently degraded to the default objects would pass an
+    archive -- or an arm -- it had never inspected.
+
+    ONE ASYMMETRY, deliberate and currently harmless: `expand` resolves an
+    UNKNOWN `$(VAR)` to "" silently, and only `expand_checked` rejects a
+    surviving `$(`. That matches make, which also expands an undefined
+    variable to nothing, so today the two agree. It stops matching the moment
+    the Makefile grows a `define`/`endef` block or an assignment inside a
+    conditional -- neither of which the `^NAME =` scan below sees -- and the
+    disagreement would again be a silently SHORTER token list. The
+    reconciliations downstream (rule heads vs parsed rules, parsed members vs
+    `ar65 t`, parsed -D sets vs build/*.o) are what would catch it; this note
+    exists so the next reader does not mistake the asymmetry for a guarantee.
     """
     text = MAKEFILE.read_text()
     joined = re.sub(r"\\\n\s*", " ", text)  # fold backslash continuations
 
+    # `:=`, `?=` and `+=` are matched too. Reading only `NAME =` left every
+    # other flavour undefined, and an undefined variable expands to the empty
+    # string -- so one character (`OBJS :=`) silently shrank an archive's
+    # parsed member list, and the tokens that vanished did not end in `.o`, so
+    # nothing downstream noticed. `+=` is accumulated rather than overwritten.
     vars_ = {}
-    for m in re.finditer(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", joined, re.M):
-        vars_[m.group(1)] = m.group(2).strip()
+    for m in re.finditer(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(\+?[:?]?=)\s*(.*)$",
+                         joined, re.M):
+        name, op = m.group(1), m.group(2)
+        # make treats an unescaped `#` as a comment, and several assignments
+        # here carry a trailing one. Reading it as part of the VALUE injected
+        # prose into the expansion of every recipe using the variable.
+        val = re.split(r"(?<!\\)#", m.group(3))[0].strip()
+        if op == "+=":
+            vars_[name] = (vars_.get(name, "") + " " + val).strip()
+        else:
+            vars_[name] = val
 
     def expand(s, depth=0):
         if depth > 20:
@@ -751,19 +783,196 @@ def parse_makefile_archives():
                      lambda mm: expand(vars_.get(mm.group(1), ""), depth + 1), s)
         return out
 
-    # Each archive rule is `$(LIB_DIR)/<name>.a: <prereqs>` followed by an
-    # `ar65 a $@ <tokens>` recipe line ($@ = the archive path). Capture the
-    # target name from the rule head and the object tokens from the recipe.
+    def expand_checked(s, what):
+        """expand(), but a surviving `$(` is a hard failure.
+
+        Without this the degradation is silent AND in the green direction: an
+        unexpandable token simply does not end in `.o`, so it drops out of a
+        member list and the population shrinks with no diagnostic. Losing one
+        equate-only member (nothing imports it) took a gate-owning arm out of
+        the sweep while every leg still printed OK."""
+        out = expand(s)
+        residue = out.replace("$(SRC_DIR)", "").replace("$(BUILD_DIR)", "")
+        if "$(" in residue or "${" in residue:
+            raise RuntimeError(
+                f"{what}: unexpandable make function or unknown variable "
+                f"survives expansion, so the parsed token list is a SUBSET of "
+                f"the real one: {out!r}")
+        return out
+
+    return joined, expand, expand_checked
+
+
+# Explicit per-object rules: `$(BUILD_DIR)/<obj>.o: $(SRC_DIR)/<tu>.s` with a
+# one-line ca65 recipe. An object NOT matched here is built by the catch-all
+# pattern rule, i.e. the default arm with no variant define.
+#
+# The recipe is the WHOLE block of tab-indented lines that follows, with
+# blank/comment lines between head and body tolerated. Binding only "the one
+# line immediately after the head" made two benign Makefile edits silently
+# wrong in the green direction: prepending an `@echo` to a recipe made the
+# parser read that line, find no `-D`, and sweep the arm as the DEFAULT arm
+# (issue #159's own fixture then passed again); inserting a `# comment` made
+# the rule vanish entirely, dropping the arm from the roster.
+_OBJ_RULE_RE = re.compile(
+    r"^\$[({]BUILD_DIR[)}]/(?P<obj>[A-Za-z0-9_]+)\.o:\s*"
+    r"\$[({]SRC_DIR[)}]/(?P<src>[A-Za-z0-9_]+)\.s[^\n]*\n"
+    r"(?P<recipe>(?:[ \t]*#[^\n]*\n|[ \t]*\n)*(?:\t[^\n]*\n)+)", re.M)
+# Any explicit object rule head at all, used to reconcile what the regex above
+# actually matched against what the Makefile actually declares.
+#
+# This must be INDEPENDENT of _OBJ_RULE_RE in the dimension that matters, or
+# it is not a reconciliation at all -- it was sharing the "colon immediately
+# after .o" assumption, so `target : deps` (legal GNU make, one space) and
+# multi-target heads were missed by BOTH and no mismatch was reported. The arm
+# then vanished through shipped_object_arms()'s `rules.get(mod, (mod, ()))`
+# fallback. That was loud only by accident: the fallback sets the source stem
+# to the OBJECT name, and no such .s file exists -- which stops being true the
+# moment any rule has obj == src stem. So: optional whitespace before the
+# colon, and every `$(BUILD_DIR)/x.o` target on a possibly-multi-target head.
+_OBJ_HEAD_LINE_RE = re.compile(
+    r"^(?P<targets>\$[({]BUILD_DIR[)}]/[A-Za-z0-9_]+\.o"
+    r"(?:[ \t]+\$[({]BUILD_DIR[)}]/[A-Za-z0-9_]+\.o)*)[ \t]*:(?!=)", re.M)
+_OBJ_TARGET_RE = re.compile(r"\$[({]BUILD_DIR[)}]/([A-Za-z0-9_]+)\.o")
+
+
+def _declared_object_rule_heads(joined):
+    """Every object name that appears as an explicit rule target."""
+    heads = set()
+    for m in _OBJ_HEAD_LINE_RE.finditer(joined):
+        heads |= set(_OBJ_TARGET_RE.findall(m.group("targets")))
+    return heads
+
+
+def parse_makefile_object_rules():
+    """objname -> (source stem, tuple of ca65 `-D` switches) for every object
+    with an explicit rule.
+
+    DERIVED, not restated. The per-variant define sets already live in the
+    Makefile -- they are what actually produces `precalc_manifest_sha384.o` --
+    and a second hand-maintained copy here would be a roster that can drift
+    from the build it claims to describe. This tree has been burned by exactly
+    that twice: BARE_GATED listed none of the bare LIB_PRECALC_* names it was
+    supposed to police, and GATE_TUS kept `zp_config` after its aliases moved
+    away. A restated table is green about the arms it happens to list; a
+    derived one grows the moment the Makefile grows a variant, and an arm that
+    disappears from the Makefile disappears from the sweep instead of sitting
+    here proving nothing.
+    """
+    joined, _expand, expand_checked = _makefile_text_and_expand()
+    rules = {}
+    for m in _OBJ_RULE_RE.finditer(joined):
+        obj = m.group("obj")
+        recipe = expand_checked(m.group("recipe"), f"object rule for {obj}.o")
+        # The switch set must come from the ASSEMBLER line, not from whatever
+        # line happened to be first. Requiring exactly one ca65 invocation
+        # means an `@echo` preamble, a second assemble, or a rename of the
+        # assembler variable fails loudly instead of yielding a wrong -- and
+        # always weaker -- arm.
+        ca_lines = [ln for ln in recipe.splitlines() if re.search(r"\bca65\b", ln)]
+        if len(ca_lines) != 1:
+            raise RuntimeError(
+                f"object rule for {obj}.o has {len(ca_lines)} ca65 lines in its "
+                f"recipe; the arm's -D set cannot be read unambiguously and a "
+                f"wrong read is silently the DEFAULT arm: {recipe!r}")
+        defines = tuple(re.findall(r"-D\s+(\S+)", ca_lines[0]))
+        rules[obj] = (m.group("src"), defines)
+    # RECONCILIATION. Everything above is regex against a hand-written
+    # Makefile, and its failure mode is a smaller roster, silently. Every
+    # explicit object-rule head the Makefile declares must have been parsed;
+    # a head the pattern missed is an arm the sweep would never look at while
+    # printing a clean count.
+    heads = _declared_object_rule_heads(joined)
+    unparsed = sorted(heads - set(rules))
+    if unparsed:
+        raise RuntimeError(
+            f"Makefile declares explicit object rules for {unparsed} that this "
+            f"parser did not match (rule head shape changed?). Their arms would "
+            f"silently fall back to the default arm or vanish from the sweep.")
+    return rules
+
+
+def shipped_object_arms(archives):
+    """objname -> (source stem, defines tuple, [archives shipping it]).
+
+    The population is the objects that actually SHIP, taken from the parsed
+    ar65 member lists, so a rule the build no longer uses is not swept, and a
+    member with no explicit rule falls back to the pattern rule's default arm.
+    """
+    rules = parse_makefile_object_rules()
+    arms = {}
+    for aname, mods in archives.items():
+        for mod in mods:
+            src, defines = rules.get(mod, (mod, ()))
+            arms.setdefault(mod, (src, defines, []))[2].append(aname)
+    return {k: (v[0], v[1], sorted(set(v[2]))) for k, v in arms.items()}
+
+
+def _arm_label(obj, defines, archives_using):
+    """One-line identification of an arm: the object, the switches that build
+    it, and the archives that ship it. A failure naming only the TU cannot be
+    acted on -- eleven of the twelve archives use a variant arm."""
+    d = " ".join(f"-D {x}" for x in defines) or "(default arm, no -D)"
+    return f"{obj}.o [{d}] in {', '.join(archives_using)}"
+
+
+def parse_makefile_archives():
+    """Map archive filename -> [object module names], from the ar65 recipes.
+
+    Parses the Make variable assignments (LIB_*_OBJS, BUILD_DIR) with line
+    continuations, then the `ar65 a $(LIB_DIR)/<name>.a <tokens>` lines, and
+    expands $(VAR) / $(BUILD_DIR) references down to build/<mod>.o paths.
+
+    Expansion is CHECKED. This parser used to drop anything that failed to
+    expand -- an unknown variable became "", a `$(subst ...)` survived
+    literally, and either way the token no longer ended in `.o` and simply
+    left the member list. The population then shrank silently, which every
+    downstream leg reports as a smaller-but-clean count. Losing a single
+    equate-only member that nothing imports took a gate-owning arm out of the
+    sweep with all twelve archives still reporting OK.
+    """
+    joined, _expand, expand_checked = _makefile_text_and_expand()
+
+    # Each archive rule is `$(LIB_DIR)/<name>.a: <prereqs>` followed by its
+    # recipe. Capture the target name from the rule head and the WHOLE recipe
+    # block, then take the object tokens from every `ar65 a $@` line in it.
+    #
+    # EVERY such line, not the first. `ar65 a` APPENDS -- which is why each
+    # recipe does `rm -f $@` first -- so splitting a member list across two
+    # `ar65 a` lines is an ordinary, legal Makefile shape that make builds
+    # identically. Binding only the first line silently dropped the members on
+    # the second: 21 arms -> 20, 72 objects -> 71, every leg still OK, and the
+    # gated link rebuilt and linked an archive missing a real member and
+    # called it OK. With #159's own fixture also planted, the gated-surface
+    # leg printed OK and never named the leak; the run went red only through a
+    # neighbouring leg with a wrong diagnosis.
     archives = {}
     rule = re.compile(
         r"^\$[({]LIB_DIR[)}]/(?P<name>\S+\.a):[^\n]*\n"
-        r"(?:\t[^\n]*\n)*?"
-        r"\tar65 a \$@ (?P<tokens>[^\n]*)$",
+        r"(?P<recipe>(?:[ \t]*#[^\n]*\n|[ \t]*\n)*(?:\t[^\n]*\n)+)",
         re.M,
     )
     for m in rule.finditer(joined):
-        name, tokens = m.group("name"), expand(m.group("tokens"))
-        mods = [Path(t).stem for t in tokens.split() if t.endswith(".o")]
+        name = m.group("name")
+        recipe = m.group("recipe")
+        ar_lines = re.findall(r"^\tar65 a \$@ ([^\n]*)$", recipe, re.M)
+        if not ar_lines:
+            raise RuntimeError(f"archive rule for {name} has no `ar65 a $@` line")
+        mods = []
+        for raw in ar_lines:
+            tokens = expand_checked(raw, f"ar65 recipe for {name}")
+            toks = tokens.split()
+            # Every token on an ar65 line is an object path. One that is not
+            # means the expansion produced something this parser does not
+            # understand, and the list it just built is a subset of the real one.
+            stray = [t for t in toks if not t.endswith(".o")]
+            if stray:
+                raise RuntimeError(
+                    f"ar65 recipe for {name} has non-object tokens {stray} after "
+                    f"expansion; the parsed member list is a SUBSET of the real one")
+            mods += [Path(t).stem for t in toks]
+        if not mods:
+            raise RuntimeError(f"ar65 recipe for {name} parsed to zero members")
         archives[name] = mods
     return archives
 
@@ -1338,15 +1547,67 @@ def version_identity_check(failures):
         print(f"  identity OK ({'.'.join(got)})")
 
 
-def gated_surface_check(failures):
+def gated_surface_check(failures, archives):
     """§6.5 window ratchet: a -D LIB_NO_BARE_EXPORTS=1 build of every
     gate-owning TU must export zero deprecated bare names. This is the whole
     point of the rename window -- one ungated .export quietly re-opens the
     #82/#83 collision class for composed consumers, and nothing else checks
     the gated configuration (the default build legitimately exports both
-    spellings)."""
+    spellings).
+
+    SWEPT OVER ARMS, NOT TUs (issue #159). Through v0.14.0 this leg assembled
+    each GATE_TU once, with `-I src` and no variant define -- the DEFAULT arm.
+    But `precalc_manifest.s` is built eleven ways, `zp_aliases.s` six, and
+    ELEVEN OF THE TWELVE shipped archives link a variant arm, so the gate's
+    behaviour in the arm a real consumer links was unread. Driven red by
+    planting, in src/precalc_manifest.s,
+
+        .ifdef LIB_SHA384_ONLY
+        .ifdef LIB_NO_BARE_EXPORTS
+        LIB_PRECALC_adversarial_SIZE = 1
+        .export LIB_PRECALC_adversarial_SIZE:abs
+        .endif
+        .endif
+
+    which puts a deprecated bare name into precalc_manifest_sha384.o and hence
+    into lib-p384-sha384, with `make check-archives` exiting 0.
+
+    The arm roster is DERIVED from the Makefile's own per-object recipes (see
+    parse_makefile_object_rules) and intersected with the parsed ar65 member
+    lists, so it is the population that ships rather than a list maintained
+    here. Restating it would reproduce the defect one level up: a hand-written
+    roster is green about the arms it happens to name.
+
+    Per-arm, the ungated-ownership sentinel is RELAXED to a per-TU one. Some
+    arms legitimately own no bare name at all -- `zp_aliases_sha384.o` is the
+    documented example (that archive exports only sha_*, none of which ever
+    had a bare spelling) -- so requiring every arm to own one would fail a
+    correct build. What is still asserted, and is what the sentinel was for,
+    is that every roster TU owns at least one bare name in at least one arm,
+    that every arm's two dumps were read, and that the ">=" half (survivors
+    and their values) holds in every arm including the empty-owning ones.
+
+    The honest limit of that relaxation: within THIS leg, an arm whose ungated
+    export set had gone empty passes every assertion, because `owns`,
+    `expected`, `dropped`, `gained` and `shifted` are then all empty sets.
+    What rules that out is elsewhere -- MUST_EXPORT pins the bare
+    LIB_PRECALC_* triples per archive and ZP_ALIAS_ARMS pins the exact
+    per-arm alias set, both read from the built build/lib/*.a. That is a real
+    cross-leg dependency, so it is written down rather than left implied."""
     import tempfile
-    print("\n=== LIB_NO_BARE_EXPORTS gated surface ===")
+    print("\n=== LIB_NO_BARE_EXPORTS gated surface (all shipped variant arms) ===")
+    arms = {obj: rec for obj, rec in shipped_object_arms(archives).items()
+            if rec[0] in GATE_TUS}
+    if not arms:
+        failures.append("gated surface: no shipped arm found for any GATE_TU -- "
+                        "the sweep would be vacuous")
+        print("  GATE FAIL: derived arm roster is empty")
+        return
+    missing_tus = sorted(set(GATE_TUS) - {rec[0] for rec in arms.values()})
+    if missing_tus:
+        failures.append(f"gated surface: {missing_tus} are in GATE_TUS but ship "
+                        "in no archive -- their gated result binds nothing")
+        print(f"  GATE FAIL: roster TUs shipping in no archive: {missing_tus}")
     bad = []
     owned = {}
     lost = {}
@@ -1354,48 +1615,45 @@ def gated_surface_check(failures):
     shifted = {}
     survivors = {}
     with tempfile.TemporaryDirectory() as td:
-        for tu in GATE_TUS:
-            # SENTINEL: assemble the TU UNGATED first and require it to export
-            # at least one bare name. Without this the leg is an absence
-            # assertion over a dump it never proved was populated -- it would
-            # print "0 bare names" for a TU that had been emptied, renamed,
-            # or had simply failed to build in a way ca65 exited 0 on. It also
-            # keeps GATE_TUS honest: a TU that stops owning a bare name (as
-            # zp_config did at issue #154) must be removed from the list
-            # rather than left behind as a permanently-green entry.
-            uobj = Path(td) / (tu + "_ungated.o")
-            rc, out = sh(["ca65", "--cpu", "6502",
+        for obj in sorted(arms):
+            tu, defines, using = arms[obj]
+            arm = _arm_label(obj, defines, using)
+            dargs = []
+            for d in defines:
+                dargs += ["-D", d]
+            # SENTINEL: assemble the arm UNGATED first. Without a populated
+            # ungated dump the leg is an absence assertion over something it
+            # never proved was there -- it would print "0 bare names" for an
+            # arm that had been emptied, renamed, or had simply failed to
+            # build in a way ca65 exited 0 on. Ownership itself is asserted
+            # per TU below rather than per arm: an arm may legitimately own
+            # none (zp_aliases_sha384), and failing that would redden a
+            # correct build.
+            uobj = Path(td) / (obj + "_ungated.o")
+            rc, out = sh(["ca65", "--cpu", "6502", *dargs,
                           "-I", "src", "-o", str(uobj), f"src/{tu}.s"])
             urecs = od65_export_records(uobj) if not rc else None
             unames = set(urecs) if isinstance(urecs, dict) else urecs
             if unames is COUNT_MISMATCH:
-                failures.append(f"gated surface: {tu}.s -- name extraction "
+                failures.append(f"gated surface [{arm}]: name extraction "
                                 "disagrees with od65's declared export Count; "
                                 "the file assembles, the reader is broken")
-                print(f"  GATE FAIL: {tu}.s extraction dropped names vs Count")
+                print(f"  GATE FAIL [{arm}]: extraction dropped names vs Count")
                 continue
             if unames is None:
-                failures.append(f"gated surface: {tu}.s does not assemble ungated")
-                print(f"  GATE FAIL: {tu}.s does not assemble ungated: "
+                failures.append(f"gated surface [{arm}]: does not assemble ungated")
+                print(f"  GATE FAIL [{arm}]: does not assemble ungated: "
                       f"{out.splitlines()[0] if out else ''}")
                 continue
             owns = bare_gated(unames)
-            if not owns:
-                failures.append(
-                    f"gated surface: {tu}.o owns no bare name ungated -- its "
-                    "gated result proves nothing; drop it from GATE_TUS or "
-                    "fix the TU")
-                print(f"  GATE FAIL: {tu}.o exports no bare name UNGATED, so "
-                      "'0 bare names under the gate' is vacuous for it")
-                continue
-            owned[tu] = sorted(owns)
+            owned[obj] = sorted(owns)
 
-            obj = Path(td) / (tu + ".o")
+            gobj = Path(td) / (obj + "_gated.o")
             rc, out = sh(["ca65", "--cpu", "6502", "-D", "LIB_NO_BARE_EXPORTS=1",
-                          "-I", "src", "-o", str(obj), f"src/{tu}.s"])
+                          *dargs, "-I", "src", "-o", str(gobj), f"src/{tu}.s"])
             if rc:
-                failures.append(f"gated surface: {tu}.s does not assemble under the gate")
-                print(f"  GATE FAIL: {tu}.s does not assemble: {out.splitlines()[0] if out else ''}")
+                failures.append(f"gated surface [{arm}]: does not assemble under the gate")
+                print(f"  GATE FAIL [{arm}]: does not assemble: {out.splitlines()[0] if out else ''}")
                 continue
             # Same trustworthy reader on BOTH sides. The gated dump used to go
             # through od65_names(), which has no Count cross-check -- so a
@@ -1403,22 +1661,22 @@ def gated_surface_check(failures):
             # a set difference that a short read makes LOOK better. Asymmetric
             # extractors are the "diff whose readers break symmetrically and
             # agree" shape; here they would not even break symmetrically.
-            grecs = od65_export_records(obj)
+            grecs = od65_export_records(gobj)
             gnames = set(grecs) if isinstance(grecs, dict) else grecs
             if gnames is COUNT_MISMATCH:
-                failures.append(f"gated surface: {tu}.o -- gated name extraction "
+                failures.append(f"gated surface [{arm}]: gated name extraction "
                                 "disagrees with od65's declared export Count; "
                                 "the file assembles, the reader is broken")
-                print(f"  GATE FAIL: {tu}.o gated extraction dropped names vs Count")
+                print(f"  GATE FAIL [{arm}]: gated extraction dropped names vs Count")
                 continue
             if gnames is None:
-                failures.append(f"gated surface: {tu}.o gated dump is unreadable")
-                print(f"  GATE FAIL: {tu}.o gated dump unreadable")
+                failures.append(f"gated surface [{arm}]: gated dump is unreadable")
+                print(f"  GATE FAIL [{arm}]: gated dump unreadable")
                 continue
 
             leaked = bare_gated(gnames)
             if leaked:
-                bad.append((tu, sorted(leaked)))
+                bad.append((arm, sorted(leaked)))
 
             # POSITIVE half (issue #158). The assertions above are all
             # absence-shaped: they say the gate removed what it must remove.
@@ -1445,13 +1703,13 @@ def gated_surface_check(failures):
             # message that misdescribes a correct change. Fail-closed, but the
             # diagnostic points the wrong way.
             expected = set(unames) - owns
-            survivors[tu] = sorted(expected)
+            survivors[obj] = sorted(expected)
             dropped = expected - gnames
             if dropped:
-                lost[tu] = sorted(dropped)
+                lost[arm] = sorted(dropped)
             extra = gnames - set(unames)
             if extra:
-                gained[tu] = sorted(extra)
+                gained[arm] = sorted(extra)
 
             # Values, not just names (review finding F3). A name-set equation
             # is satisfied by an equate that survives the gate holding a
@@ -1464,46 +1722,62 @@ def gated_surface_check(failures):
             for nm in sorted(expected & gnames):
                 uv, gv = urecs.get(nm), grecs.get(nm)
                 if uv != gv:
-                    shifted.setdefault(tu, []).append(
+                    shifted.setdefault(arm, []).append(
                         f"{nm} {_vfmt(uv)} -> {_vfmt(gv)}")
-    for tu, names in bad:
-        failures.append(f"gated surface: {tu}.o exports bare {names}")
-        print(f"  GATE FAIL: {tu}.o exports bare names under the gate: {names}")
-    for tu, names in lost.items():
-        failures.append(f"gated surface: {tu}.o LOSES {names} under the gate -- "
+    for arm, names in bad:
+        failures.append(f"gated surface [{arm}]: exports bare {names} under the gate")
+        print(f"  GATE FAIL [{arm}]: exports bare names under the gate: {names}")
+    for arm, names in lost.items():
+        failures.append(f"gated surface [{arm}]: LOSES {names} under the gate -- "
                         "the gate may only suppress deprecated bare names, and "
                         "these are the surface a composing consumer imports")
-        print(f"  GATE FAIL: {tu}.o drops non-bare exports under the gate: {names}")
-    for tu, names in gained.items():
-        failures.append(f"gated surface: {tu}.o GAINS {names} under the gate -- "
+        print(f"  GATE FAIL [{arm}]: drops non-bare exports under the gate: {names}")
+    for arm, names in gained.items():
+        failures.append(f"gated surface [{arm}]: GAINS {names} under the gate -- "
                         "the gated build must be a subset of the ungated one")
-        print(f"  GATE FAIL: {tu}.o exports names only under the gate: {names}")
-    # Completion is keyed off `survivors`, not `owned`. `owned[tu]` is
+        print(f"  GATE FAIL [{arm}]: exports names only under the gate: {names}")
+    # Completion is keyed off `survivors`, not `owned`. `owned[obj]` is
     # recorded BEFORE the gated assemble, so every skip after that point
     # (gated assemble fails, COUNT_MISMATCH, unreadable dump) leaves `owned`
-    # complete for a TU that was never examined under the gate. Keying the
-    # banner off it printed "0 under the gate" for a TU whose gated build was
+    # complete for an arm that was never examined under the gate. Keying the
+    # banner off it printed "0 under the gate" for an arm whose gated build was
     # never read -- an absence assertion over a dump that does not exist, the
-    # exact shape this leg's sentinel exists to prevent, one level up. Once
-    # the success branch also indexed `survivors`, that latent false-OK became
-    # a KeyError that aborted the whole ratchet and swallowed the seven legs
-    # after it. `survivors[tu]` is assigned only on the path that read both
-    # dumps, so it is the honest completion record.
-    for tu, entries in shifted.items():
-        failures.append(f"gated surface: {tu}.o CHANGES exported values under "
+    # exact shape this leg's sentinel exists to prevent, one level up.
+    # `survivors[obj]` is assigned only on the path that read both dumps, so it
+    # is the honest completion record.
+    for arm, entries in shifted.items():
+        failures.append(f"gated surface [{arm}]: CHANGES exported values under "
                         f"the gate: {entries} -- the gate may only suppress "
                         "deprecated bare names, never restate a value")
-        print(f"  GATE FAIL: {tu}.o exports different values under the gate: {entries}")
+        print(f"  GATE FAIL [{arm}]: exports different values under the gate: {entries}")
+    # Per-TU ownership sentinel, aggregated over the TU's arms. Per-arm it
+    # would be wrong (some arms legitimately own nothing); dropped entirely it
+    # would let a roster entry that owns nothing anywhere sit here reporting a
+    # vacuous zero, which is what it caught at issue #154.
+    vacuous = []
+    for tu in GATE_TUS:
+        tu_arms = [o for o in arms if arms[o][0] == tu]
+        if tu_arms and not any(owned.get(o) for o in tu_arms):
+            vacuous.append(tu)
+            failures.append(
+                f"gated surface: {tu} owns no bare name in ANY shipped arm "
+                f"({sorted(tu_arms)}) -- its gated result proves nothing; drop "
+                "it from GATE_TUS or fix the TU")
+            print(f"  GATE FAIL: {tu} exports no bare name UNGATED in any arm, "
+                  "so '0 bare names under the gate' is vacuous for it")
     if (not bad and not lost and not gained and not shifted
-            and len(survivors) == len(GATE_TUS)):
+            and len(survivors) == len(arms) and not vacuous and not missing_tus):
         total = sum(len(v) for v in owned.values())
         kept = sum(len(v) for v in survivors.values())
-        print(f"  gated surface OK ({len(GATE_TUS)} TUs owning {total} bare "
-              f"names ungated, 0 under the gate; {kept} non-bare exports "
-              "kept intact across the gate)")
-        for tu in GATE_TUS:
-            print(f"    {tu:20s} suppresses {owned[tu]}")
-            print(f"    {'':20s} keeps     {survivors[tu]}")
+        print(f"  gated surface OK ({len(arms)} shipped arms of {len(GATE_TUS)} "
+              f"TUs owning {total} bare names ungated, 0 under the gate; {kept} "
+              "non-bare exports kept intact across the gate)")
+        for obj in sorted(arms):
+            tu, defines, using = arms[obj]
+            d = " ".join(f"-D {x}" for x in defines) or "(default)"
+            print(f"    {obj:36s} {d}")
+            print(f"    {'':36s} suppresses {owned[obj]}")
+            print(f"    {'':36s} keeps      {len(survivors[obj])} name(s)")
 
 
 APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",
@@ -1834,6 +2108,377 @@ def packaging_check(failures, archives):
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
 
 
+def gated_link_check(failures, archives):
+    """§6.5 at the level a consumer meets it: an ld65 LINK of a GATED archive.
+
+    Everything else about `LIB_NO_BARE_EXPORTS=1` is verified at the object
+    level -- six TUs, and (before issue #159) one arm. But the mode a consumer
+    composing several libraries MUST build in is
+    `make lib-<variant> CONTRACT_DEFINES='-D LIB_NO_BARE_EXPORTS=1'` followed
+    by a link, and through v0.14.0 no leg ever performed one: the §3 header
+    leg resolves nistcurves.inc against the twelve archives UNGATED only.
+
+    SCOPE, stated exactly, because the obvious overclaim is wrong. This leg
+    proves the LIBRARY is self-consistent under the gate -- it does not prove
+    a consumer's imports of nistcurves.inc resolve under it. ca65 drops an
+    `.import` nothing references, so the HEADER_STUB object carries exactly
+    one import (`__LOADADDR__`, checked with od65), and the header therefore
+    contributes nothing to the link. A gated defect confined to the header --
+    the header still declaring an import of a name the gate deletes -- stays
+    invisible here. Closing that needs a stub that actually references the
+    public surface (the SMOKE lists are the obvious source); it is not closed.
+
+    The gap is not academic, because the object level cannot see it. Each
+    object can be individually correct under the gate while the LINK fails:
+    the gate deletes a bare `.export` in one TU, another TU still `.import`s
+    that bare spelling, and every per-object assertion stays green because
+    imports resolve at link, not at assemble. The consumer meets it as
+
+        ld65: Error: Unresolved external 'zp_tmp1' referenced in ...
+
+    Method: rebuild every member of every archive with that archive's own
+    switch set plus the gate -- which is exactly what CONTRACT_DEFINES
+    forwarding does -- and link the shipped header against them. The UNGATED
+    rebuild is linked too, from the same code path, as the control: without it
+    a failure could be blamed on this leg's rebuild rather than on the gate,
+    and the ungated leg's own green would prove nothing about the gated one.
+
+    Each distinct member object is assembled ONCE per direction and reused
+    across the archives that share it (275 member slots collapse to 72 real
+    objects), which is what keeps the leg at a few seconds.
+
+    SENTINELS, because "the gated archive links" is a success-shaped claim
+    that an empty or unbuilt archive also satisfies:
+      * the ungated rebuild must export at least one bare name (otherwise
+        there was nothing for the gate to suppress and the pair is vacuous);
+      * the gated rebuild must export none (otherwise the gate did not run at
+        all and the link result says nothing about the gated mode);
+      * both links must actually be performed, and the completion banner is
+        keyed off the archives that got that far.
+    """
+    import tempfile
+    print("\n=== §6.5 gated LINK (every archive rebuilt under the gate) ===")
+    arms = shipped_object_arms(archives)
+    src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
+    # HEADER_ARCHIVE_SWITCHES is a hand-maintained roster, and it is the
+    # population BOTH this leg and the §3 header leg (3b) iterate. Nothing
+    # reconciled it against the archives the Makefile actually builds, so a
+    # thirteenth archive would be skipped by both while each printed a clean
+    # per-entry OK -- the roster-that-never-grew shape, the same one
+    # gate_tus_derivation_check and zp_roster_reconciliation_check exist to
+    # close for their own rosters. Reconciled here because this leg's result
+    # is meaningless over an incomplete population.
+    # MEMBER-LIST RECONCILIATION against an INDEPENDENT source. Everything in
+    # this file that says "the archive contains X" comes from regexing the
+    # Makefile, and that parse's failure mode is a SHORTER list, silently --
+    # a shorter list is a smaller population, and a smaller population is what
+    # every leg here reports as a clean count. Two shapes have already done
+    # it: an unexpandable token dropping out, and a second `ar65 a` line being
+    # ignored. So compare against `ar65 t` on the archive make actually built,
+    # which is downstream of make's own expansion and of ar65 itself. Both
+    # directions: a member we invented is as wrong as one we lost.
+    for aname in sorted(archives):
+        apath = LIBDIR / aname
+        if not apath.exists():
+            failures.append(f"gated link [{aname}]: archive not built, so the "
+                            "parsed member list cannot be reconciled against it")
+            print(f"  GATED LINK FAIL [{aname}]: archive missing, member list unverified")
+            continue
+        rc, out = sh(["ar65", "t", str(apath)])
+        if rc:
+            failures.append(f"gated link [{aname}]: `ar65 t` failed, so the "
+                            f"parsed member list is unverified: {out.strip()}")
+            print(f"  GATED LINK FAIL [{aname}]: ar65 t failed")
+            continue
+        real = {Path(ln.strip()).stem for ln in out.splitlines() if ln.strip().endswith(".o")}
+        if not real:
+            failures.append(f"gated link [{aname}]: `ar65 t` listed no members, "
+                            "so the reconciliation would be vacuous")
+            print(f"  GATED LINK FAIL [{aname}]: ar65 t listed nothing")
+            continue
+        parsed = set(archives[aname])
+        lost, invented = sorted(real - parsed), sorted(parsed - real)
+        if lost or invented:
+            failures.append(
+                f"gated link [{aname}]: the member list parsed from the Makefile "
+                f"disagrees with `ar65 t` on the built archive -- missing from "
+                f"the parse {lost}, parsed but not in the archive {invented}; "
+                "every leg keyed off this population was measuring a different "
+                "archive from the one that ships")
+            print(f"  GATED LINK FAIL [{aname}]: parsed member list != ar65 t "
+                  f"(parse is missing {lost}, invented {invented})")
+    uncovered = sorted(set(archives) - set(HEADER_ARCHIVE_SWITCHES))
+    phantom = sorted(set(HEADER_ARCHIVE_SWITCHES) - set(archives))
+    if uncovered:
+        failures.append(f"gated link: {uncovered} are built by the Makefile but "
+                        "absent from HEADER_ARCHIVE_SWITCHES -- this leg and the "
+                        "§3 header leg both skip them silently")
+        print(f"  GATED LINK FAIL: archives with no switch set on record: {uncovered}")
+    if phantom:
+        failures.append(f"gated link: {phantom} are in HEADER_ARCHIVE_SWITCHES "
+                        "but built by no ar65 recipe -- a roster entry that "
+                        "binds nothing")
+        print(f"  GATED LINK FAIL: phantom archives in the switch roster: {phantom}")
+    # ARM-DERIVATION PIN. Everything above -- and the whole arm sweep in
+    # gated_surface_check -- rests on this file's reading of the Makefile
+    # being the same as make's. Both rebuild from source and compare only to
+    # themselves, so a misread switch set is self-consistent and invisible:
+    # the arm is assembled with the wrong -D, swept, and reported OK. (That
+    # was live: the four APP_OWNED switches reach mul_8x8_appowned.o through
+    # a $(APP_OWNED_DEFINES) variable, and reading it wrong swept the
+    # app-owned arm as the default arm.) So compare the ungated rebuild of
+    # each arm against the object `make` actually produced. The comparand is
+    # genuinely independent: build/<obj>.o came out of make's own recipe, not
+    # out of the regex being checked.
+    #
+    # NAMES ARE NOT ENOUGH, and the earlier version of this comment claiming
+    # "different -D, different export set" was false. Enumerated against
+    # wrong-switch candidates, 16 (object, wrong-set) pairs are name-identical:
+    # all twelve lib_manifest arms collapse to two export-NAME signatures,
+    # while lib_manifest_sha384 misparsed as the default arm differs in six §5
+    # VALUES and each *_onchip arm losing FP_ONCHIP_MUL differs in four. That
+    # TU exists precisely to emit different numbers per variant, so values are
+    # the discriminator. precalc_manifest_p256verify == p384verify and
+    # zp_aliases_p256verify == p384curve == p384verify by name as well.
+    # So compare export names AND VALUES and the import set. What this pin
+    # discriminates, stated honestly: any misparse that changes an export
+    # name, an exported constant's value, or an import -- which covers every
+    # degrade-to-default among the GATE_TUs, and the lib_manifest arms that
+    # names alone could not separate.
+    drift, unbuilt = [], []
+    for obj, (src, defines, _using) in sorted(arms.items()):
+        real = BUILD / f"{obj}.o"
+        if not real.exists():
+            unbuilt.append(obj)
+            continue
+        dargs = []
+        for d in defines:
+            dargs += ["-D", d]
+        with tempfile.TemporaryDirectory() as ptd:
+            mine = Path(ptd) / f"{obj}.o"
+            rc, out = sh(["ca65", "--cpu", "6502", *dargs, "-I", "src",
+                          "-o", str(mine), f"src/{src}.s"])
+            if rc:
+                drift.append(f"{obj} (rebuild with the parsed -D set fails: "
+                             f"{out.splitlines()[0] if out else ''})")
+                continue
+            a, b = od65_export_records(mine), od65_export_records(real)
+            ai, bi = od65_names(mine, "--dump-imports"), od65_names(real, "--dump-imports")
+        if not isinstance(a, dict) or not isinstance(b, dict):
+            drift.append(f"{obj} (export dump unreadable or short on one side)")
+            continue
+        # Only the first few differences: a misparse typically hits every arm
+        # at once, and the full symmetric difference over 28 arms is thousands
+        # of characters that bury the object names -- the part you act on.
+        diffs = []
+        for nm in sorted(set(a) ^ set(b)):
+            diffs.append(f"{nm} {'only in the rebuild' if nm in a else 'only in build/'}")
+        for nm in sorted(set(a) & set(b)):
+            if a[nm] != b[nm]:
+                diffs.append(f"{nm} = {_vfmt(a[nm])} rebuilt, "
+                             f"{_vfmt(b[nm])} in build/{obj}.o")
+        if ai != bi:
+            diffs.append(f"imports differ: {sorted(ai ^ bi)[:4]}")
+        if diffs:
+            shown = "; ".join(diffs[:3]) + (f"; +{len(diffs) - 3} more"
+                                            if len(diffs) > 3 else "")
+            drift.append(f"{obj} parsed as {list(defines) or '(default)'}: "
+                         f"disagrees with build/{obj}.o ({shown})")
+    if unbuilt:
+        failures.append(f"gated link: {unbuilt} are archive members but were "
+                        "never built, so the arm-derivation pin cannot compare "
+                        "this parser's reading against make's")
+        print(f"  GATED LINK FAIL: unbuilt members {unbuilt}")
+    if drift:
+        head = drift[:5] + ([f"...and {len(drift) - 5} more arms"]
+                            if len(drift) > 5 else [])
+        failures.append(f"gated link: the Makefile switch sets this file parsed "
+                        f"do not reproduce the built objects ({len(drift)} of "
+                        f"{len(arms)} arms): {head}")
+        print(f"  GATED LINK FAIL: arm derivation disagrees with the build "
+              f"({len(drift)} of {len(arms)} arms):")
+        for d in head:
+            print(f"      {d}")
+    elif not unbuilt:
+        print(f"  arm derivation OK ({len(arms)} shipped objects reproduced "
+              "from the parsed -D sets, exports match build/*.o)")
+    done = []
+    with tempfile.TemporaryDirectory() as topdir:
+        topdir = Path(topdir)
+        built = {}       # (mod, gated) -> Path or None
+        barenames = {}   # (mod, gated) -> set or None (unreadable)
+
+        def member(mod, gated):
+            key = (mod, gated)
+            if key in built:
+                return built[key]
+            src, defines, _ = arms.get(mod, (mod, (), []))
+            dargs = []
+            for d in defines:
+                dargs += ["-D", d]
+            if gated:
+                dargs += ["-D", "LIB_NO_BARE_EXPORTS=1"]
+            o = topdir / f"{'g' if gated else 'u'}_{mod}.o"
+            rc, out = sh(["ca65", "--cpu", "6502", *dargs, "-I", "src",
+                          "-o", str(o), f"src/{src}.s"])
+            built[key] = None if rc else o
+            names = od65_export_names(o) if not rc else None
+            barenames[key] = bare_gated(names) if isinstance(names, set) else None
+            return built[key]
+
+        for aname in sorted(HEADER_ARCHIVE_SWITCHES):
+            mods = archives.get(aname)
+            if not mods:
+                failures.append(f"gated link [{aname}]: no ar65 recipe parsed -- "
+                                "nothing to rebuild under the gate")
+                print(f"  GATED LINK FAIL [{aname}]: no member list")
+                continue
+            switches = []
+            for d in HEADER_ARCHIVE_SWITCHES[aname]:
+                switches += ["-D", d]
+            td = topdir
+            results = {}
+            broke = False
+            for gated in (False, True):
+                objs = []
+                for mod in mods:
+                    o = member(mod, gated)
+                    if o is None:
+                        failures.append(
+                            f"gated link [{aname}]: {mod}.o does not assemble "
+                            f"{'under the gate' if gated else 'ungated'}")
+                        print(f"  GATED LINK FAIL [{aname}]: {mod}.o assemble "
+                              f"({'gated' if gated else 'ungated'})")
+                        broke = True
+                        break
+                    objs.append(o)
+                if broke:
+                    break
+                bare, unread = set(), []
+                for mod in mods:
+                    b = barenames[(mod, gated)]
+                    if b is None:
+                        unread.append(mod)
+                    else:
+                        bare |= b
+                if unread:
+                    failures.append(f"gated link [{aname}]: unreadable rebuilt "
+                                    f"objects {sorted(unread)} -- the bare-name "
+                                    "sentinel would be an absence over an unread dump")
+                    print(f"  GATED LINK FAIL [{aname}]: unreadable objects {sorted(unread)}")
+                    broke = True
+                    break
+                # The consumer TU is the shipped header, assembled with this
+                # archive's switch set (plus the gate). It is linked ALONGSIDE
+                # every member object rather than against an ar65 archive, and
+                # that is load-bearing: ca65 drops an `.import` that nothing
+                # references, so the header stub's object carries exactly one
+                # import (__LOADADDR__) and a link against an archive pulls
+                # almost no member at all. Passing the objects explicitly links
+                # the whole library, which is what makes an intra-library
+                # reference to a name the gate deleted show up as ld65's
+                # `Unresolved external` -- the failure this leg exists for, and
+                # the one no per-object assertion can see.
+                dargs = list(switches)
+                if gated:
+                    dargs += ["-D", "LIB_NO_BARE_EXPORTS=1"]
+                hs = td / f"{'g' if gated else 'u'}_hdr.s"
+                hs.write_text(HEADER_STUB)
+                ho = td / f"{'g' if gated else 'u'}_hdr.o"
+                arc, aout = sh(["ca65", "--cpu", "6502", *dargs, "-I", str(LIBDIR),
+                                "-o", str(ho), str(hs)])
+                if arc != 0:
+                    results[gated] = (bare, arc, aout, None, "", set())
+                    continue
+                lrc, lout = sh(["ld65", "-C", str(src_cfg), "-o",
+                                str(td / f"{'g' if gated else 'u'}.prg"),
+                                str(ho), *[str(o) for o in objs]])
+                unres = set(re.findall(r"Unresolved external '([^']+)'", lout))
+                results[gated] = (bare, arc, aout, lrc, lout, unres)
+            if broke:
+                continue
+
+            ubare, uarc, uaout, ulrc, ulout, uunres = results[False]
+            gbare, garc, gaout, glrc, glout, gunres = results[True]
+            if not ubare:
+                failures.append(
+                    f"gated link [{aname}]: the UNGATED rebuild exports no bare "
+                    "name, so the gated link proves nothing about the gate")
+                print(f"  GATED LINK FAIL [{aname}]: nothing for the gate to suppress")
+                continue
+            if gbare:
+                failures.append(
+                    f"gated link [{aname}]: the GATED rebuild still exports bare "
+                    f"{sorted(gbare)} -- the archive a consumer builds with "
+                    "CONTRACT_DEFINES='-D LIB_NO_BARE_EXPORTS=1' is not gated")
+                print(f"  GATED LINK FAIL [{aname}]: gated archive exports bare {sorted(gbare)}")
+                continue
+            if uarc != 0:
+                failures.append(
+                    f"gated link [{aname}]: the UNGATED control header does not "
+                    "assemble -- this leg's rebuild is broken, so its gated result "
+                    "is not attributable to the gate")
+                print(f"  GATED LINK FAIL [{aname}]: ungated control assemble:\n{uaout.strip()}")
+                continue
+            if garc != 0:
+                failures.append(f"gated link [{aname}]: the header does not assemble "
+                                "with the gate defined")
+                print(f"  GATED LINK FAIL [{aname}]: gated header assemble:\n{gaout.strip()}")
+                continue
+            # The sharp assertion, and the one that does not depend on the
+            # documented-gap allowlist: the gate may suppress deprecated bare
+            # exports, so it may never leave a reference UNRESOLVED that resolved
+            # without it. Comparing the two sets rather than demanding a clean
+            # gated link is what would keep a genuinely documented external
+            # from reading as a gate defect.
+            #
+            # NOTE: every KNOWN_EXTERNAL entry is `set()` today, and every
+            # archive's gated link here resolves closed -- app-owned
+            # included, because in the DMA profile the `.import
+            # poly_prod_lo/hi` is unreferenced and ca65 drops it. So the
+            # `beyond` branch below is an empty-population absence with no
+            # negative test. It is fail-closed, but `new_unres` is what
+            # actually carries this leg; do not read the allowlist as
+            # load-bearing.
+            new_unres = sorted(gunres - uunres)
+            if new_unres:
+                failures.append(
+                    f"gated link [{aname}]: -D LIB_NO_BARE_EXPORTS=1 leaves "
+                    f"{new_unres} unresolved at ld65 while the ungated build of the "
+                    "same objects resolves them -- a consumer composing libraries "
+                    "cannot link this archive")
+                print(f"  GATED LINK FAIL [{aname}]: gate creates unresolved externals: {new_unres}")
+                continue
+            stale = sorted(uunres - gunres)
+            if stale:
+                failures.append(
+                    f"gated link [{aname}]: {stale} are unresolved WITHOUT the gate "
+                    "but resolve with it -- the gated build must be a subset")
+                print(f"  GATED LINK FAIL [{aname}]: gate resolves {stale} that the "
+                      "ungated build does not")
+                continue
+            beyond = sorted(gunres - KNOWN_EXTERNAL.get(aname, set()))
+            if beyond:
+                failures.append(
+                    f"gated link [{aname}]: gated link unresolved beyond the "
+                    f"documented gaps: {beyond}")
+                print(f"  GATED LINK FAIL [{aname}]: unresolved beyond allowlist: {beyond}")
+                continue
+            if glrc != 0 and not gunres:
+                failures.append(
+                    f"gated link [{aname}]: the gated link failed for a non-symbol "
+                    f"reason:\n{glout.strip()}")
+                print(f"  GATED LINK FAIL [{aname}]: gated link failed, no unresolved "
+                      f"externals reported:\n{glout.strip()}")
+                continue
+            done.append((aname, len(ubare)))
+    if len(done) == len(HEADER_ARCHIVE_SWITCHES):
+        total = sum(n for _, n in done)
+        print(f"  gated link OK ({len(done)} archives rebuilt with "
+              f"-D LIB_NO_BARE_EXPORTS=1, {total} bare names suppressed across "
+              "them, each links against the shipped header)")
+
+
 def gate_tus_derivation_check(failures):
     """GATE_TUS is a roster. Derive the same set from the sources and compare.
 
@@ -1850,35 +2495,52 @@ def gate_tus_derivation_check(failures):
     LIB_NO_BARE_EXPORTS, and any TU whose export set SHRINKS owns a displaceable
     name by construction. That set must equal GATE_TUS exactly. A TU that
     starts owning one is then covered automatically, and one that stops is
-    flagged rather than sitting in the roster proving nothing."""
+    flagged rather than sitting in the roster proving nothing.
+
+    ARMS AS WELL AS SOURCES (issue #159). Ownership is arm-dependent: a TU can
+    export a displaceable name only under `-D LIB_SHA384_ONLY` and none in the
+    default arm, and a default-arm-only derivation would then miss it and let
+    the gated-surface leg skip it. So the population is every src/*.s in the
+    default arm PLUS every (source, -D set) pair the Makefile actually ships,
+    derived by parse_makefile_object_rules() rather than restated here."""
     import tempfile
-    print("\n=== GATE_TUS derived from source (roster vs reality) ===")
+    print("\n=== GATE_TUS derived from source (roster vs reality, all arms) ===")
     srcs = sorted((REPO / "src").glob("*.s"))
     if not srcs:
         failures.append("gate-tus: no sources found -- derivation is vacuous")
         print("  DERIVE FAIL: no src/*.s")
         return
+    # (source stem, defines tuple) -> label. Default arm for every source, plus
+    # each shipped variant arm.
+    probes = {(s.stem, ()): s.stem for s in srcs}
+    for obj, (tu, defines, using) in shipped_object_arms(
+            parse_makefile_archives()).items():
+        probes.setdefault((tu, defines), obj)
     derived, unreadable = set(), []
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
-        for src in srcs:
-            tu = src.stem
-            ung, gat = td / f"{tu}_u.o", td / f"{tu}_g.o"
-            r1, _ = sh(["ca65", "--cpu", "6502", "-I", "src", "-o", str(ung), str(src)])
-            r2, _ = sh(["ca65", "--cpu", "6502", "-I", "src", "-D",
+        for (tu, defines), label in sorted(probes.items()):
+            src = REPO / "src" / f"{tu}.s"
+            dargs = []
+            for d in defines:
+                dargs += ["-D", d]
+            ung, gat = td / f"{label}_u.o", td / f"{label}_g.o"
+            r1, _ = sh(["ca65", "--cpu", "6502", "-I", "src", *dargs,
+                        "-o", str(ung), str(src)])
+            r2, _ = sh(["ca65", "--cpu", "6502", "-I", "src", *dargs, "-D",
                         "LIB_NO_BARE_EXPORTS=1", "-o", str(gat), str(src)])
             if r1 or r2:
-                unreadable.append(tu)
+                unreadable.append(label)
                 continue
             a, b = od65_export_names(ung), od65_export_names(gat)
             if a is None or b is None or a is COUNT_MISMATCH or b is COUNT_MISMATCH:
-                unreadable.append(tu)
+                unreadable.append(label)
                 continue
             if a - b:
                 derived.add(tu)
     if unreadable:
         failures.append(f"gate-tus: could not derive from {sorted(unreadable)} -- "
-                        "an undecided TU is not a clean one")
+                        "an undecided arm is not a clean one")
         print(f"  DERIVE FAIL: undecidable {sorted(unreadable)}")
         return
     roster = set(GATE_TUS)
@@ -1893,8 +2555,8 @@ def gate_tus_derivation_check(failures):
                         f"displaceable name; their gated result proves nothing")
         print(f"  DERIVE FAIL: roster entries proving nothing {extra}")
     if not (missing or extra):
-        print(f"  GATE_TUS OK ({len(derived)} TUs derived from source, roster "
-              f"matches exactly)")
+        print(f"  GATE_TUS OK ({len(derived)} TUs derived from {len(probes)} "
+              f"source arms, roster matches exactly)")
 
 
 def zp_roster_reconciliation_check(failures):
@@ -2793,9 +3455,10 @@ def main():
     version_identity_check(failures)
     zp_alias_audit(failures)
     zp_alias_link_identity(failures)
-    gated_surface_check(failures)
+    gated_surface_check(failures, archives)
     app_owned_reachability_check(failures)
     packaging_check(failures, archives)
+    gated_link_check(failures, archives)
 
     for name in sorted(KNOWN_EXTERNAL):
         allow = KNOWN_EXTERNAL[name]
