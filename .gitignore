@@ -5,6 +5,7 @@ __pycache__/
 .DS_Store
 .serena/
 c64-nist-curves-v*.tar.gz
+c64-nist-curves-v*.tar.gz.sha256
 .ca65-ls/
 # .claude/ is session-local (settings.local.json, worktrees, lock files) with
 # one exception: agents/ holds checked-in subagent definitions that are part of
