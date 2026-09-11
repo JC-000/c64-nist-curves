@@ -119,6 +119,13 @@ sys.path.insert(0, PROJECT_ROOT)
 # session's run as well as its own.  Set before the harness is imported.
 os.environ.setdefault("U64_REQUIRE_DEVICE_LOCK", "1")
 
+# /Temp hygiene is deliberately NOT forced here -- the harness arms it from
+# device capability and accounts for attachments at the request layer, so
+# this tool's oversize writes (each a POST above the 128 B threshold) are
+# already counted against the budget, not just its single boot upload.
+# Forcing `U64_AUTO_TEMP_GC=1` would override that decision from the call
+# site; see CLAUDE.md "Device traffic: the harness is the only route".
+
 BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
 DEFAULT_PRG = os.path.join(BUILD_DIR, "nist-curves.prg")
 DEFAULT_LABELS = os.path.join(BUILD_DIR, "labels.txt")
