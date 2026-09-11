@@ -67,8 +67,16 @@ aligned segment first and assert against your own link map's extents.
 | adversarial suites | 290 + 92 passed, **0 red-known rows** on either |
 | hardware | U64E, **10/10 oracle gates at 16 and 48 MHz** — the lane VICE cannot test |
 | §8.2 settle probe | arbiter CLEAN 0/100 at +4 cy; all stash and fetch ladders PASS |
-| contract gates | `make check-archives` and `make check-docs` both exit 0 |
+| contract gates | `make check-archives`, `make check-docs`, `make check-harness-routing`, `make check-release-state` all exit 0 |
 | PRG | `e975f8e298259803b6e0b2abe23d05ebac143957a6619bdf3da35f5108c3abe6` (37743 B) |
+
+The two hardware rows were measured **before** this release's tooling change, which edited `tools/bench_u64_common.py` (imported by five
+hardware tools) and `tools/test_reu_mul_u64.py`. Those edits remove a
+`sys.path` shim, set `U64_REQUIRE_DEVICE_LOCK=1`, and add provenance
+printing; none of them touch what is measured or how a routine is
+timed, and the PRG is byte-identical. But the numbers were not
+re-taken on the edited tools, and no device was contacted while
+preparing this cut — so read them as carried forward, not re-run.
 
 The hardware result is **an upper bound on one device on one day**, not
 evidence the §8.2 settle is unnecessary: that device is core 1.4F, the
@@ -90,6 +98,30 @@ standing gate at all; and the §5 measurand billed a consumer-side pad. See
 The legacy ACME build path — fourteen `src/*.asm` files and `make build-acme`.
 Never shipped in a release tarball, never in any archive, no PRG impact.
 Preserved verbatim on the `archive/acme-legacy-build` branch.
+
+## Also in this release: device-traffic tooling (no library change)
+
+This release carries a tooling change that touches **no `src/` file**. The PRG
+is byte-identical to the tree without it —
+`e975f8e298259803b6e0b2abe23d05ebac143957a6619bdf3da35f5108c3abe6`, 37743 B,
+verified by building both trees. If you consume the library, nothing here
+affects you; it is recorded because it reached `master` before this release
+was cut.
+
+Device traffic from `tools/` now enters at the test harness's managed layer and
+never below it, so the harness stays the single place that can apply device
+policy — PUT/POST selection, chunking, `/Temp` hygiene, and any future traffic
+filtering. Two new opt-in static gates enforce the parts that are checkable:
+`make check-harness-routing` (no call reaches below `transport.write_memory`;
+no `sys.path` shim can shadow the installed harness) and
+`make check-release-state` (unreleased work never piles on top of an untagged
+release — the defect this very release recovered from). Neither needs VICE, a
+device, or a build.
+
+The one deliberate non-change: writes are **not** pre-chunked at the call site.
+The only helper offering it splits at 84 B for a VICE text-monitor reason, not
+a device one, and clears the Ultimate's PUT ceiling by coincidence. Chunking
+belongs in the harness, where the device threshold is already known.
 
 ---
 
