@@ -39,6 +39,15 @@ ROOT = Path(__file__).resolve().parent.parent
 SHA_CLAIM = re.compile(r"^\s*\*\*SHA-?256:?\*\*\s*`?([0-9a-fA-F]{64})`?", re.M)
 SIZE_CLAIM = re.compile(r"^\s*\*\*Tarball:?\*\*.*\(\s*[\d,]+\s*bytes\s*\)", re.M)
 
+# A fill-me-in placeholder that survived into the notes. v0.15.0's notes
+# carried `REPLACE_TARBALL_SIZE` / `REPLACE_TARBALL_SHA` from the pre-v0.13.0
+# convention, when the release procedure still had a "fill in the SHA256"
+# step. #147 removed that step precisely so it could not be forgotten -- but
+# the placeholders it left behind are an invitation to re-add the self-
+# reference by hand, and the two claim patterns above cannot see them because
+# a placeholder is not hash-shaped. Caught here instead.
+PLACEHOLDER = re.compile(r"^.*\bREPLACE_[A-Z_]+\b.*$", re.M)
+
 # The release where the hash moved out of the notes and into the sidecar.
 CONVENTION_FROM = (0, 13, 0)
 
@@ -79,6 +88,17 @@ def main() -> int:
         failures.append(
             f"{notes.relative_to(ROOT)}:{line}: claims a byte size for the tarball "
             f"these notes ship inside -- same self-reference (issue #147)."
+        )
+
+    for m in PLACEHOLDER.finditer(text):
+        line = text[: m.start()].count("\n") + 1
+        failures.append(
+            f"{notes.relative_to(ROOT)}:{line}: unfilled release placeholder "
+            f"-- {m.group(0).strip()!r}. Since v0.13.0 the tarball hash and "
+            f"size are NOT quoted in the notes at all (issue #147); they live "
+            f"in the .sha256 sidecar and the GitHub Release body. Delete the "
+            f"placeholder rather than filling it -- filling it is what this "
+            f"gate's other two legs reject."
         )
 
     if failures:
