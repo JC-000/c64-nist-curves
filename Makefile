@@ -747,9 +747,11 @@ check-docs: $(PRG)
 	python3 tools/check_doc_snippets.py
 	python3 tools/check_release_notes.py
 
-# Every device write in tools/ must route through the harness, so the
-# harness stays the single place that can chunk a payload off the leaking
-# POST path, run /Temp hygiene, and carry any future traffic filtering.
+# Device traffic in tools/ must enter at the harness's managed layer and
+# never below it, so the harness stays the single place that can apply
+# device policy -- PUT/POST selection, chunking, /Temp hygiene, and any
+# future traffic filtering. The rule is altitude, not mechanism: tools
+# call transport.write_memory and let the harness decide.
 # Static scan: no device, no VICE, no network, no build prerequisite.
 .PHONY: check-harness-routing
 check-harness-routing:
@@ -761,6 +763,19 @@ check-harness-routing:
 .PHONY: check-release-notes
 check-release-notes:
 	python3 tools/check_release_notes.py
+
+# Unreleased work must never pile on top of a fully-prepared but UNTAGGED
+# release. v0.15.0 was prepared -- VERSION, the lib_version.s equates, the
+# release notes and the CHANGELOG section all bumped -- and then never PR'd
+# or tagged; a branch cut from it by mistake carried the release commit to
+# master, and `[Unreleased]` then accumulated tooling work on top of it.
+# Every artifact was self-consistent, so nothing caught it: the defect is in
+# the relationship between the tree and the TAG namespace.
+# Static: no VICE, no device, no network, no build prerequisite. Opt-in like
+# check-docs / check-harness-routing; deliberately NOT wired into `all`.
+.PHONY: check-release-state
+check-release-state:
+	python3 tools/check_release_state.py
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

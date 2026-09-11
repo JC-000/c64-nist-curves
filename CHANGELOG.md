@@ -12,55 +12,7 @@ contract).
 
 ## [Unreleased]
 
-### Added
-- `make check-harness-routing` — static gate gating **device-traffic
-  altitude**: every tool in `tools/` must enter at the harness's managed
-  layer (`transport.write_memory`, `client.run_prg`) and never below it
-  (`client.write_mem`, `_post_binary`, `_request`, raw HTTP/sockets), and
-  no `sys.path` manipulation may shadow the installed harness. No VICE, no
-  device, no network; sub-second. Opt-in like `check-docs`, never a
-  prerequisite of `all`.
-- `print_harness_provenance()` / `enable_harness_logging()` in
-  `tools/bench_u64_common.py`, called at device-lock acquire: prints the
-  resolved `c64_test_harness.__file__` and any env overrides, and routes
-  the harness's own logger to stderr. Which harness copy is loaded decides
-  the device-capability table, which decides `PUT` vs the leaking `POST`,
-  so it belongs in the run log rather than in an assumption — and the
-  handler is what makes the harness's device grading (INFO, emitted from
-  `Ultimate64Client.__init__`) and its disarmed-hygiene warning visible at
-  all. The lock is taken before the client is constructed, so the handler
-  is in place in time.
-- CLAUDE.md § "Device traffic: the harness is the only route".
-
-### Changed
-- `tools/bench_u64_common.py` now sets `U64_REQUIRE_DEVICE_LOCK=1` by
-  `setdefault`, matching `test_reu_mul_u64.py`, so a device call outside
-  the lock fails rather than relying on every entry point to remember.
-- `/Temp` hygiene is explicitly **not** forced from tool code. The
-  harness (as of its `feat/u64-temp-hygiene`) arms it from device
-  capability and accounts for attachments at the request layer, covering
-  every body-carrying POST rather than uploads alone. Setting
-  `U64_AUTO_TEMP_GC` here would override that decision from the call
-  site; both tools carry a comment saying so.
-
-### Removed
-- The `sys.path` shim in `tools/bench_u64_common.py` that inserted
-  `/home/someone/c64-test-harness/src` at position 0 when that directory
-  existed. Imported by five hardware tools before `c64_test_harness`
-  resolved, it silently decided which harness — and which capability
-  table — the whole run used. Inert on macOS, which is why it could rot
-  unnoticed.
-
-### Notes
-- Deliberately **not** done: pre-chunking writes at the call site. The
-  only helper offering it (`memory.write_bytes`) splits at 84 B for a VICE
-  text-monitor reason, not a device one; it clears the Ultimate's 128 B
-  ceiling by coincidence. Chunking belongs in the harness's
-  `write_memory`, where the threshold is already read to pick PUT vs POST.
-  Until that lands, a single write above the device threshold is still one
-  leaking POST — see CLAUDE.md for which tools do that.
-
-## [0.15.0] — 2026-09-07
+## [0.15.0] — 2026-09-11
 
 MINOR. `LIB_NISTCURVES_ABI_VERSION` **stays 4** — verified against the frozen
 contract's §7 text rather than recalled: the counter moves only when "a
@@ -158,6 +110,72 @@ commit body.
   (`tools/build_release.sh` has excluded them since v0.3.0) and never
   contributed to any archive or to the PRG, which is byte-identical across
   this removal.
+
+### Tooling — device-traffic altitude (no library change)
+
+Touches **no `src/` file**: the PRG is byte-identical to the
+pre-tooling tree —
+`e975f8e298259803b6e0b2abe23d05ebac143957a6619bdf3da35f5108c3abe6`,
+37743 B, verified by building both trees and comparing. Recorded in
+this release rather than held back because it reached `master` before
+v0.15.0 was cut.
+
+#### Added
+- `make check-release-state` — asserts that unreleased work never piles
+  on top of an untagged release. If `VERSION` names a version with a
+  CHANGELOG section and release notes but **no git tag**, a release is in
+  flight and `[Unreleased]` must be empty. This release is the defect it
+  was written against: v0.15.0 was prepared, never tagged, and then had
+  tooling work merged on top of it. Every artifact was individually
+  self-consistent, which is why nothing caught it — the defect lives in
+  the relationship between the tree and the tag namespace. No VICE, no
+  device, no build.
+- `make check-harness-routing` — static gate gating **device-traffic
+  altitude**: every tool in `tools/` must enter at the harness's managed
+  layer (`transport.write_memory`, `client.run_prg`) and never below it
+  (`client.write_mem`, `_post_binary`, `_request`, raw HTTP/sockets), and
+  no `sys.path` manipulation may shadow the installed harness. No VICE, no
+  device, no network; sub-second. Opt-in like `check-docs`, never a
+  prerequisite of `all`.
+- `print_harness_provenance()` / `enable_harness_logging()` in
+  `tools/bench_u64_common.py`, called at device-lock acquire: prints the
+  resolved `c64_test_harness.__file__` and any env overrides, and routes
+  the harness's own logger to stderr. Which harness copy is loaded decides
+  the device-capability table, which decides `PUT` vs the leaking `POST`,
+  so it belongs in the run log rather than in an assumption — and the
+  handler is what makes the harness's device grading (INFO, emitted from
+  `Ultimate64Client.__init__`) and its disarmed-hygiene warning visible at
+  all. The lock is taken before the client is constructed, so the handler
+  is in place in time.
+- CLAUDE.md § "Device traffic: the harness is the only route".
+
+#### Changed
+- `tools/bench_u64_common.py` now sets `U64_REQUIRE_DEVICE_LOCK=1` by
+  `setdefault`, matching `test_reu_mul_u64.py`, so a device call outside
+  the lock fails rather than relying on every entry point to remember.
+- `/Temp` hygiene is explicitly **not** forced from tool code. The
+  harness (as of its `feat/u64-temp-hygiene`) arms it from device
+  capability and accounts for attachments at the request layer, covering
+  every body-carrying POST rather than uploads alone. Setting
+  `U64_AUTO_TEMP_GC` here would override that decision from the call
+  site; both tools carry a comment saying so.
+
+#### Removed
+- The `sys.path` shim in `tools/bench_u64_common.py` that inserted
+  `/home/someone/c64-test-harness/src` at position 0 when that directory
+  existed. Imported by five hardware tools before `c64_test_harness`
+  resolved, it silently decided which harness — and which capability
+  table — the whole run used. Inert on macOS, which is why it could rot
+  unnoticed.
+
+#### Notes
+- Deliberately **not** done: pre-chunking writes at the call site. The
+  only helper offering it (`memory.write_bytes`) splits at 84 B for a VICE
+  text-monitor reason, not a device one; it clears the Ultimate's 128 B
+  ceiling by coincidence. Chunking belongs in the harness's
+  `write_memory`, where the threshold is already read to pick PUT vs POST.
+  Until that lands, a single write above the device threshold is still one
+  leaking POST — see CLAUDE.md for which tools do that.
 
 ## [0.14.0] — 2026-09-06
 
