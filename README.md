@@ -62,8 +62,10 @@ python3 tools/test_fp384.py       # P-384 field arithmetic (NIST KAT curve-eq + 
 python3 tools/test_points384.py   # P-384 point ops (add --full for 10x random samples)
 python3 tools/bench_p256.py       # P-256 benchmarks (oracle correctness gate)
 python3 tools/bench_p384.py       # P-384 benchmarks (oracle correctness gate)
-python3 tools/bench_p256_u64.py   # P-256 on Ultimate 64 Elite (16/48 MHz turbo)
-python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (16/48 MHz turbo)
+python3 tools/bench_p256_u64.py   # P-256 on Ultimate 64 Elite. NOTE: --speeds defaults to
+                                  #   ALL 17 turbo speeds = 17 reboot+upload cycles; pass
+                                  #   --speeds 16,48 unless you mean the full sweep
+python3 tools/bench_p384_u64.py   # P-384 on Ultimate 64 Elite (same --speeds default as above)
 python3 tools/bench_ecdsa_u64.py  # ECDSA verify + variable-base scalar_mul on U64E
 python3 tools/test_reu_mul_u64.py # SPEC §8.2 REU DMA settle probe on U64 hardware
                                   #   (needs U64_HOST; takes the DeviceLock; reboots the
@@ -142,7 +144,12 @@ Wave 7a-era sweep (2026-04-12, `c377277`); the `ec_point_add_jj` and
 `fp_mod_mul_n` rows were measured 2026-05-19 at master `406ae66`
 (PR #38). Not re-measured since; the numbers predate v0.7.0's +512 B
 verify gate, which affects only the `ecdsa_verify_*` entry paths.
-Re-run the bench tools (`U64_HOST=<ip>`) to refresh.
+Re-run the bench tools (`U64_HOST=<ip>`) to refresh — **pass an explicit
+`--speeds`**, since both default to all 17 turbo speeds, i.e. 17
+reboot-plus-upload cycles each. On Ultimate firmware below
+[#686](https://github.com/GideonZ/1541ultimate/pull/686) every upload
+leaves an uncollected `/Temp` attachment; see CLAUDE.md § "Device traffic:
+the harness is the only route" before pointing these at such a device.
 
 At 48 MHz, P-256 `ec_scalar_mul` completes in ~4.5 s wall-clock (vs ~47 s
 at stock 1 MHz). P-384 `ec_scalar_mul_384` completes in ~10.9 s (vs ~131 s).

@@ -18,13 +18,33 @@ atomic from the CPU's perspective.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import time
 
-_HARNESS_SRC = "/home/someone/c64-test-harness/src"
-if os.path.isdir(_HARNESS_SRC) and _HARNESS_SRC not in sys.path:
-    sys.path.insert(0, _HARNESS_SRC)
+# One harness, resolved one way.  A sys.path shim used to sit here naming
+# an absolute Linux checkout and inserting it at position 0 — inert on a
+# Mac, but wherever that directory existed it silently decided which
+# c64_test_harness (and therefore which device-capability table, which is
+# what picks PUT over the leaking POST) the whole run loaded.  Deleted:
+# the editable install resolves on its own, and a second copy is a hazard,
+# not a convenience.  `print_harness_provenance` below makes the resolved
+# path visible instead of assumed.
+
+# /Temp hygiene is deliberately NOT forced here.  The harness arms it from
+# device capability -- `runner_wedge_possible is not False`, so leak-prone
+# and unknown firmware arm, and a device carrying the upstream collector
+# (U64E 3.15+) disarms -- and it accounts for attachments at the request
+# layer, so every POST-with-body is covered, not just uploads.  Setting
+# `U64_AUTO_TEMP_GC=1` would *force* the pass on for ANY device and
+# override that decision from our side, which is the call-site policy
+# ownership this repo is trying not to take.  An operator can still force
+# it either way through the environment for a one-off.
+
+# Hard-fail a device call that is not under the DeviceLock, rather than
+# trusting every entry point to remember.  Matches test_reu_mul_u64.py.
+os.environ.setdefault("U64_REQUIRE_DEVICE_LOCK", "1")
 
 from c64_test_harness.backends.ultimate64 import Ultimate64Transport  # noqa: E402
 from c64_test_harness.backends.ultimate64_client import (  # noqa: E402
@@ -355,6 +375,55 @@ def _fmt_lock_holder(info):
     return ", ".join(bits) if bits else "<no metadata>"
 
 
+def print_harness_provenance():
+    """Print which c64_test_harness was loaded, and its hygiene switches.
+
+    The harness is the single choke point for device traffic: it owns the
+    PUT/POST decision, the ``/Temp`` budget and hygiene pass, and whether
+    hygiene arms at all (from the device's firmware capability).  All of
+    that is a property of *the copy that got imported*, so which copy that
+    is belongs in the run log rather than in an assumption.  The env
+    overrides are printed because they are the one way a run can differ
+    from what the harness would have decided on its own -- ``<unset>`` is
+    the expected and preferred state for the hygiene one.
+    Cheap: no network, no device.
+    """
+    # Install the handler first: the harness logs its device grading from
+    # inside Ultimate64Client.__init__, and every caller constructs the
+    # client after taking the lock, so arming the handler here is what
+    # makes that grading visible at all.
+    enable_harness_logging()
+    import c64_test_harness
+    print(f"  harness: {c64_test_harness.__file__}")
+    print(f"  overrides: U64_AUTO_TEMP_GC="
+          f"{os.environ.get('U64_AUTO_TEMP_GC', '<unset>')} "
+          f"U64_REQUIRE_DEVICE_LOCK="
+          f"{os.environ.get('U64_REQUIRE_DEVICE_LOCK', '<unset>')}")
+
+
+def enable_harness_logging(level=logging.INFO):
+    """Surface the harness's own device-grading and hygiene messages.
+
+    Without a handler, ``log_device_grading()`` (INFO) is dropped, so the
+    run log shows the *override* we asked for and never the decision the
+    harness actually reached — which is the more useful of the two. The
+    disarmed-hygiene message is a WARNING and would reach stderr through
+    ``logging.lastResort`` anyway, but only as a bare line with no level
+    or logger name; routing both through one handler keeps them legible
+    and in order with our own output.
+
+    Idempotent: repeated calls do not stack handlers.
+    """
+    log = logging.getLogger("c64_test_harness")
+    if any(getattr(h, "_nistcurves_bench", False) for h in log.handlers):
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("  [harness] %(levelname)s %(message)s"))
+    handler._nistcurves_bench = True
+    log.addHandler(handler)
+    log.setLevel(level)
+
+
 def acquire_device_lock_or_exit(host, *,
                                 timeout=DEFAULT_LOCK_ACQUIRE_TIMEOUT):
     """Stale-clean, surface existing holder, then bounded-acquire.
@@ -378,6 +447,11 @@ def acquire_device_lock_or_exit(host, *,
     NOTE: this function will ``sys.exit(2)`` on timeout — it is intended
     for top-level bench tools, not library code.
     """
+    try:
+        print_harness_provenance()
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"  harness: WARN could not report provenance "
+              f"({type(e).__name__}: {e})", flush=True)
     try:
         removed = DeviceLock.cleanup_stale()
     except Exception as e:  # pragma: no cover - defensive

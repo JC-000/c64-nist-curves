@@ -747,6 +747,14 @@ check-docs: $(PRG)
 	python3 tools/check_doc_snippets.py
 	python3 tools/check_release_notes.py
 
+# Every device write in tools/ must route through the harness, so the
+# harness stays the single place that can chunk a payload off the leaking
+# POST path, run /Temp hygiene, and carry any future traffic filtering.
+# Static scan: no device, no VICE, no network, no build prerequisite.
+.PHONY: check-harness-routing
+check-harness-routing:
+	python3 tools/check_harness_routing.py
+
 # Issue #147: the release notes ship inside the tarball, so any hash they
 # claim about it is self-referential. Kept out by check-release-notes; the
 # real hash comes from the <tarball>.sha256 sidecar `make dist` writes.

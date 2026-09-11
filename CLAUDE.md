@@ -265,6 +265,10 @@ make check-archives                  # archive linkability contract ratchet (no 
 make check-docs                      # assemble the copy-pasteable snippets in API.md / README.md /
                                      #   CLAUDE.md and resolve their imports against real exports
                                      #   (no VICE; opt-in, never a prerequisite of `all`)
+make check-harness-routing           # every device write in tools/ routes through the harness's
+                                     #   managed layer (`transport.write_memory`) and never below it —
+                                     #   see "Device traffic: the harness is the only route" below
+                                     #   (no VICE, no device, no network)
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
                                      #   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
                                      #   C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py
@@ -350,6 +354,82 @@ this note claimed through v0.11.0; budget `C64_INIT_TIMEOUT` accordingly).
 See `tools/test_fp384.py` and `tools/test_points384.py` for the canonical
 pattern — note the `transport.resume()` after each poll: binmon reads pause
 emulation, and a poll loop without the resume freezes the machine forever.
+
+## Device traffic: the harness is the only route
+
+**Every byte that reaches an Ultimate device enters at the harness's
+managed layer, and the harness decides what happens to it.** The rule is
+about *altitude*, not about chunking: enter at
+`transport.write_memory` / `client.run_prg` and let the harness apply
+policy, rather than making the policy decision here.
+`make check-harness-routing` enforces it — but like
+`check-docs` it is **opt-in and never a prerequisite of `all`**, so a
+new bypass ships green unless someone runs it. Run it with the other
+checks before a PR. This is one rule with one reason: the harness is the single
+place that can filter traffic to the device, so a mitigation added there
+covers every tool at once, while a per-caller fix has to be repeated at
+every call site and rots the moment a new one appears.
+
+What that buys, concretely. Firmware below
+[GideonZ/1541ultimate#686](https://github.com/GideonZ/1541ultimate/pull/686)
+never collects the managed `/Temp` attachments that body-carrying REST
+calls leave behind; once `/Temp` fills, REST and the UCI bridge wedge
+together and **only a physical power-cycle recovers the device**. The
+C64 Ultimate at fw 1.1.0 is unfixed and the CBM line has no fixed
+release at all; the Ultimate line is fixed from 3.15. So:
+
+- **Writes** — call `transport.write_memory(addr, data)` and let the
+  harness decide. It already consults the device-capability table to pick
+  `PUT ?data=` over the leaking POST. **Do not pre-chunk at the call
+  site.** The only helper that offers chunking, `memory.write_bytes`,
+  splits at 84 B because that is where *VICE's text monitor* truncates
+  (`memory.py:14-16`) — a VICE constant that falls under the Ultimate's
+  128 B ceiling by coincidence. Using it here would move a device policy
+  decision into our call sites, cost a round trip per chunk, and have to
+  be unpicked when the harness lands device-aware chunking in
+  `write_memory`. That chunking is the harness's to own.
+  **Known gap while that is outstanding:** a single write above the
+  device threshold still takes one POST. The bench ECDSA setups (160 B
+  and 240 B structs) and `test_reu_mul_u64.py`'s 256 B buffer writes are
+  the ones that do. Until the harness chunks, treat those tools as
+  unsafe to point at unfixed firmware.
+- **Uploads and hygiene** — the harness accounts for `/Temp` at the
+  **request layer**: any `POST` carrying a body spends budget, so both
+  `client.run_prg` and every oversize `write_memory` are counted, not
+  just uploads. It **arms itself from device capability** —
+  `runner_wedge_possible is not False`, so leak-prone *and* unknown
+  firmware arm, and a device carrying the upstream collector (U64E 3.15+)
+  disarms. **Do not set `U64_AUTO_TEMP_GC` in tool code.** It forces the
+  pass on for *any* device and overrides the harness's own decision,
+  which is the call-site policy ownership this section exists to prevent.
+  An operator may still set it for a one-off.
+- **One harness** — no `sys.path` shim may shadow the installed copy.
+  Which copy is imported decides the capability table, and the
+  capability table decides PUT vs POST. `print_harness_provenance()`
+  prints the resolved path and the hygiene switches at lock-acquire, so
+  it is in the run log rather than assumed.
+- **`--speeds` defaults to all 17 speeds** on `bench_p256_u64.py` /
+  `bench_p384_u64.py` (`ALL_SPEEDS`, `bench_u64_common.py`), i.e. 17
+  reboot + `run_prg` cycles of a ~37.7 KB PRG per bare invocation. Pass
+  an explicit `--speeds` when pointing at unfixed firmware.
+
+  **Those 17 accumulate. This is measured, not inferred.** `/Temp` is a
+  firmware RAM disk (`software/filesystem/ramdisk.cc`) that only a
+  firmware **power-on** clears. `machine:reboot` is a C64-level reset:
+  config in firmware RAM survives it, and so do the attachments.
+  Upstream measured it on the C64U — one POST leaves `temp0008`, and
+  `reboot()` plus a 6 s settle leaves `temp0008` still there
+  (`docs/u64_recovery.md`). **Do not treat a reboot as cross-run `/Temp`
+  protection.**
+  An earlier version of this file said the opposite, on the strength of a
+  sentence upstream has since retracted *as wrong on both halves*. If you
+  find a source claiming a reboot empties `/Temp`, check its date — the
+  harness carried that error for a while and corrected it by measurement.
+
+The "~15 uploads" figure everyone quotes is **not a measured threshold** —
+upstream states it was taken on one device with n unrecorded and that
+whether the firmware bounds a file count or a byte total is unestablished.
+Treat it as a bounded unknown, not a budget.
 
 ## Architecture
 All field elements are **little-endian** (byte 0 = LSB). This matches 6502 carry propagation.
