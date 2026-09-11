@@ -133,7 +133,10 @@ figures — **several of which moved in this release**.
 
 ## Tarball
 
-- `c64-nist-curves-v0.15.0.tar.gz` — REPLACE_TARBALL_SIZE bytes
-- SHA256: `REPLACE_TARBALL_SHA`
-
-Verify with the shipped `.sha256` sidecar: `shasum -a 256 -c`.
+**Tarball:** `c64-nist-curves-v0.15.0.tar.gz`
+**Checksum:** published as the `.sha256` release asset and in the GitHub Release
+body — deliberately **not** quoted here. These notes ship *inside* that
+tarball, so any hash they claimed about it would be computed over a document
+that does not yet contain the claim, and would be wrong the moment it was
+written (issue #147). Verify a download with the sidecar:
+`shasum -a 256 -c c64-nist-curves-v0.15.0.tar.gz.sha256`.
