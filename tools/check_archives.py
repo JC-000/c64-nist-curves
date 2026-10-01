@@ -3360,6 +3360,28 @@ FORBIDDEN_EXPORTS = {"sqtab_lo", "sqtab_hi", "LIB_SHARED_SQTAB_BASE"}
 FORBIDDEN_EXPORTS_RE = re.compile(r"^LIB_SHARED_(REU_MUL_|PRIMITIVES_)")
 
 
+# Consumer knobs for pass (3): the §8.1 base, the §8.2 bank and staging
+# pages, and one §2 ZP slot (through CONTRACT_ZP_DEFINES, as §6.2 routes it).
+# Values differ from every default and keep each knob's own asserts satisfied
+# (page-aligned, stage_hi = stage_lo + $100, bank < 31 and clear of the comb
+# bank, ZP slot clear of the default block).
+FORBIDDEN_KNOB_PASS = (
+    "CONTRACT_DEFINES=-D LIB_SHARED_SQTAB_BASE=0xA000"
+    " -D LIB_SHARED_REU_MUL_STAGE_LO=0x7000 -D LIB_SHARED_REU_MUL_STAGE_HI=0x7100"
+    " -D LIB_SHARED_REU_MUL_BANK=0x03",
+    "CONTRACT_ZP_DEFINES=-D fp_src1=0x50",
+)
+# Exported symbol -> value the knob pass must have produced. Every archive
+# member exporting the symbol must carry the knob value, and at least one must
+# exist; otherwise the knob never reached the build.
+FORBIDDEN_KNOB_FLIPS = {
+    "LIB_NISTCURVES_SHARED_SQTAB_BASE": 0xA000,
+    "nistcurves_mul_dma_lo": 0x7000,
+    "LIB_NISTCURVES_SHARED_REU_MUL_BANK": 0x03,
+    "fp_src1": 0x50,
+}
+
+
 def forbidden(names):
     return {n for n in names if n in FORBIDDEN_EXPORTS
             or FORBIDDEN_EXPORTS_RE.match(n)}
@@ -3375,7 +3397,17 @@ def forbidden_export_check(failures, archives):
         no source sweep reproduces unless it reads the Makefile right;
     (2) every shipped object arm re-assembled from source both ungated and
         under LIB_NO_BARE_EXPORTS -- "forbidden" means no configuration, and
-        the gated build is one no archive ships, so (1) cannot see it.
+        the gated build is one no archive ships, so (1) cannot see it;
+    (3) every archive rebuilt by the REAL Makefile, in a throwaway BUILD_DIR,
+        with perturbed consumer knobs (FORBIDDEN_KNOB_PASS). Review mutant sA
+        wrapped `.export sqtab_lo, sqtab_hi` in
+        `.if LIB_SHARED_SQTAB_BASE <> $9c00`. That is invisible to (1) and
+        (2), which only ever assemble at the default knob values. Driving
+        make, not ca65 directly, keeps the arms Makefile-derived: make decides
+        which TU sees CONTRACT_DEFINES and which also sees
+        CONTRACT_ZP_DEFINES, exactly as for a consumer. Each knob must be seen
+        to have reached the artifact (FORBIDDEN_KNOB_FLIPS) -- a pass whose
+        knobs silently missed the build would re-test the defaults.
     Every dump must be readable (od65_export_names is None/COUNT_MISMATCH on
     an untrustworthy dump), and an empty population fails: an absence
     assertion over nothing is the empty-population shape."""
@@ -3435,21 +3467,70 @@ def forbidden_export_check(failures, archives):
                 bad = forbidden(ex)
                 if bad:
                     hits.append(f"{label} from src/{src}.s exports {sorted(bad)}")
+        # (3) perturbed-knob rebuild through the real Makefile.
+        kb = td / "knobs"
+        kb.mkdir()
+        targets = [str(kb / "lib" / a) for a in sorted(archives)]
+        rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={kb}",
+                      *FORBIDDEN_KNOB_PASS, *targets])
+        nknob, seen = 0, {k: [] for k in FORBIDDEN_KNOB_FLIPS}
+        if rc:
+            failures.append("forbidden exports: knob-pass build failed: "
+                            + out.strip()[-400:])
+            print("  FORBID FAIL: perturbed-knob build failed")
+        else:
+            for a in sorted(archives):
+                apath = kb / "lib" / a
+                rc, out = sh(["ar65", "t", str(apath)])
+                names = [ln.strip() for ln in out.splitlines()
+                         if ln.strip().endswith(".o")]
+                xdir = td / f"kx_{apath.stem}"
+                xdir.mkdir()
+                if rc or not names or subprocess.run(
+                        ["ar65", "x", str(apath), *names], cwd=xdir,
+                        capture_output=True).returncode:
+                    unreadable.append(f"{a} (knob pass)")
+                    continue
+                for mem in names:
+                    ex = od65_export_names(xdir / mem)
+                    if ex is None or ex is COUNT_MISMATCH:
+                        unreadable.append(f"{a}:{mem} (knob pass)")
+                        continue
+                    nknob += 1
+                    note_examined(1, "knob-pass member")
+                    bad = forbidden(ex)
+                    if bad:
+                        hits.append(f"{a}:{mem} [knob pass] exports {sorted(bad)}")
+                    for sym in FORBIDDEN_KNOB_FLIPS:
+                        if sym in ex:
+                            seen[sym].append((f"{a}:{mem}",
+                                              od65_value([xdir / mem], sym)))
+            for sym, want in FORBIDDEN_KNOB_FLIPS.items():
+                wrong = [(w, v) for w, v in seen[sym] if v != want]
+                if not seen[sym] or wrong:
+                    failures.append(
+                        f"forbidden exports: knob for {sym} did not reach the "
+                        f"knob-pass artifacts (want ${want:04X}; "
+                        f"{'no member exports it' if not seen[sym] else wrong[:3]}) "
+                        "-- the pass would re-test default values")
+                    print(f"  FORBID FAIL: knob for {sym} did not flip the artifact")
     if unreadable:
         failures.append(f"forbidden exports: unreadable {unreadable} -- an "
                         "unread dump is not a clean one")
         print(f"  FORBID FAIL: unreadable {unreadable}")
-    if members == 0 or nsrc == 0:
+    if members == 0 or nsrc == 0 or nknob == 0:
         failures.append(f"forbidden exports: examined {members} archive "
-                        f"members and {nsrc} source arms -- vacuous")
+                        f"members, {nsrc} source arms and {nknob} knob-pass "
+                        "members -- vacuous")
         print("  FORBID FAIL: empty population")
     for h in hits:
         failures.append(f"forbidden exports: {h} (SPEC §8.0/§8.1/§8.2 MUST NOT)")
         print(f"  FORBID FAIL: {h}")
-    if not hits and not unreadable and members and nsrc:
+    if not hits and not unreadable and members and nsrc and nknob:
         print(f"  forbidden exports OK ({members} archive members across "
               f"{len(built)} archives + {nsrc} source arms, ungated and "
-              "gated: none exports a §8 forbidden name)")
+              f"gated + {nknob} members rebuilt with perturbed knobs, each "
+              "knob seen in the artifact: none exports a §8 forbidden name)")
 
 
 ABI_BASELINE = REPO / "tools" / "abi_baseline.json"
