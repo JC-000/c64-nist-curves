@@ -22,13 +22,11 @@ allowlist below:
 
   (b) ld65 dummy-link smoke tests. A small table of supported entry points
       per archive is assembled with ca65 and linked against the built
-      archive; each must link clean. (There used to be a "documented-broken,
-      must fail inside the allowlist" row kind as well. Issues #61/#63 closed
-      the last such gap, every row became expect-clean, and the failure-side
-      branches sat unreachable until issue #167 removed them. A deliberately
-      ABSENT entry point -- e.g. reu_mul_init in the onchip archives -- is
-      pinned by MUST_NOT_EXPORT and by the gated-link leg's `ar65 t` member
-      reconciliation, not here.)
+      archive. A supported entry point must link clean; a documented consumer
+      gap (an entry point the archive deliberately does not provide, e.g.
+      reu_mul_init in the onchip archives) must fail on unresolved symbols
+      that all appear in CONSUMER_GAPS -- a table separate from the closure
+      allowlist since issue #167, which is what made such a row passable.
 
 The closure sweep is two-directional, which is what makes it a ratchet rather
 than a one-way smoke test: reality drifting looser OR tighter than the
@@ -484,102 +482,149 @@ for _a in MUST_EXPORT:
 MUST_NOT_EXPORT["nistcurves-app-owned.a"] = (
     MUST_NOT_EXPORT["nistcurves-app-owned.a"] | CT_MUL_PROVIDER_SYMS)
 
-# --- Dummy-link smoke tests: (label, [import symbols]) -----------------------
-# Every row is documented as linkable and must link clean against the archive
-# alone. Rows used to carry an expect_link flag whose False side meant
-# "documented broken, must fail inside KNOWN_EXTERNAL"; after #61/#63 all 36
-# rows were True and the three False-side failure branches were unreachable,
-# which overstated coverage (issue #167). No documented-broken entry point
-# exists to give them a row: the one API.md names -- reu_mul_init being
-# "deliberately unlinkable" from the onchip archives -- is pinned by
-# MUST_NOT_EXPORT, and an archive that grew the member anyway is caught by
-# gated_link_check's `ar65 t` reconciliation before any smoke row could see
-# it. Do not re-add the flag without a row that only it can catch.
+# --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
+# expect_link True  -> documented as linkable, must link clean.
+# expect_link False -> documented as NOT provided by this archive: the link
+#                      must fail on unresolved symbols, every one of them
+#                      listed in CONSUMER_GAPS[archive] (below).
+# Every archive the Makefile builds must have an entry (issue #167: the
+# app-owned archive had none and was silently skipped). Until #167 all 36
+# rows were True and the False branches were unreachable, because a False
+# row's unresolved set had to sit inside KNOWN_EXTERNAL -- the closure
+# table -- which made one unpassable; CONSUMER_GAPS decouples them.
 SMOKE = {
     "nistcurves.a": [
-        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"]),
-        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"]),
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
-        ("packaged ecdsa_verify_with_message_384", ["ecdsa_verify_with_message_384"]),
+        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
+        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("packaged ecdsa_verify_with_message_384", ["ecdsa_verify_with_message_384"], True),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-p256-verify.a": [
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
-        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"]),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
+        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"], True),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-p384-verify.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"]),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
+          "fp_mod_inv_384", "fp_mod_mul_384"], True),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-p384-sha384.a": [
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
     ],
     "nistcurves-p384-curve.a": [
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"]),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
+          "fp_mod_inv_384", "fp_mod_mul_384"], True),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
         ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
-         ["ecdsa_verify_with_message_384"]),
+         ["ecdsa_verify_with_message_384"], True),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-onchip.a": [
-        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"]),
-        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"]),
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
+        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
+        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
         ("packaged ecdsa_verify_with_message_384",
-         ["ecdsa_verify_with_message_384"]),
+         ["ecdsa_verify_with_message_384"], True),
     ],
     "nistcurves-p256-verify-onchip.a": [
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
-        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"]),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
+        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"], True),
     ],
     "nistcurves-p384-verify-onchip.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"]),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
+          "fp_mod_inv_384", "fp_mod_mul_384"], True),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
     ],
     "nistcurves-p384-curve-onchip.a": [
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"]),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
+          "fp_mod_inv_384", "fp_mod_mul_384"], True),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
         ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
-         ["ecdsa_verify_with_message_384"]),
+         ["ecdsa_verify_with_message_384"], True),
     ],
     # P-256 comb archives (issue #117): the comb-fast packaged verifier and
     # the fixed-base machinery it needs must both link -- this is the whole
     # point of the target. The DMA arm also carries the §8.2 boot provider.
     "nistcurves-p256-comb.a": [
-        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"]),
+        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"], True),
         ("fixed-base comb machinery",
-         ["ec_scalar_mul", "ec_precompute_256"]),
+         ["ec_scalar_mul", "ec_precompute_256"], True),
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
     ],
     "nistcurves-p256-comb-onchip.a": [
-        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"]),
+        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"], True),
         ("fixed-base comb machinery",
-         ["ec_scalar_mul", "ec_precompute_256"]),
+         ["ec_scalar_mul", "ec_precompute_256"], True),
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
+    ],
+    # SPEC §6.3 APP_OWNED: the field/point/ECDSA/SHA surface links from the
+    # archive alone; every §8.x primitive is the consumer's (rows below).
+    # This archive had NO rows until issue #167, and SMOKE.get() yielded
+    # nothing for it without complaint.
+    "nistcurves-app-owned.a": [
+        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
+        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("packaged ecdsa_verify_with_message_384",
+         ["ecdsa_verify_with_message_384"], True),
+        ("fixed-base comb machinery", ["ec_scalar_mul", "ec_precompute_256"], True),
     ],
 }
+
+# --- Documented CONSUMER gaps (issue #167) -----------------------------------
+# Entry points a consumer may NOT resolve from an archive, by design. This is
+# deliberately separate from KNOWN_EXTERNAL: that table lists names the
+# archive's own members import and leave unresolved (a closure property),
+# while these are names the archive does not provide at all. Coupling the two
+# made an expect_link=False row unpassable -- its unresolved set had to sit
+# inside KNOWN_EXTERNAL, which the closure leg then failed as stale.
+# Ratcheted both ways in archive_contract_check: a False row may only fail on
+# names listed here, and every name listed here must be observed unresolved
+# by some False row of that archive.
+_ONCHIP_ARCHIVES = ["nistcurves-onchip.a", "nistcurves-p256-verify-onchip.a",
+                    "nistcurves-p384-verify-onchip.a",
+                    "nistcurves-p384-curve-onchip.a",
+                    "nistcurves-p256-comb-onchip.a"]
+_REU_MUL_SURFACE = ["reu_mul_init", "reu_mul_tables_init", "reu_fetch_mul_row"]
+_FIELD_INIT_SURFACE = ["sqtab_init", "mul_tables_init", "ct_mul_8x8"]
+CONSUMER_GAPS = {a: set(_REU_MUL_SURFACE) for a in _ONCHIP_ARCHIVES}
+CONSUMER_GAPS["nistcurves-p384-sha384.a"] = set(_REU_MUL_SURFACE + _FIELD_INIT_SURFACE)
+CONSUMER_GAPS["nistcurves-app-owned.a"] = set(_REU_MUL_SURFACE + _FIELD_INIT_SURFACE)
+for _a in _ONCHIP_ARCHIVES:
+    SMOKE[_a] = SMOKE[_a] + [
+        # API.md §8.4.2: "onchip consumers need only sqtab_init".
+        ("onchip boot init: sqtab_init only", ["sqtab_init"], True),
+        # API.md §8.4.2: "reu_mul_init is deliberately unlinkable from them";
+        # mul_8x8.s drops the fetch export under FP_ONCHIP_MUL too.
+        ("§8.2 provider + fetch deliberately unlinkable", _REU_MUL_SURFACE, False),
+    ]
+SMOKE["nistcurves-p384-sha384.a"] = SMOKE["nistcurves-p384-sha384.a"] + [
+    ("no field layer: §8.1-§8.3 entries unlinkable",
+     _REU_MUL_SURFACE + _FIELD_INIT_SURFACE, False),
+]
+SMOKE["nistcurves-app-owned.a"] = SMOKE["nistcurves-app-owned.a"] + [
+    ("every §8.x primitive deferred to the consumer (§6.3)",
+     _REU_MUL_SURFACE + _FIELD_INIT_SURFACE, False),
+]
 
 # Minimal ld65 config: ZP + one catch-all region, every LIB_NISTCURVES_*
 # segment optional so any archive subset places cleanly.
@@ -2409,6 +2454,7 @@ def gated_link_check(failures, archives):
     """
     import tempfile
     print("\n=== §6.5 gated LINK (every archive rebuilt under the gate) ===")
+    n_before = len(failures)
     arms = shipped_object_arms(archives)
     src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
     # HEADER_ARCHIVE_SWITCHES is a hand-maintained roster, and it is the
@@ -2695,10 +2741,14 @@ def gated_link_check(failures, archives):
             # archive's gated link here resolves closed -- app-owned
             # included, because in the DMA profile the `.import
             # poly_prod_lo/hi` is unreferenced and ca65 drops it. So the
-            # `beyond` branch below is an empty-population absence with no
-            # negative test. It is fail-closed, but `new_unres` is what
-            # actually carries this leg; do not read the allowlist as
-            # load-bearing.
+            # `beyond` branch below never fires on a correct tree; `new_unres`
+            # is what carries this leg day to day. Its negative test (issue
+            # #167): append `.import beyond_probe_167` + `jsr beyond_probe_167`
+            # to src/sha384.s -- unresolved with AND without the gate, so
+            # new_unres/stale stay empty -- and this leg reports
+            #   GATED LINK FAIL [nistcurves.a]: unresolved beyond allowlist:
+            #   ['beyond_probe_167']
+            # for each of the six archives shipping sha384.o.
             new_unres = sorted(gunres - uunres)
             if new_unres:
                 failures.append(
@@ -2731,7 +2781,10 @@ def gated_link_check(failures, archives):
                       f"externals reported:\n{glout.strip()}")
                 continue
             done.append((aname, len(ubare)))
-    if len(done) == len(HEADER_ARCHIVE_SWITCHES):
+    # Issue #167: the success line used to print whenever all twelve gated
+    # links completed, even directly beneath twelve "archive missing" /
+    # member-reconciliation failures from this same leg.
+    if len(failures) == n_before and len(done) == len(HEADER_ARCHIVE_SWITCHES):
         total = sum(n for _, n in done)
         print(f"  gated link OK ({len(done)} archives rebuilt with "
               f"-D LIB_NO_BARE_EXPORTS=1, {total} bare names suppressed across "
@@ -3640,7 +3693,30 @@ def defines_staleness_check(failures):
     # -- §6.2's named silent failure). A leg that proves 2 of 12 recipes is
     # evidence about 2 of 12 recipes.
     print("\n=== §6.2 ZP override reaches slot AND alias together (issue #154) ===")
-    for arm, (alias_obj, bare) in sorted(ZP_ALIAS_ARMS.items()):
+    # Population from the Makefile, not from the table under test (issue
+    # #167): iterating ZP_ALIAS_ARMS meant an arm missing from it was simply
+    # never probed and the leg still printed its closing line.
+    shipped = sorted(obj for obj, rec in shipped_object_arms(
+        parse_makefile_archives()).items() if rec[0] == "zp_config")
+    if not shipped:
+        failures.append("zp-override: no shipped zp_config arm parsed from the "
+                        "Makefile -- the probe population is empty")
+        print("  OVERRIDE FAIL: no shipped zp_config arm found")
+    unprobed = sorted(set(shipped) - set(ZP_ALIAS_ARMS))
+    phantom = sorted(set(ZP_ALIAS_ARMS) - set(shipped))
+    if unprobed:
+        failures.append(f"zp-override: shipped arms {unprobed} are not in "
+                        "ZP_ALIAS_ARMS, so their override wiring is unprobed")
+        print(f"  OVERRIDE FAIL: shipped zp_config arms with no alias roster "
+              f"entry, NOT probed: {unprobed}")
+    if phantom:
+        failures.append(f"zp-override: ZP_ALIAS_ARMS names {phantom}, which no "
+                        "archive ships")
+        print(f"  OVERRIDE FAIL: roster arms no archive ships: {phantom}")
+    for arm in shipped:
+        if arm not in ZP_ALIAS_ARMS:
+            continue
+        alias_obj, bare = ZP_ALIAS_ARMS[arm]
         if "zp_ptr2" not in bare:
             print(f"  override SKIP [{arm}]: arm exports no bare zp_ptr2")
             continue
@@ -3846,15 +3922,43 @@ def archive_contract_check(failures, archives, name):
             print(f"  footprint OK (RESIDENT+COLD {declared} >= measured "
                   f"{measured}, +{slack} B / {pct:.1f}%)")
 
-    # (b) dummy-link smoke tests -- every row must link clean (issue #167
-    # removed the unreachable documented-broken branches; see SMOKE).
-    for label, imps in SMOKE.get(name, []):
+    # (b) dummy-link smoke tests (see SMOKE / CONSUMER_GAPS).
+    if name not in SMOKE:
+        failures.append(f"{name}: no SMOKE rows -- this archive's entry points "
+                        "are never link-tested")
+        print("  LINK FAIL: no SMOKE entry for this archive")
+    gaps = CONSUMER_GAPS.get(name, set())
+    gap_seen = set()
+    for label, imps, expect_link in SMOKE.get(name, []):
         ok, unres, raw = link_test(archive_path, imps)
-        if ok:
-            print(f"  link OK   [{label}]")
+        if expect_link:
+            if ok:
+                print(f"  link OK   [{label}]")
+            else:
+                failures.append(f"{name}: '{label}' should link but failed: {sorted(unres)}")
+                print(f"  LINK FAIL [{label}] expected clean, got unresolved {sorted(unres)}")
         else:
-            failures.append(f"{name}: '{label}' should link but failed: {sorted(unres)}")
-            print(f"  LINK FAIL [{label}] expected clean, got unresolved {sorted(unres)}")
+            if ok:
+                failures.append(f"{name}: '{label}' should FAIL to link (documented "
+                                "consumer gap) but linked clean -- update docs and "
+                                "CONSUMER_GAPS")
+                print(f"  LINK FAIL [{label}] expected documented-unlinkable, but it linked")
+            elif not unres:
+                failures.append(f"{name}: '{label}' failed for a non-symbol reason:\n{raw}")
+                print(f"  LINK FAIL [{label}] failed but not on unresolved symbols")
+            elif not unres <= gaps:
+                extra = sorted(unres - gaps)
+                failures.append(f"{name}: '{label}' unresolved beyond CONSUMER_GAPS: {extra}")
+                print(f"  LINK FAIL [{label}] unresolved beyond CONSUMER_GAPS: {extra}")
+            else:
+                gap_seen |= unres
+                print(f"  link gap OK [{label}] unresolved (documented): {sorted(unres)}")
+    stale_gaps = sorted(gaps - gap_seen)
+    if stale_gaps:
+        failures.append(f"{name}: CONSUMER_GAPS lists {stale_gaps} but no "
+                        "expect_link=False row observed them unresolved -- "
+                        "add a row, or shrink the table")
+        print(f"  LINK FAIL: CONSUMER_GAPS entries never observed unresolved: {stale_gaps}")
     print()
 
 
@@ -3875,6 +3979,34 @@ def cfg_placement_check(failures):
 
 
 def main():
+    """Run the ratchet without leaving build/ different from how it found it.
+
+    The knob-staleness and §6.2 override legs drive real `make` invocations
+    with changed CONTRACT_DEFINES, and the Makefile's knob stamp then wipes
+    every object, archive and PRG (that is the behaviour under test). A
+    passing run used to leave build/ with 2 objects and build/lib with no
+    archive at all, so a second, direct `python3 tools/check_archives.py`
+    failed "archive not built" everywhere and `make` had to rebuild from
+    scratch. build/ is snapshotted (contents and mtimes) before any leg runs
+    and restored afterwards, whatever the legs did or raised."""
+    import shutil
+    snap_root = Path(tempfile.mkdtemp(prefix="check_archives_build_"))
+    snap = snap_root / "build"
+    had_build = BUILD.exists()
+    if had_build:
+        shutil.copytree(BUILD, snap, symlinks=True, copy_function=shutil.copy2)
+    try:
+        return _run_all_legs()
+    finally:
+        if had_build:
+            if BUILD.exists():
+                shutil.rmtree(BUILD)
+            shutil.copytree(snap, BUILD, symlinks=True,
+                            copy_function=shutil.copy2)
+        shutil.rmtree(snap_root, ignore_errors=True)
+
+
+def _run_all_legs():
     archives = parse_makefile_archives()
     failures = []
 
