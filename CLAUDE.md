@@ -237,7 +237,13 @@ old, and non-build goals never run it. **Do not move the wipe or the stamp
 write back to parse time, and do not try to detect -n/-q/-t from MAKEFLAGS or
 MFLAGS.** Every such classifier was defeated by another route: env MAKEFLAGS
 under `-e`, a command-line `MAKEFLAGS=`, or `MAKEFLAGS += -t` inside a
-makefile. Each one shipped a 0-byte archive (issue #180). `make clean` removes
+makefile. Each one shipped a 0-byte archive (issue #180). The forced set is
+derived from every `*_OBJS` / `*_OBJECTS` variable plus `LIB_ARCHIVES` and the
+four PRGs, in a block at the **end** of the Makefile. **A new object list must
+match that naming and be defined above the block, and a new archive or PRG
+must join the forced list.** The prerequisite must be normal, not order-only;
+otherwise the archive or PRG is not relinked (#144). `force-direct` in
+`make check-inc-deps` fails on any of these. `make clean` removes
 the variant PRGs, labels and `.d` files but keeps the knob stamp on purpose.
 **Hash note:** `od65 --dump-all` prints no segment bytes, so an od65-based
 hash of an archive cannot see a code-byte change; compare raw member bytes
