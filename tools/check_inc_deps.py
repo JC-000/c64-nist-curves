@@ -83,6 +83,12 @@ Legs
 5g. partial-failure -- a build that fails part-way (one TU rejects the
                    knob) leaves no old-knob object beside the new stamp,
                    and a retry fails again instead of "Nothing to be done".
+5i. force-coverage -- for every object of every public target, every
+                   archive and every PRG, `make -n <t>` with changed knobs
+                   prints the knob wipe (deterministic; names the output).
+5j. wipe-order  -- with build/ read-only the wipe fails; the retry with the
+                   same knob must reassemble everything and the archive must
+                   lack bare LIB_VERSION_MAJOR -- pins wipe BEFORE stamp.
 5h. artifact-flip -- with the PRG future-dated (a same-second reassembly),
                    a knob still flips the PRG and reverting restores it
                    (issue #144).
@@ -631,6 +637,79 @@ def run(work: Path) -> int:
              "build was recorded as done")
     else:
         print("[partial-failure] PASS: failed build left no old-knob object; retry fails again")
+
+    # ---- leg 5i: every knob-dependent output is forced (deterministic) ---
+    # For every object of every public target, every archive and every PRG,
+    # `make -n <target>` with changed knobs must print the knob wipe. An
+    # output left off the KNOB_FORCE list (or an object list whose variable
+    # name stops matching *_OBJS / *_OBJECTS) is named here exactly, instead
+    # of surfacing only as a -j4 race.
+    wipe = f"rm -f {BUILD}/*.o "
+    full = make(work, *PUBLIC_TARGETS)
+    if full.returncode != 0:
+        fail("force-coverage", f"full build failed: {full.stderr.strip()[-300:]}")
+    targets = sorted(need_all) + [str(a.relative_to(work)) for a in sorted(
+        (bdir / "lib").glob("*.a"))] + [str(p.relative_to(work)) for p in sorted(bdir.glob("*.prg"))]
+    if len([t for t in targets if t.endswith(".a")]) != 12 or \
+            len([t for t in targets if t.endswith(".prg")]) != 4:
+        fail("force-coverage", f"expected 12 archives + 4 PRGs present, found "
+             f"{[t for t in targets if not t.endswith('.o')]}")
+    unforced = [t for t in targets
+                if not any(ln.startswith(wipe) for ln in
+                           make(work, "-n", t, "CONTRACT_DEFINES=-D DET=1").stdout.splitlines())]
+    if unforced:
+        fail("force-coverage", f"{len(unforced)}/{len(targets)} output(s) not forced by a knob "
+             f"change (`make -n <t>` prints no wipe): {', '.join(unforced)}")
+    else:
+        print(f"[force-coverage] PASS: all {len(targets)} output(s) (objects, archives, "
+              f"PRGs) are forced by a knob change")
+
+    # ---- leg 5j: wipe BEFORE stamp write -- a failed wipe cannot strand ---
+    # If the stamp were written before the delete, a delete that fails
+    # (read-only build/) would leave stamp == new beside old-knob objects,
+    # and the retry would relink them silently. Deterministic: make build/
+    # read-only so the rm fails; the stamp FILE stays writable, so only the
+    # recipe's order decides. The retry must reassemble everything and the
+    # archive's export surface must match the knob (LIB_NO_BARE_EXPORTS=1:
+    # no bare LIB_VERSION_MAJOR).
+    def bare_exports(arc: Path) -> int:
+        """Count of bare LIB_VERSION_MAJOR exports in arc's lib_version.o."""
+        if not arc.is_file():
+            return -1
+        with tempfile.TemporaryDirectory() as xd:
+            subprocess.run(["ar65", "x", str(arc.resolve()), "lib_version.o"], cwd=xd,
+                           capture_output=True)
+            dump = subprocess.run(["od65", "--dump-exports", "lib_version.o"], cwd=xd,
+                                  capture_output=True, text=True).stdout
+        return len(re.findall(r'Name:\s*"LIB_VERSION_MAJOR"', dump))
+
+    rb = make(work, "lib")
+    archive = goal_archive["lib"]
+    bare0 = bare_exports(archive)
+    knob = "CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1"
+    mode = bdir.stat().st_mode
+    try:
+        os.chmod(bdir, mode & ~0o222)
+        r1 = make(work, "lib", knob)
+    finally:
+        os.chmod(bdir, mode)
+    before = snapshot(bdir)
+    r2 = make(work, "lib", knob)
+    got = reassembled(before, "lib")
+    missing = sorted(need["lib"] - got)
+    bare = bare_exports(archive)
+    if rb.returncode != 0 or r1.returncode == 0 or bare0 != 1:
+        fail("wipe-order", f"setup: base build exit {rb.returncode} with {bare0} bare "
+             f"LIB_VERSION_MAJOR export(s) (want 1: the probe's positive control), "
+             f"read-only-build/ run exit {r1.returncode} (expected the wipe to fail)")
+    elif r2.returncode != 0 or missing or bare != 0:
+        fail("wipe-order", f"after a failed wipe, the retry with the same knob: exit "
+             f"{r2.returncode}, {len(missing)}/{len(need['lib'])} object(s) not "
+             f"reassembled (e.g. {missing[:3]}), bare LIB_VERSION_MAJOR exports in "
+             f"nistcurves.a = {bare} (want 0), stamp {stamp_text()!r}")
+    else:
+        print(f"[wipe-order] PASS: failed wipe -> retry reassembled {len(got)} object(s); "
+              f"archive has no bare LIB_VERSION_MAJOR")
 
     # ---- leg 5h: the LINKED artifact flips (issue #144) -------------------
     # The PRG's mtime is pushed into the future before each knob change, as
