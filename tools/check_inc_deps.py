@@ -86,6 +86,11 @@ Legs
 5i. force-coverage -- for every object of every public target, every
                    archive and every PRG, `make -n <t>` with changed knobs
                    prints the knob wipe (deterministic; names the output).
+   force-direct -- the same 90 outputs, read from make's database
+                   (`make -p -q check-release-state`): each must be found,
+                   and each must list knobs-changed as a DIRECT
+                   prerequisite (archives/PRGs pass the -n rows only
+                   transitively, yet the direct edge is load-bearing).
 5j. wipe-order  -- with build/ read-only the wipe fails; the retry with the
                    same knob must reassemble everything and the archive must
                    lack bare LIB_VERSION_MAJOR -- pins wipe BEFORE stamp.
@@ -663,6 +668,36 @@ def run(work: Path) -> int:
     else:
         print(f"[force-coverage] PASS: all {len(targets)} output(s) (objects, archives, "
               f"PRGs) are forced by a knob change")
+
+    # The -n rows above pass TRANSITIVELY for archives and PRGs (their member
+    # objects are forced), yet the DIRECT prerequisite is load-bearing: 3.81
+    # caches an artifact's mtime before the wipe runs, so an artifact without
+    # it is neither relinked nor present after a knob change (exit 0). Read
+    # make's database (a non-building goal under -q: nothing runs) and require
+    # `knobs-changed` among each target's own prerequisites.
+    before_db = snapshot(bdir)
+    db = make(work, "-p", "-q", "check-release-state", "CONTRACT_DEFINES=-D DET=1").stdout
+    if snapshot(bdir) != before_db:
+        fail("force-direct", "`make -p -q` mutated build/")
+    files = db.split("\n# Files\n", 1)[-1].split("\n# files hash-table stats", 1)[0]
+    direct: dict[str, set[str]] = {}
+    for ln in files.splitlines():
+        m = re.match(r"^([^#\s:][^:=]*?):{1,2}(?!=)\s*(.*)$", ln)
+        if m:
+            normal = m.group(2).split("|", 1)[0].split()
+            for tgt in m.group(1).split():
+                direct.setdefault(tgt, set()).update(normal)
+    absent = [t for t in targets if t not in direct]
+    no_direct = [t for t in targets if t in direct and "knobs-changed" not in direct[t]]
+    if absent:
+        fail("force-direct", f"{len(absent)}/{len(targets)} target(s) not found in make's "
+             f"database -- the parse examined nothing for them: {', '.join(absent[:6])}")
+    if no_direct:
+        fail("force-direct", f"{len(no_direct)}/{len(targets)} output(s) lack a DIRECT "
+             f"knobs-changed prerequisite: {', '.join(no_direct)}")
+    if not absent and not no_direct:
+        print(f"[force-direct] PASS: all {len(targets)} output(s) found in make's database, "
+              f"each with knobs-changed as a direct prerequisite")
 
     # ---- leg 5j: wipe BEFORE stamp write -- a failed wipe cannot strand ---
     # If the stamp were written before the delete, a delete that fails
