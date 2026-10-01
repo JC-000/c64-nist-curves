@@ -69,9 +69,22 @@ Three later releases matter here:
   is **5**: 2 → 3 when issue #148 gave `ec_scalar_mul[_384]` a defined carry
   where none was documented, 3 → 4 when issue #153 made `reu_fetch_mul_row`
   honour `A`, 4 → 5 when v0.16.0 removed the `sqtab_lo`/`sqtab_hi` exports
-  (`src/lib_version.s` carries each rationale). Bump the counter in the commit that causes it: `check-archives`
-  pins it against the source, so a deferred bump validates a stale value against
-  itself and passes.
+  (`src/lib_version.s` carries each rationale). Bump the counter in the commit that causes it. Until the v0.16.0 review this
+  file claimed `check-archives` "pins it against the source", and nothing did:
+  no leg read the counter's value. Two legs now do.
+  - `abi_surface_check` compares the built archives with
+    `tools/abi_baseline.json`, the last **tag's** exported surface and ABI.
+    It fails a removed name without a counter move, a decrease, or a step
+    with no `; k -> k+1` reason line in `src/lib_version.s`.
+  - `abi_doc_binding_check` makes every documented
+    `.assert LIB_NISTCURVES_ABI_VERSION = N, lderror` in API.md,
+    `src/nistcurves.inc` and `src/lib_version.s` equal the built value.
+
+  **Release checklist:** after tagging, run
+  `python3 tools/gen_abi_baseline.py <new-tag>` and commit the result. The
+  generator builds the tag in a throwaway worktree; it does not read this
+  tree. A stale baseline compares against an older release, which is still
+  sound but looser.
 - **1.1.1** — withdrew the §6.1 requirement that `make lib` also ship a `.inc`
   header and an example `.cfg`. We ship both anyway (`src/nistcurves.inc`,
   `cfg/nistcurves-example.cfg`) because consumers were otherwise transcribing

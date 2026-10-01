@@ -3385,6 +3385,180 @@ def forbidden_export_check(failures, archives):
               "gated: none exports a §8 forbidden name)")
 
 
+ABI_BASELINE = REPO / "tools" / "abi_baseline.json"
+ABI_DOC_FILES = ("API.md", "src/nistcurves.inc", "src/lib_version.s")
+_ABI_DOC_RE = re.compile(r"LIB_NISTCURVES_ABI_VERSION\s*=\s*(\d+)\s*,\s*lderror")
+
+
+def built_archive_exports(apath, td):
+    """Union of every member's exports for one BUILT archive, or None if any
+    member's dump is untrustworthy (an unread member is not an empty one)."""
+    rc, out = sh(["ar65", "t", str(apath)])
+    names = [ln.strip() for ln in out.splitlines() if ln.strip().endswith(".o")]
+    if rc or not names:
+        return None
+    xdir = Path(td) / f"x_{apath.stem}"
+    xdir.mkdir(exist_ok=True)
+    p = subprocess.run(["ar65", "x", str(apath), *names], cwd=xdir,
+                       capture_output=True, text=True)
+    if p.returncode:
+        return None
+    exp = set()
+    for mem in names:
+        ex = od65_export_names(xdir / mem)
+        if ex is None or ex is COUNT_MISMATCH:
+            return None
+        exp |= ex
+    return exp
+
+
+def built_abi_version():
+    """LIB_NISTCURVES_ABI_VERSION as the BUILT lib_version.o carries it."""
+    return od65_value([BUILD / "lib_version.o"], "LIB_NISTCURVES_ABI_VERSION")
+
+
+@leg
+def abi_surface_check(failures):
+    """SPEC §1/§7: a name the last RELEASE exported may disappear only if
+    LIB_NISTCURVES_ABI_VERSION has moved past that release's value.
+
+    Nothing tied the counter to the surface before this leg. CLAUDE.md said
+    check-archives "pins the counter against the source", but no leg read the
+    counter's VALUE: version_identity_check compares MAJOR/MINOR/PATCH only,
+    and the manifest roster checks the ABI equate's presence. Review mutant
+    sC (v0.16.0) kept the sqtab removal and set the counter back to 4, and
+    check-archives passed.
+
+    The comparand is tools/abi_baseline.json: the per-archive exports and ABI
+    value of the last TAG, built from that tag by tools/gen_abi_baseline.py.
+    Refresh it right after tagging each release. A baseline restated from this
+    tree's sources would be self-comparison.
+
+    Rules:
+      * a baseline name no longer exported by the same archive, or a baseline
+        archive no longer built, needs ABI > baseline ABI;
+      * the ABI never goes down;
+      * every step k -> k+1 between the two values needs a stated reason: a
+        `; k -> k+1` comment line in src/lib_version.s. An ABI that moved
+        with no removal is allowed (§7 moves it for behaviour too), but not
+        silently.
+    Scope: the DEFAULT configuration, the one the baseline records. A missing,
+    unparseable or empty baseline fails; an empty population proves
+    nothing."""
+    import json
+    print("\n=== §1/§7 ABI counter vs the last release's exported surface ===")
+    try:
+        base = json.loads(ABI_BASELINE.read_text())
+        base_abi = int(base["abi"])
+        rows = base["archives"]
+        tag = base.get("tag", "?")
+    except FileNotFoundError:
+        failures.append(f"abi surface: {ABI_BASELINE.relative_to(REPO)} is "
+                        "missing -- nothing to compare the surface against")
+        print("  ABI FAIL: baseline missing")
+        return
+    except (ValueError, KeyError, TypeError) as e:
+        failures.append(f"abi surface: baseline unreadable ({e!r})")
+        print(f"  ABI FAIL: baseline unreadable: {e!r}")
+        return
+    empty = sorted(a for a, v in rows.items() if not v) if isinstance(rows, dict) else ["?"]
+    if not isinstance(rows, dict) or not rows or empty:
+        failures.append(f"abi surface: baseline has no archives, or empty rows "
+                        f"{empty} -- an absence check over nothing is vacuous")
+        print("  ABI FAIL: baseline population empty")
+        return
+    cur_abi = built_abi_version()
+    if cur_abi is None:
+        failures.append("abi surface: LIB_NISTCURVES_ABI_VERSION not readable "
+                        "from build/lib_version.o")
+        print("  ABI FAIL: built ABI unreadable")
+        return
+    removed, unread = {}, []
+    with tempfile.TemporaryDirectory() as td:
+        for aname, names in sorted(rows.items()):
+            apath = LIBDIR / aname
+            note_examined(len(names), "baseline export")
+            if not apath.exists():
+                removed[aname] = sorted(names)        # the whole archive went
+                continue
+            cur = built_archive_exports(apath, td)
+            if cur is None:
+                unread.append(aname)
+                continue
+            gone = sorted(set(names) - cur)
+            if gone:
+                removed[aname] = gone
+    if unread:
+        failures.append(f"abi surface: could not read {unread}")
+        print(f"  ABI FAIL: unreadable archives {unread}")
+    gone_names = sorted({n for v in removed.values() for n in v})
+    if cur_abi < base_abi:
+        failures.append(f"abi surface: ABI went DOWN, {base_abi} ({tag}) -> "
+                        f"{cur_abi}; the counter is monotonic")
+        print(f"  ABI FAIL: {base_abi} -> {cur_abi} is a decrease")
+    if gone_names and cur_abi <= base_abi:
+        failures.append(
+            f"abi surface: {len(gone_names)} name(s) {tag} exported are gone "
+            f"({gone_names[:8]}{' ...' if len(gone_names) > 8 else ''} from "
+            f"{sorted(removed)}) but LIB_NISTCURVES_ABI_VERSION is {cur_abi}, "
+            f"not above {tag}'s {base_abi} -- SPEC §1: a removed symbol moves "
+            "the counter")
+        print(f"  ABI FAIL: removal without a counter move ({base_abi} -> {cur_abi})")
+    if cur_abi > base_abi:
+        lv = (REPO / "src" / "lib_version.s").read_text()
+        missing = [f"{k} -> {k + 1}" for k in range(base_abi, cur_abi)
+                   if not re.search(rf"^;\s*{k}\s*->\s*{k + 1}\b", lv, re.M)]
+        if missing:
+            failures.append(f"abi surface: ABI {base_abi} -> {cur_abi} with no "
+                            f"stated reason for step(s) {missing} -- add a "
+                            "`; k -> k+1 (...)` line to src/lib_version.s")
+            print(f"  ABI FAIL: unexplained step(s) {missing}")
+    if not failures or not any(f.startswith("abi surface") for f in failures):
+        print(f"  abi surface OK ({len(rows)} archives, "
+              f"{sum(len(v) for v in rows.values())} {tag} export rows; "
+              f"{len(gone_names)} name(s) gone {gone_names}; ABI {base_abi} -> "
+              f"{cur_abi}, every step stated in src/lib_version.s)")
+
+
+@leg
+def abi_doc_binding_check(failures):
+    """The documented consumer gate must equal the built counter.
+
+    API.md, src/nistcurves.inc and src/lib_version.s each show
+    `.assert LIB_NISTCURVES_ABI_VERSION = N, lderror, ...` for consumers to
+    copy. Under review mutant sC (counter set back to 4), check-docs still
+    passed with every snippet saying 5. A consumer copying the snippet then
+    fails to link against an archive that is otherwise fine, or worse, the
+    snippet lags a real bump and waves a breaking release through. Every
+    occurrence must equal the value in the BUILT lib_version.o, and each file
+    must carry at least one (population sentinel: an emptied file is not a
+    clean one)."""
+    print("\n=== documented ABI gate == built LIB_NISTCURVES_ABI_VERSION ===")
+    cur = built_abi_version()
+    if cur is None:
+        failures.append("abi docs: built ABI unreadable from build/lib_version.o")
+        print("  ABI DOC FAIL: built ABI unreadable")
+        return
+    bad = []
+    for rel in ABI_DOC_FILES:
+        text = (REPO / rel).read_text()
+        hits = [(text.count("\n", 0, m.start()) + 1, int(m.group(1)))
+                for m in _ABI_DOC_RE.finditer(text)]
+        note_examined(len(hits), "documented ABI gate")
+        if not hits:
+            failures.append(f"abi docs: {rel} shows no `.assert "
+                            "LIB_NISTCURVES_ABI_VERSION = N, lderror` gate -- "
+                            "nothing to bind")
+            print(f"  ABI DOC FAIL: {rel} has no gate snippet")
+        bad += [f"{rel}:{ln} says {v}" for ln, v in hits if v != cur]
+    for b in bad:
+        failures.append(f"abi docs: {b}, built lib_version.o says {cur}")
+        print(f"  ABI DOC FAIL: {b} (built: {cur})")
+    if not bad:
+        print(f"  abi docs OK (every documented gate in {list(ABI_DOC_FILES)} "
+              f"says {cur}, as built)")
+
+
 @leg
 def sibling_sqtab_collision_check(failures):
     """§6.1 + §8.1: the MANDATORY boot call must not drag a bare sqtab name in.
@@ -4508,6 +4682,8 @@ def _run_all_legs():
         ("§5 footprint basis", footprint_basis_check, (failures,)),
         ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
         ("§8 forbidden exports", forbidden_export_check, (failures, archives)),
+        ("§1/§7 ABI vs last release", abi_surface_check, (failures,)),
+        ("documented ABI gate", abi_doc_binding_check, (failures,)),
         ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
         ("od65 extraction canary", od65_extraction_canary, (failures,)),
         ("APP_OWNED buffer ownership", app_owned_buffer_ownership_check, (failures,)),

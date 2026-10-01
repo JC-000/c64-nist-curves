@@ -8,8 +8,8 @@
 ;   .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 ;   .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 ;
-;   .assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 9), lderror, "c64-nist-curves v0.9 or newer is required"
-;   .assert LIB_NISTCURVES_ABI_VERSION = 1, lderror, "c64-nist-curves ABI v1 expected; rebuild consumer"
+;   .assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 16), lderror, "c64-nist-curves v0.16 or newer is required"
+;   .assert LIB_NISTCURVES_ABI_VERSION = 5, lderror, "c64-nist-curves ABI v5 expected; rebuild consumer"
 ;
 ; Why `.assert`/`lderror` and not `.if`/`.error`: `.if` requires an
 ; assembly-time constant, but an `.import`ed symbol has no value until
