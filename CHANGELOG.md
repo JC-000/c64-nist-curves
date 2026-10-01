@@ -58,7 +58,10 @@ contract).
   (`make print-dry-classify`). The seam is honoured only when it is given
   on the command line and `print-dry-classify` is the sole goal. A value
   from the environment, or one given with a build goal, is ignored, so the
-  seam cannot turn a real build into a dry one or the reverse. Opt-in; not a prerequisite of `all`. All four
+  seam cannot turn a real build into a dry one or the reverse. When the
+  seam prints no classification at all, the check says so ("no
+  MAKE_DRY_RUN line printed") rather than reporting it as a REAL
+  classification. Opt-in; not a prerequisite of `all`. All four
   PRGs are sha256-identical before and after this change. All twelve
   archives have identical member bytes outside the Options/Files header
   sections, which hold an assembly datetime.

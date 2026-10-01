@@ -329,8 +329,13 @@ def run(work: Path) -> int:
             r = subprocess.run(["make", *extra, *flags, "print-dry-classify"], cwd=work,
                                env=clean_env(), capture_output=True, text=True)
             m = DRY_RE.search(r.stdout)
-            got = bool(m and m.group(1))
-            if not m or got != want:
+            if not m:
+                cls_bad += 1
+                fail("classifier", f"real `make {' '.join(extra + flags)}`: no MAKE_DRY_RUN "
+                     f"line printed -- the print-dry-classify seam is missing")
+                continue
+            got = bool(m.group(1))
+            if got != want:
                 cls_bad += 1
                 fail("classifier", f"real `make {' '.join(extra + flags)}` classified "
                      f"{'DRY' if got else 'REAL'} (line: {m.group(0) if m else None}), "
@@ -532,15 +537,21 @@ def run(work: Path) -> int:
 
     seam_bad = 0
     got = classify("print-dry-classify", env_extra={"MAKEFLAGS_UNDER_TEST": "n"})
-    if got is not False:
+    if got is None:
         seam_bad += 1
-        fail("seam-scope", f"env MAKEFLAGS_UNDER_TEST=n steered a plain `make` "
-             f"(classified {'DRY' if got else got})")
+        fail("seam-scope", "env MAKEFLAGS_UNDER_TEST=n on a plain `make`: no MAKE_DRY_RUN "
+             "line printed -- the print-dry-classify seam is missing")
+    elif got:
+        seam_bad += 1
+        fail("seam-scope", "env MAKEFLAGS_UNDER_TEST=n steered a plain `make` (classified DRY)")
     got = classify("-n", "print-dry-classify", env_extra={"MAKEFLAGS_UNDER_TEST": ""})
-    if got is not True:
+    if got is None:
         seam_bad += 1
-        fail("seam-scope", f"empty env MAKEFLAGS_UNDER_TEST steered `make -n` "
-             f"(classified {'REAL' if got is False else got})")
+        fail("seam-scope", "empty env MAKEFLAGS_UNDER_TEST with `make -n`: no MAKE_DRY_RUN "
+             "line printed -- the print-dry-classify seam is missing")
+    elif not got:
+        seam_bad += 1
+        fail("seam-scope", "empty env MAKEFLAGS_UNDER_TEST steered `make -n` (classified REAL)")
     before = snapshot(bdir)
     make(work, "-n", "lib", "CONTRACT_DEFINES=-D LIB_SEAM_PROBE_Z=1",
          env_extra={"MAKEFLAGS_UNDER_TEST": ""})
