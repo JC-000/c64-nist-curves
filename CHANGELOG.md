@@ -14,6 +14,37 @@ contract).
 
 ### Fixed
 
+- **`tools/test_reu_mul_u64.py`: provenance, clock and exit status are
+  measured from the device in hand (issues #172, #173).** Tool-only; the
+  PRG and archives are unchanged.
+  - **Firmware field.** The CELL row's fw field was a hardcoded
+    `3.15+patch814` on every device. It is now the version `/v1/info`
+    reports, with a leading `V` accepted. An explicit `--firmware-note`
+    must begin with that version and may hold only `[A-Za-z0-9._+()~-]`.
+  - **Device field.** It is now a single row token. Before, the product
+    name's spaces split it across three tokens.
+  - **Identity re-check.** `/v1/info` is re-read after every reboot.
+  - **Cycle model.** The clock check modelled its loop as 1279 cycles per
+    pass, which is the inner loop only. The pass was really 1305 cycles
+    (2.0% low at every clock). The pass counter is now 24-bit, and the
+    model is 1309 cycles per pass plus 12 / 5 on mid / high borrows.
+  - **Two-point fit.** The clock is now the slope of a 0.5 s window and a
+    ~10 s extension. Any fixed overhead is the intercept, reported as
+    measured. Each row carries the jiffy-quantisation bound as `clock_pm=`.
+  - **Exit status.** It now has a documented contract (module docstring
+    and `--help`):
+    - 0: complete run
+    - 1: abort
+    - 2: refused
+    - 3: no real verdict
+    - 4: partial
+    - 5: a FAIL at the shipped 106-cycle settle
+    - 130: interrupted
+
+    Before, a run with no or partial verdicts exited 0.
+  - **`--verify-builds`.** It builds in a temporary `BUILD_DIR` and no
+    longer wipes the user's `build/`.
+
 - **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
   its source `.include`s (`sqtab_base.inc`, `reu_banks.inc`,
   `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout
