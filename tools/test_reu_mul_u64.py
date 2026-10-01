@@ -97,7 +97,8 @@ not happen, or did not finish, for a measurement.
        --verify-builds failed, or U64_HOST unset / device unreachable
   2    refused to start: device lock not acquired (no --wait, or --wait
        timed out), or --firmware-note rejected against /v1/info; also
-       argparse's own status for a command-line usage error
+       argparse's own status for a command-line usage error, including an
+       unimplemented --only stage (sqr)
   3    no real verdict: every cell NOT_RUN / ERROR / CONTAMINATED, or none
   4    partial: some declared cells NOT_RUN / ERROR / CONTAMINATED (e.g.
        a clock leg 4 discarded), the rest PASS / FAIL
@@ -2457,6 +2458,34 @@ def self_test() -> int:
           f"declared={len(dec_)}; printed: "
           f"{out_.strip().splitlines()[0] if out_.strip() else ''!r}")
 
+    # -- an unimplemented stage is a usage error, alone or combined ---------
+    st_bad = []
+    for spec_ in ("sqr", "fetch,sqr", "arbiter,fetch,stash,crosscheck,sqr"):
+        st_, err_ = parse_stages(spec_)
+        if not err_ or "sqr" not in err_ or "fetch" not in err_:
+            st_bad.append(f"--only {spec_} accepted as {st_} (error {err_!r})")
+    for spec_, want_ in (("fetch", ["fetch"]),
+                         ("stash,arbiter", ["arbiter", "stash"]),
+                         ("fetch,crosscheck", ["fetch", "crosscheck"])):
+        st_, err_ = parse_stages(spec_)
+        if err_ or st_ != want_:
+            st_bad.append(f"--only {spec_} -> {st_} {err_!r}, want {want_}")
+    if not parse_stages("bogus")[1]:
+        st_bad.append("--only bogus accepted")
+    # Process level: argparse's usage error is exit 2.  --dry-run touches
+    # no device (U64_HOST is not needed and not set here).
+    env_ = {k_: v_ for k_, v_ in os.environ.items() if k_ != "U64_HOST"}
+    for spec_ in ("sqr", "fetch,sqr"):
+        r_ = subprocess.run([sys.executable, os.path.abspath(__file__),
+                             "--dry-run", "--only", spec_],
+                            capture_output=True, text=True, env=env_)
+        if r_.returncode != 2 or "sqr" not in r_.stderr:
+            st_bad.append(f"process --only {spec_}: exit {r_.returncode}, "
+                          f"stderr {r_.stderr.strip()[-80:]!r}")
+    check("--only: an unimplemented stage (sqr) is refused with exit 2, "
+          "alone or combined, naming it and listing the implemented stages",
+          not st_bad, "; ".join(st_bad))
+
     # -- leg 5 prose: a control build cannot report a settle floor ----------
     l5_bad = []
     for th_ in (12, 44, ORIG_CYCLES, None):
@@ -2791,7 +2820,32 @@ def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy,
 # Plan (dry run)                                                               #
 # --------------------------------------------------------------------------- #
 
-STAGES = ["arbiter", "fetch", "stash", "crosscheck", "sqr"]
+STAGES = ["arbiter", "fetch", "stash", "crosscheck"]      # implemented, in order
+
+# Named in the design but NOT implemented.  Asking for one is a usage error
+# (exit 2): it used to be accepted, printed "NOT RUN" in prose, declared no
+# cell, and so exited 3 alone or was silently dropped beside other stages.
+UNIMPLEMENTED_STAGES = {
+    "sqr": "the fp_sqr diagonal-site leg (+15 cy data-read distance) is not "
+           "implemented in this revision",
+}
+
+
+def parse_stages(spec: str) -> tuple[list[str], str | None]:
+    """--only value -> (stages in canonical order, usage error or None)."""
+    only = [s.strip() for s in spec.split(",") if s.strip()]
+    unimpl = [s for s in only if s in UNIMPLEMENTED_STAGES]
+    if unimpl:
+        why = "; ".join(f"{s}: {UNIMPLEMENTED_STAGES[s]}" for s in unimpl)
+        return [], (f"stage(s) {unimpl} not implemented ({why}). "
+                    f"Implemented stages: {','.join(STAGES)}")
+    bad = [s for s in only if s not in STAGES]
+    if bad:
+        return [], (f"unknown stage(s) {bad}; implemented stages: "
+                    f"{','.join(STAGES)}")
+    if not only:
+        return [], f"--only is empty; implemented stages: {','.join(STAGES)}"
+    return [s for s in STAGES if s in only], None
 
 
 def describe_plan(opts, rows) -> None:
@@ -2839,7 +2893,8 @@ def describe_plan(opts, rows) -> None:
     print(f"  7. reboot-per-cell cross-check on 3 cells chosen to span the "
           f"risk (most-likely-to-fail, first-after-a-clock-change, a clean "
           f"one), compared as RATES not verdicts")
-    print(f"  8. optional: fp_sqr diagonal site; REU size; bank")
+    print(f"  8. optional: REU size; bank. (The fp_sqr diagonal-site stage "
+          f"'sqr' is NOT implemented; --only sqr is refused with exit 2.)")
     print()
     print(f"Settle control    : POKE nistcurves_reu_dma_wait "
           f"({WAIT_ROUTINE_BYTES} B) in place — no rebuild, no reload, no "
@@ -2945,7 +3000,9 @@ def parse_args(argv):
         epilog=exit_status_help())
     p.add_argument("--only", default="arbiter,fetch,stash",
                    help=f"stages, in order: {','.join(STAGES)} "
-                        f"(default arbiter,fetch,stash)")
+                        f"(default arbiter,fetch,stash). 'sqr' (fp_sqr "
+                        f"diagonal site) is NOT implemented and is refused "
+                        f"with exit 2")
     p.add_argument("--speeds", default="48,16",
                    help="clocks to measure, highest first (default 48,16)")
     p.add_argument("--ladder", default="nop0,nop2,nop6,nop16,orig",
@@ -2988,11 +3045,9 @@ def parse_args(argv):
                    help="--verify-builds only: knob values to build")
     p.add_argument("--verbose", action="store_true")
     o = p.parse_args(argv)
-    o.only = [s.strip() for s in o.only.split(",") if s.strip()]
-    bad = [s for s in o.only if s not in STAGES]
-    if bad:
-        p.error(f"unknown stage(s) {bad}; valid: {STAGES}")
-    o.only = [s for s in STAGES if s in o.only]
+    o.only, stage_err = parse_stages(o.only)
+    if stage_err:
+        p.error(stage_err)
     o.speeds = [int(x) for x in o.speeds.split(",") if x.strip()]
     o.iters = sorted({int(x) for x in o.iters.split(",") if x.strip()})
     try:
@@ -3416,13 +3471,6 @@ def main(argv=None):
                     ran.add(crosscheck_key(tag, settle, size))
                 stage_times.append((f"crosscheck/{size}",
                                     time.monotonic() - t0))
-
-            # ---- optional: fp_sqr diagonal ----------------------------
-            if "sqr" in opts.only:
-                print("\n  [sqr] fp_sqr diagonal-site leg is declared but not "
-                      "implemented in this revision — the +15 cy data-read "
-                      "distance it would probe is recorded in the report "
-                      "instead. NOT RUN.")
 
             dev.restore_settle()
             stage_times.append((f"size {size} total", time.monotonic() - t_size))

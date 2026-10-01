@@ -54,7 +54,11 @@ contract).
     - 5: a FAIL at the shipped 106-cycle settle
     - 130: interrupted
 
-    Before, a run with no or partial verdicts exited 0.
+    Before, a run with no or partial verdicts exited 0. Only the selected
+    `--only` stages are declared, so a narrowed run that completes exits 0.
+    The unimplemented `sqr` stage (the fp_sqr diagonal site) is now refused
+    as a usage error (exit 2), alone or combined. Before, `--only sqr`
+    exited 3 and `--only fetch,sqr` silently ignored it.
   - **`--verify-builds`.** It builds in a temporary `BUILD_DIR` and no
     longer wipes the user's `build/`.
 
