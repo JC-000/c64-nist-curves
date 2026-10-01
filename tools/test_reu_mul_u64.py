@@ -2040,6 +2040,46 @@ def self_test() -> int:
     check("acquired lock -> 0 (the run proceeds)", rc_held == 0,
           f"rc={rc_held}")
 
+    # -- a run that produced no real verdict must not exit 0 ----------------
+    def _cells(*verdicts):
+        out = []
+        for i, v in enumerate(verdicts):
+            c_ = CellResult(f"c{i}", 48, 12, "512 KB", "cpu", "fetch")
+            if v in ("PASS", "FAIL"):
+                c_.n, c_.k = 10, (0 if v == "PASS" else 1)
+            elif v == "ERROR":
+                c_.n, c_.error = 3, "timeout"
+            elif v == "CONTAMINATED":
+                c_.n, c_.contaminated = 10, True
+            out.append(c_.line("d", 48.0, "0" * 64))
+        return out
+    _fx = ("NOT_RUN", "ERROR", "CONTAMINATED", "PASS", "FAIL")
+    _got = [re.search(r" verdict=(\S+)", l_).group(1) for l_ in _cells(*_fx)]
+    check("exit-status fixtures really carry the verdicts they name",
+          tuple(_got) == _fx, str(_got))
+    exit_cases = [
+        ("every cell NOT_RUN", _cells("NOT_RUN", "NOT_RUN"), 0, "nonzero"),
+        ("every cell ERROR", _cells("ERROR", "ERROR"), 0, "nonzero"),
+        ("every cell CONTAMINATED", _cells("CONTAMINATED"), 0, "nonzero"),
+        ("NOT_RUN + ERROR + CONTAMINATED only",
+         _cells("NOT_RUN", "ERROR", "CONTAMINATED"), 0, "nonzero"),
+        ("no CELL line at all", [], 0, "nonzero"),
+        ("one PASS among NOT_RUNs", _cells("NOT_RUN", "PASS"), 0, "zero"),
+        ("a FAIL is a real verdict (a measured result)",
+         _cells("FAIL", "ERROR"), 0, "zero"),
+        ("^C keeps 130 even with verdicts", _cells("PASS"), 130, "130"),
+    ]
+    for name_, cl_, rc_in, want in exit_cases:
+        _out = sys.stdout
+        try:
+            sys.stdout = open(os.devnull, "w")
+            got = run_exit_status(cl_, rc_in)
+        finally:
+            sys.stdout.close()
+            sys.stdout = _out
+        ok = {"nonzero": got != 0, "zero": got == 0, "130": got == 130}[want]
+        check(f"exit status: {name_} -> {want}", ok, f"got {got}")
+
     if os.path.exists(DEFAULT_PRG) and os.path.exists(DEFAULT_LABELS):
         from c64_test_harness.labels import Labels
         labels = Labels.from_file(DEFAULT_LABELS)
@@ -2530,6 +2570,30 @@ def parse_args(argv):
 # Main                                                                         #
 # --------------------------------------------------------------------------- #
 
+def run_exit_status(cell_lines: list[str], rc: int) -> int:
+    """Process exit status from the CELL lines the run actually emitted.
+
+    A run in which no cell reached a real verdict (PASS or FAIL: every
+    cell NOT_RUN, ERROR or CONTAMINATED, or no cell at all) did not take
+    the measurement, and must not report success to a wrapper, CI step or
+    agent that reads only the exit status: it exits 3. A FAIL is a measured
+    result, not a tool failure, so it alone does not make the run non-zero.
+    A non-zero rc already decided (130 on ^C) is kept.
+    """
+    if rc:
+        return rc
+    verdicts = [m.group(1) for m in
+                (re.search(r" verdict=(\S+)", ln) for ln in cell_lines
+                 if ln.startswith("CELL "))
+                if m]
+    if not any(v in ("PASS", "FAIL") for v in verdicts):
+        print(f"\nNO REAL VERDICT: {len(verdicts)} CELL line(s), none PASS or "
+              f"FAIL ({sorted(set(verdicts)) or 'none'}). The measurement "
+              f"did not happen; exiting 3.")
+        return 3
+    return 0
+
+
 def main(argv=None):
     opts = parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -2926,7 +2990,7 @@ def main(argv=None):
         print("\nElapsed per stage:")
         for name, secs in stage_times:
             print(f"  {name:22} {secs:7.0f} s")
-    return rc
+    return run_exit_status(lines, rc)
 
 
 if __name__ == "__main__":
