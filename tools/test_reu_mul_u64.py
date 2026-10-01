@@ -2265,6 +2265,36 @@ def self_test() -> int:
             sys.stdout = _out
         check(f"exit status: {name_} -> {want}", got == want, f"got {got}")
 
+    # -- verify-builds: the build/ guard reports even when a build raises ---
+    import io
+    import contextlib
+    vb_bad = []
+    with tempfile.TemporaryDirectory() as ub:
+        open(os.path.join(ub, "keep.o"), "w").write("x")
+        kept: list[str] = []
+
+        def _raising_inner(iters_, bdir_):
+            kept.append(bdir_)
+            os.remove(os.path.join(ub, "keep.o"))       # the damage
+            raise SystemExit("build failed: simulated")
+        buf = io.StringIO()
+        raised = None
+        try:
+            with contextlib.redirect_stdout(buf):
+                verify_builds([1], user_build=ub, inner=_raising_inner)
+        except SystemExit as e:
+            raised = e
+        out_ = buf.getvalue()
+        if raised is None:
+            vb_bad.append("the inner failure was swallowed")
+        if "was modified" not in out_ or "deleted keep.o" not in out_:
+            vb_bad.append(f"no build/ diagnostic printed: {out_.strip()!r}")
+        for k_ in kept:
+            shutil.rmtree(k_, ignore_errors=True)
+    check("verify-builds: when a build RAISES, the modified-build/ "
+          "diagnostic is still printed and the failure still propagates",
+          not vb_bad, "; ".join(vb_bad))
+
     if os.path.exists(DEFAULT_PRG) and os.path.exists(DEFAULT_LABELS):
         from c64_test_harness.labels import Labels
         labels = Labels.from_file(DEFAULT_LABELS)
@@ -2322,24 +2352,32 @@ def tree_changes(before: dict, after: dict) -> list[str]:
     return out
 
 
-def verify_builds(iters: list[int]) -> int:
+def verify_builds(iters: list[int], user_build: str = BUILD_DIR,
+                  inner=None) -> int:
     # The user's build/ is not this mode's to touch: snapshot it and assert
     # it is byte-for-byte (names, sizes, mtimes) where it was afterwards.
-    user_build_before = snapshot_tree(BUILD_DIR)
+    # `user_build` / `inner` exist so the self-test can drive this wrapper
+    # without running a single build.
+    inner = inner or _verify_builds
+    user_build_before = snapshot_tree(user_build)
     tmp = tempfile.mkdtemp(prefix="nistcurves-verify-builds-")
     rc = 1
     try:
-        rc = _verify_builds(iters, tmp)
+        rc = inner(iters, tmp)
     finally:
-        changes = tree_changes(user_build_before, snapshot_tree(BUILD_DIR))
-        if rc == 0:
+        # Reported here, on EVERY path: a build that raises (SystemExit from
+        # run_make / build_variant) must still say what it did to build/.
+        changes = tree_changes(user_build_before, snapshot_tree(user_build))
+        if rc == 0 and not changes:
             shutil.rmtree(tmp, ignore_errors=True)
         else:
             print(f"  variant builds kept for inspection in {tmp}")
+        if changes:
+            print(f"\nverify-builds: FAILED — the user's {user_build} was "
+                  f"modified ({len(changes)} entries): "
+                  + "; ".join(changes[:8])
+                  + (" ..." if len(changes) > 8 else ""))
     if changes:
-        print(f"\nverify-builds: FAILED — the user's {BUILD_DIR} was modified "
-              f"({len(changes)} entries): " + "; ".join(changes[:8])
-              + (" ..." if len(changes) > 8 else ""))
         return EXIT_ABORT
     print(f"  user's build/ untouched: {len(user_build_before)} files, same "
           f"names, sizes and mtimes")
