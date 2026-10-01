@@ -440,11 +440,14 @@ def _self_test() -> list[str]:
     # verdict of a probe that answers False to everything.
     try:
         tags = all_tags()
-    except NoGitRepo as exc:
-        # Not a repository (the release tarball is one). Leg 3 is skipped
-        # by main(); say so here rather than letting the controls below
-        # report a vacuous probe as a defect.
-        return bad + [f"SKIP: tag namespace unreadable ({exc})"]
+    except NoGitRepo:
+        # Not a repository (the release tarball is one). Only the tag-probe
+        # controls are skipped -- main() reports that, and says which legs it
+        # skipped. Every parser control ABOVE has already run, and its
+        # failures are returned, not discarded: through v0.15.0 this branch
+        # returned a "SKIP: ..." entry that main() then threw away together
+        # with every real control failure, and exited 0.
+        return bad
     if not tags:
         bad.append(
             "population is EMPTY: `git tag --list` returned no tags -- leg 3 "
@@ -506,22 +509,25 @@ def main() -> int:
             f"{CHANGELOG.relative_to(REPO)} -- legs 2 and 3 examined nothing"
         )
 
+    # No tag namespace (an extracted release tarball) is NOT an early exit:
+    # legs 2 and 4 and the baseline-file checks need no git and still run,
+    # and leg 0's failures still count. Only leg 3 and leg 5's tag comparison
+    # are skipped, and the verdict says exactly that. Through v0.15.0 this
+    # path returned 0 before legs 2/4 ran, discarded every leg-0 failure, and
+    # printed "Legs 1, 2 and 4 ran and passed".
+    git_ok = True
     try:
         tagged = tag_exists(tag)
     except NoGitRepo as exc:
+        git_ok, tagged = False, None
         print(f"  git tag {tag} : UNREADABLE -- {exc}")
-        print(
-            f"\nSKIP — leg 3 needs the tag namespace and this tree is not a\n"
-            f"git repository (an extracted release tarball, most likely).\n"
-            f"Legs 1, 2 and 4 ran and passed; the in-flight question is\n"
-            f"unanswerable here and is NOT being reported as a pass."
-        )
-        return 0
     print(f"  VERSION        : {version}")
-    print(f"  git tag {tag:<8}: {'present' if tagged else 'ABSENT (release in flight)'}")
+    if git_ok:
+        print(f"  git tag {tag:<8}: {'present' if tagged else 'ABSENT (release in flight)'}")
     print(f"  changelog      : {len(sections)} section(s) parsed")
     print(f"  self-test      : {len(controls)} control failure(s) "
-          f"across parser, equate, version and tag probes")
+          f"across parser, equate, version"
+          f"{' and tag probes' if git_ok else ' probes (tag-probe controls skipped: no git)'}")
 
     # --- Leg 2: release metadata, complete or absent as a unit -----------
     section = section_body(text, version)
@@ -559,7 +565,7 @@ def main() -> int:
             f"section -- this check cannot tell whether work has piled up, so "
             f"treat its silence as unknown, not as a pass"
         )
-    elif not tagged:
+    elif tagged is False:          # None = no tag namespace: leg 3 skipped
         entries = content_lines(unreleased)
         if entries:
             preview = "\n".join(f"      {l.strip()}" for l in entries[:12])
@@ -614,7 +620,9 @@ def main() -> int:
         base = base_tag = base_commit = None
         failures.append(f"[baseline] {ABI_BASELINE.relative_to(REPO)} is "
                         f"unreadable ({exc!r})")
-    if base is not None:
+    if base is not None and not git_ok:
+        print("  abi baseline   : tag comparison SKIPPED (no git)")
+    elif base is not None:
         newest = newest_release_tag(all_tags())
         ok, msg = baseline_verdict(newest, base_tag, version, tagged)
         if not ok:
@@ -641,7 +649,14 @@ def main() -> int:
             print(f"  {f}")
         return 1
 
-    if tagged:
+    if not git_ok:
+        print(f"\nPASS (partial) — legs 0 (parser controls), 1, 2 and 4 and the "
+              f"baseline-file checks ran and passed.\nSKIPPED, not passed: leg "
+              f"3 (in-flight), leg 5's tag comparison and the tag-probe "
+              f"controls -- this tree is not a git repository (an extracted "
+              f"release tarball, most likely), so the tag namespace they "
+              f"examine does not exist here.")
+    elif tagged:
         print(f"\nPASS — {version} is tagged; `[Unreleased]` is free to accumulate.")
     else:
         print(f"\nPASS — {version} is in flight and `[Unreleased]` is empty.")
