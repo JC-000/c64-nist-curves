@@ -645,7 +645,7 @@ BNE, BEQ, JMP, JSR = 0xD0, 0xF0, 0x4C, 0x20
 CMP_IMM, ORA_ABS, EOR_ABSY, DEC_ABS, INC_ABS = 0xC9, 0x0D, 0x59, 0xCE, 0xEE
 
 
-def build_trampoline(labels) -> bytes:
+def build_trampoline(labels, symbols: bool = False):
     """Op dispatcher at $C000.  See the ops' comments for what each proves."""
     main_loop = labels["main_loop"]
     if (main_loop >> 8) != (SHIM_ADDR >> 8):
@@ -753,6 +753,7 @@ def build_trampoline(labels) -> bytes:
     a.abs(DEC_ABS, ARG_ADDR + 4)
     a.abs(LDA_ABS, ARG_ADDR + 4); a.abs(ORA_ABS, ARG_ADDR + 5)
     a.rel(BNE, "couter")
+    a.label("cdone")
     a.absl(JSR, "_bench_stop")
     a.absl(JMP, "done")
 
@@ -896,14 +897,102 @@ def build_trampoline(labels) -> bytes:
     if len(code) > TRAMPOLINE_LIMIT - TRAMPOLINE_ADDR:
         raise SystemExit(f"trampoline {len(code)} B overruns "
                          f"${TRAMPOLINE_LIMIT:04X}")
+    if symbols:
+        return code, {k: TRAMPOLINE_ADDR + v for k, v in a.labels.items()}
     return code
+
+
+def simulate_6502(code: bytes, org: int, pc: int, stop: set[int],
+                  mem: dict[int, int], max_steps: int = 5_000_000):
+    """Cycle-count the trampoline's clock loop from its ASSEMBLED BYTES.
+
+    Implements only the opcodes the OP_CLOCK loop uses, with NMOS 6502
+    timings (branch: 2, +1 taken, +1 more if the target is on another page).
+    Anything else raises, so a loop edit cannot be silently mis-timed.
+    -> (cycles, pc at stop).  `mem` holds the counter bytes and is updated.
+    """
+    x = 0
+    a = 0
+    z = False
+    cyc = 0
+    for _ in range(max_steps):
+        if pc in stop:
+            return cyc, pc
+        i = pc - org
+        op = code[i]
+        if op == LDX_IMM:
+            x = code[i + 1]; z = x == 0; pc += 2; cyc += 2
+        elif op == DEX:
+            x = (x - 1) & 0xFF; z = x == 0; pc += 1; cyc += 2
+        elif op in (LDA_ABS, ORA_ABS, DEC_ABS):
+            ad = code[i + 1] | (code[i + 2] << 8)
+            if op == LDA_ABS:
+                a = mem.get(ad, 0); z = a == 0; cyc += 4
+            elif op == ORA_ABS:
+                a |= mem.get(ad, 0); z = a == 0; cyc += 4
+            else:
+                v = (mem.get(ad, 0) - 1) & 0xFF
+                mem[ad] = v; z = v == 0; cyc += 6
+            pc += 3
+        elif op == BNE:
+            d = code[i + 1]
+            nxt = pc + 2
+            if not z:
+                tgt = (nxt + (d - 256 if d & 0x80 else d)) & 0xFFFF
+                cyc += 3 + (1 if (tgt >> 8) != (nxt >> 8) else 0)
+                pc = tgt
+            else:
+                cyc += 2; pc = nxt
+        else:
+            raise ValueError(f"simulate_6502: opcode ${op:02X} at "
+                             f"${pc:04X} is not modelled")
+    raise RuntimeError("simulate_6502: step limit hit")
+
+
+def clock_loop_cycles_simulated(code: bytes, syms: dict, n: int) -> int:
+    """Cycles from `couter` to `cdone` for an outer count of n."""
+    mem = {ARG_ADDR + 4 + k: (n >> (8 * k)) & 0xFF
+           for k in range(CLOCK_COUNTER_BYTES)}
+    cyc, _ = simulate_6502(code, TRAMPOLINE_ADDR, syms["couter"],
+                           {syms["cdone"]}, mem)
+    return cyc
 
 
 # --------------------------------------------------------------------------- #
 # Device driver                                                                #
 # --------------------------------------------------------------------------- #
 
-CLOCK_INNER_CYCLES = 1279          # ldx #0 / dex / bne, 256 iterations
+# OP_CLOCK's loop, per outer pass (NMOS timings; no branch crosses a page,
+# which the self-test proves by simulating the assembled bytes):
+#   ldx #0 2 | dex/bne x256: 255*5 + 4 = 1279 | lda 4 | bne 3 (taken)
+#   | dec lo 6 | lda 4 | ora 4 | bne 3                          = 1305
+# A pass entered with the low byte 0 takes the borrow path (bne 2 + dec hi 6)
+# = +5; the last pass falls out of `bne couter` = -1.  This used to be
+# modelled as 1279 per pass -- the inner loop alone, 2.0% short -- so every
+# clock_measured read 0.980x of the cycles actually executed per second.
+CLOCK_INNER_CYCLES = 1279          # dex / bne, 256 iterations
+CLOCK_PASS_CYCLES = 1305
+CLOCK_BORROW_EXTRA = 5
+CLOCK_COUNTER_BYTES = 2
+
+
+def clock_cycles(n: int) -> int:
+    """CPU cycles from `couter` to `cdone` for an outer count of n >= 1."""
+    return n * CLOCK_PASS_CYCLES + (n // 256) * CLOCK_BORROW_EXTRA - 1
+
+
+def run_clock_measurement(expect_mhz: int, window):
+    """Pure decision logic of the in-band clock check.
+
+    `window(outer) -> jiffies | None` is the only device-coupled step (one
+    OP_CLOCK call); the self-test drives this with synthetic jiffy counts.
+    """
+    outer = max(1, min(65535,
+                       int(expect_mhz * 1e6 * 0.5 / CLOCK_PASS_CYCLES)))
+    jiffies = window(outer)
+    if not jiffies:
+        return None
+    return clock_cycles(outer) / (jiffies / 60.0) / 1e6
 
 
 class Device:
@@ -1078,19 +1167,20 @@ class Device:
         return self.read(self.labels["nistcurves_reu_dma_timeout"], 1)[0]
 
     # -- in-band clock verification ----------------------------------------
-    def measure_mhz(self, expect_mhz: int) -> float | None:
-        outer = max(1, min(65535,
-                           int(expect_mhz * 1e6 * 0.5 / CLOCK_INNER_CYCLES)))
-        self.write(ARG_ADDR, bytes([outer & 0xFF, (outer >> 8) & 0xFF]))
+    def measure_mhz(self, expect_mhz: int):
+        return run_clock_measurement(
+            expect_mhz, lambda outer: self._clock_window(outer, expect_mhz))
+
+    def _clock_window(self, outer: int, expect_mhz: int) -> int | None:
+        """One OP_CLOCK call: run `outer` loop passes, return jiffies."""
+        self.write(ARG_ADDR, bytes((outer >> (8 * k)) & 0xFF
+                                   for k in range(CLOCK_COUNTER_BYTES)))
         self.write(self.labels["bench_ticks"], b"\x00\x00\x00")
         if self.call(OP_CLOCK, timeout_for("clock", expect_mhz),
                      poll_interval=0.05) is None:
             return None
         raw = self.read(self.labels["bench_ticks"], 3)
-        jiffies = (raw[0] << 16) | (raw[1] << 8) | raw[2]
-        if jiffies == 0:
-            return None
-        return outer * CLOCK_INNER_CYCLES / (jiffies / 60.0) / 1e6
+        return (raw[0] << 16) | (raw[1] << 8) | raw[2]
 
 
 # --------------------------------------------------------------------------- #
@@ -1627,6 +1717,29 @@ def self_test() -> int:
               len(code) <= TRAMPOLINE_LIMIT - TRAMPOLINE_ADDR)
     except Exception as e:
         check("trampoline assembles and links", False, f"{type(e).__name__}: {e}")
+
+    # -- the clock loop's cycle model, against the ASSEMBLED bytes ----------
+    # Oracle sanity first: `ldx #0 / dex / bne` is the textbook
+    # 2 + 256*5 - 1 = 1281 cycles, and 255 more when the bne crosses a page.
+    tiny = bytes([LDX_IMM, 0, DEX, BNE, 0xFD])
+    for org_, want in ((0xC000, 1281), (0xC0FD, 1281 + 255)):
+        try:
+            got, _ = simulate_6502(tiny, org_, org_, {org_ + len(tiny)}, {})
+        except Exception as e:
+            got = f"{type(e).__name__}: {e}"
+        check(f"simulator: ldx#0/dex/bne at ${org_:04X} is {want} cycles",
+              got == want, f"got {got}")
+    try:
+        code_, syms_ = build_trampoline(fake, symbols=True)
+        bad = {n_: (clock_cycles(n_),
+                    clock_loop_cycles_simulated(code_, syms_, n_))
+               for n_ in (1, 2, 255, 256, 257, 513, 600)}
+        bad = {k_: v_ for k_, v_ in bad.items() if v_[0] != v_[1]}
+        check("clock_cycles(n) == cycles simulated from the trampoline's "
+              "bytes, n in {1,2,255,256,257,513,600} (borrow cases incl.)",
+              not bad, "n: (model, simulated) " + str(bad))
+    except Exception as e:
+        check("clock loop simulates", False, f"{type(e).__name__}: {e}")
 
     # -- issue #172: firmware provenance comes from the device observed ------
     # /v1/info strings as reported by the two devices this tool has met.
