@@ -1593,7 +1593,7 @@ def fetch_cell(dev, mhz, reu_size, rows, n_fetches, settle, name,
     form, k = settle
     # An unmitigated build has no pokeable settle; report it as native rather
     # than as the cycle count of a stub that was never written.
-    settle_cy = stub_cycles(form, k) if dev.mitigated else -1
+    settle_cy = cell_settle_cy(form, k, dev.mitigated)
     cell = CellResult(name, mhz, settle_cy, reu_size,
                       "cpu" + ("+host" if host_read else ""), "fetch")
     mdl, mdh = (dev.labels["nistcurves_mul_dma_lo"],
@@ -1646,6 +1646,42 @@ def fetch_cell(dev, mhz, reu_size, rows, n_fetches, settle, name,
     return cell
 
 
+def cell_settle_cy(form: str, k: int, mitigated: bool) -> int:
+    """settle_cy a CELL row may claim for a POKED settle.
+
+    An unmitigated control has no `nistcurves_reu_dma_wait`, so every poke is
+    a no-op (Device.set_settle returns early) and the cell runs at the
+    build's native settle.  -1 renders as `settle_cy=native(unmitigated)` --
+    the convention fetch_cell always followed and stash_cell did not.
+    """
+    return stub_cycles(form, k) if mitigated else -1
+
+
+def cell_name(surface: str, mhz: int, cy: int, mitigated: bool) -> str:
+    """Name of a cell whose settle is a POKE (fetch / stash ladder).  On a
+    control the requested ladder point is kept only to keep names unique,
+    and spelled so it cannot be read as a delivered settle."""
+    if mitigated:
+        return f"{surface}_{mhz}MHz_{cy}cy"
+    return f"{surface}_{mhz}MHz_native_unpoked-req{cy}"
+
+
+def not_run_line(surface: str, mhz: int, cy: int, size: str, poked: bool,
+                 mitigated: bool, devstr: str, prg_sha: str) -> str:
+    """CELL row for a declared cell that never ran.  `poked`: its settle
+    would have come from the settle poke (false for the bare-metal arbiter,
+    whose +4 cy read distance is its own code)."""
+    if poked:
+        name = cell_name(surface, mhz, cy, mitigated)
+        settle = cy if mitigated else "native(unmitigated)"
+    else:
+        name, settle = f"{surface}_{mhz}MHz_{cy}cy", cy
+    return (f"CELL {name} surface={surface} clock={mhz} "
+            f"settle_cy={settle} reu={size.replace(' ', '')} N=0 k=0 "
+            f"verdict=NOT_RUN device={devstr} "
+            f"prg=sha256:{prg_sha[:16]}")
+
+
 def stash_cell(dev, mhz, reu_size, rows, n_fetches, settle, name) -> CellResult:
     """STASH-path cell: poison every row -> poke the settle -> OP_INIT ->
     verify with a LONG settle on the fetch.
@@ -1658,7 +1694,8 @@ def stash_cell(dev, mhz, reu_size, rows, n_fetches, settle, name) -> CellResult:
     reported as one number with the fetch floor.
     """
     form, k = settle
-    cell = CellResult(name, mhz, stub_cycles(form, k), reu_size, "host",
+    cell = CellResult(name, mhz, cell_settle_cy(form, k, dev.mitigated),
+                      reu_size, "host",
                       "stash")
     if not poison_table(dev, mhz):
         cell.error = "poison_table_failed"
@@ -2264,6 +2301,65 @@ def self_test() -> int:
             sys.stdout.close()
             sys.stdout = _out
         check(f"exit status: {name_} -> {want}", got == want, f"got {got}")
+
+    # -- a control build cannot claim a poked settle in ANY CELL field ------
+    # stash_cell is driven for real: the fake's call() times out, so it
+    # returns right after building its CellResult (poison_table_failed).
+    class _FakeStashDev(Device):
+        def __init__(self, labels_):
+            super().__init__(None, None)
+            self.labels = labels_
+            self.wait_orig = bytes(WAIT_ROUTINE_BYTES - 1) + b"\x60"
+            self.mem: dict[int, int] = {}
+
+        def write(self, addr, data):
+            for i_, b_ in enumerate(bytes(data)):
+                self.mem[addr + i_] = b_
+
+        def read(self, addr, n):
+            return bytes(self.mem.get(addr + i_, 0) for i_ in range(n))
+
+        def call(self, op, timeout, poll_interval=0.02):
+            return None
+    unmit_labels = _L({k_: v_ for k_, v_ in fake.items()
+                       if k_ not in MITIGATION_LABELS})
+    lbl_bad = []
+    for mit_, labels_ in ((True, fake), (False, unmit_labels)):
+        fd_ = _FakeStashDev(labels_)
+        if fd_.mitigated != mit_:
+            lbl_bad.append(f"fixture mitigated={fd_.mitigated}, want {mit_}")
+            continue
+        for form_, k_ in (("nop", 0), ("nop", 16), ("orig", 0)):
+            cy_ = stub_cycles(form_, k_)
+            _out = sys.stdout
+            try:
+                sys.stdout = open(os.devnull, "w")
+                c_ = stash_cell(fd_, 48, "512 KB", [1], 5, (form_, k_),
+                                cell_name("stash", 48, cy_, mit_))
+            finally:
+                sys.stdout.close()
+                sys.stdout = _out
+            rows_ = {"stash_cell": c_.line("d", 48.0, "0" * 64),
+                     "not_run(stash)": not_run_line(
+                         "stash", 48, cy_, "512 KB", True, mit_, "d", "0" * 64),
+                     "not_run(fetch)": not_run_line(
+                         "fetch", 48, cy_, "512 KB", True, mit_, "d", "0" * 64)}
+            for what_, ln_ in rows_.items():
+                claims = re.findall(rf"(?<![0-9]){cy_}cy|settle_cy={cy_}\b", ln_)
+                if mit_ and f"settle_cy={cy_}" not in ln_:
+                    lbl_bad.append(f"mitigated {what_} {form_}{k_}: lost "
+                                   f"settle_cy={cy_}: {ln_[:90]}")
+                if not mit_ and (claims or
+                                 "settle_cy=native(unmitigated)" not in ln_):
+                    lbl_bad.append(f"UNMITIGATED {what_} {form_}{k_} claims "
+                                   f"{claims}: {ln_[:90]}")
+    arb_ = not_run_line("arbiter", 48, 4, "512 KB", False, False, "d", "0" * 64)
+    if "settle_cy=4 " not in arb_:
+        lbl_bad.append(f"arbiter's own +4 cy lost on a control: {arb_[:80]}")
+    check("CELL rows on a control build never claim a poked settle (name or "
+          "settle_cy; stash_cell driven, NOT_RUN rows too); mitigated rows "
+          "keep it; the arbiter keeps its own +4 cy",
+          not lbl_bad, "; ".join(lbl_bad[:4]))
 
     # -- verify-builds: the build/ guard reports even when a build raises ---
     import io
@@ -3106,7 +3202,7 @@ def main(argv=None):
                     th = None
                     for form, k in ladder:
                         cy = stub_cycles(form, k)
-                        name = f"fetch_{mhz}MHz_{cy}cy"
+                        name = cell_name("fetch", mhz, cy, dev.mitigated)
                         c = fetch_cell(dev, mhz, size, rows, opts.n,
                                        (form, k), name,
                                        host_read=opts.host_read)
@@ -3132,7 +3228,7 @@ def main(argv=None):
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
                     for form, k in ladder:
                         cy = stub_cycles(form, k)
-                        name = f"stash_{mhz}MHz_{cy}cy"
+                        name = cell_name("stash", mhz, cy, dev.mitigated)
                         c = stash_cell(dev, mhz, size, rows, opts.n,
                                        (form, k), name)
                         print_cell_detail(c)
@@ -3191,11 +3287,9 @@ def main(argv=None):
         for d in declared:
             if d not in ran:
                 surf, mhz, cy, size = d
-                lines.append(
-                    f"CELL {surf}_{mhz}MHz_{cy}cy surface={surf} clock={mhz} "
-                    f"settle_cy={cy} reu={size.replace(' ', '')} N=0 k=0 "
-                    f"verdict=NOT_RUN device={devstr} "
-                    f"prg=sha256:{prg_sha[:16]}")
+                lines.append(not_run_line(surf, mhz, cy, size,
+                                          surf != "arbiter", mitigated_build,
+                                          devstr, prg_sha))
 
         try:
             set_turbo_mhz(client, 1)
