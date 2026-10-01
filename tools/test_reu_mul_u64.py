@@ -743,15 +743,22 @@ def build_trampoline(labels, symbols: bool = False):
     a.absl(JSR, "_bench_start")
     a.abs(LDA_ABS, ARG_ADDR);     a.abs(STA_ABS, ARG_ADDR + 4)
     a.abs(LDA_ABS, ARG_ADDR + 1); a.abs(STA_ABS, ARG_ADDR + 5)
+    # 24-bit pass counter (issue #173): a 16-bit one caps the window at
+    # 65535 passes = 1.3 s at 64 MHz, too short to quantise below ~1%.
+    a.abs(LDA_ABS, ARG_ADDR + 2); a.abs(STA_ABS, ARG_ADDR + 6)
     a.label("couter")
     a.imm(LDX_IMM, 0)
     a.label("cinner")
     a.b(DEX); a.rel(BNE, "cinner")
-    a.abs(LDA_ABS, ARG_ADDR + 4); a.rel(BNE, "cskip")
+    a.abs(LDA_ABS, ARG_ADDR + 4); a.rel(BNE, "cskip0")
+    a.abs(LDA_ABS, ARG_ADDR + 5); a.rel(BNE, "cskip1")
+    a.abs(DEC_ABS, ARG_ADDR + 6)
+    a.label("cskip1")
     a.abs(DEC_ABS, ARG_ADDR + 5)
-    a.label("cskip")
+    a.label("cskip0")
     a.abs(DEC_ABS, ARG_ADDR + 4)
     a.abs(LDA_ABS, ARG_ADDR + 4); a.abs(ORA_ABS, ARG_ADDR + 5)
+    a.abs(ORA_ABS, ARG_ADDR + 6)
     a.rel(BNE, "couter")
     a.label("cdone")
     a.absl(JSR, "_bench_stop")
@@ -915,8 +922,8 @@ def simulate_6502(code: bytes, org: int, pc: int, stop: set[int],
     a = 0
     z = False
     cyc = 0
-    for _ in range(max_steps):
-        if pc in stop:
+    for step in range(max_steps):
+        if step and pc in stop:     # never stops before the first opcode
             return cyc, pc
         i = pc - org
         op = code[i]
@@ -964,21 +971,101 @@ def clock_loop_cycles_simulated(code: bytes, syms: dict, n: int) -> int:
 
 # OP_CLOCK's loop, per outer pass (NMOS timings; no branch crosses a page,
 # which the self-test proves by simulating the assembled bytes):
-#   ldx #0 2 | dex/bne x256: 255*5 + 4 = 1279 | lda 4 | bne 3 (taken)
-#   | dec lo 6 | lda 4 | ora 4 | bne 3                          = 1305
-# A pass entered with the low byte 0 takes the borrow path (bne 2 + dec hi 6)
-# = +5; the last pass falls out of `bne couter` = -1.  This used to be
-# modelled as 1279 per pass -- the inner loop alone, 2.0% short -- so every
-# clock_measured read 0.980x of the cycles actually executed per second.
+#   ldx #0 2 | dex/bne x256: 255*5 + 4 = 1279 | lda lo 4 | bne 3 (taken)
+#   | dec lo 6 | lda 4 | ora 4 | ora 4 | bne 3                  = 1309
+# A pass entered with the low byte 0 takes the borrow path (bne 2, lda mid 4,
+# bne 3, dec mid 6) = +12; with the mid byte 0 too (bne 2, dec hi 6) = +5
+# more; the last pass falls out of `bne couter` = -1.  (Before issue #173's
+# 24-bit counter the pass was 1305; before that it was modelled as 1279 --
+# the inner loop alone, 2.0% short.)
 CLOCK_INNER_CYCLES = 1279          # dex / bne, 256 iterations
-CLOCK_PASS_CYCLES = 1305
-CLOCK_BORROW_EXTRA = 5
-CLOCK_COUNTER_BYTES = 2
+CLOCK_PASS_CYCLES = 1309
+CLOCK_BORROW_MID = 12
+CLOCK_BORROW_HI = 5
+CLOCK_COUNTER_BYTES = 3
+CLOCK_MAX_PASSES = (1 << (8 * CLOCK_COUNTER_BYTES)) - 1
+
+# Issue #173.  The old check ran ONE window sized to ~0.5 s at the expected
+# clock and divided by its jiffy count, so any fixed overhead O inside the
+# window read as a clock deficit of 0.5/(0.5+O) -- the SAME percentage at
+# every setting, because the window was rescaled to 0.5 s each time (2
+# jiffies -> exactly 15/16, the 0.9375 seen at 16, 48 and 64 MHz -- though
+# 2.0% of that ratio was the cycle-model shortfall fixed separately, so the
+# hardware overhead was likely nearer 1-1.5 jiffies; the fit now MEASURES it
+# instead of either of us assuming it), and a 30-jiffy window quantises at
+# +-3.3%.  Now two windows are run and the clock
+# is the SLOPE: f = (cycles2 - cycles1) / (jiffies2 - jiffies1) * 60.  A
+# fixed overhead is the intercept and cancels; it is reported, not assumed.
+# The long window (~10 s, sized from the short one's crude reading so a clock
+# far from the expected one cannot run into the call timeout) puts ~570
+# jiffies between the two; each count is off by under one jiffy at its own
+# start phase, so the difference is within +-2 and the estimate within
+# ~+-0.35% (wider if a large overhead shortened the long window), and that
+# bound is carried on every row as clock_pm.
+#
+# NOT removed, and not removable by any fit: the KERNAL jiffy IRQ runs inside
+# the window and takes H cycles per tick, so the loop sees f - 60*H cycles
+# per second.  That is time-proportional, ~60H/f of the reading -- material
+# at 1 MHz (a few hundred cycles per tick is a ~1-2% low reading),
+# negligible at turbo.  Sizing it needs hardware.
+CLOCK_SHORT_S = 0.5
+CLOCK_LONG_S = 10.0
 
 
 def clock_cycles(n: int) -> int:
     """CPU cycles from `couter` to `cdone` for an outer count of n >= 1."""
-    return n * CLOCK_PASS_CYCLES + (n // 256) * CLOCK_BORROW_EXTRA - 1
+    return (n * CLOCK_PASS_CYCLES + (n // 256) * CLOCK_BORROW_MID
+            + (n // 65536) * CLOCK_BORROW_HI - 1)
+
+
+def _clock_passes(mhz: float, seconds: float) -> int:
+    return max(1, min(CLOCK_MAX_PASSES,
+                      int(mhz * 1e6 * seconds / CLOCK_PASS_CYCLES)))
+
+
+class ClockEstimate(float):
+    """The measured MHz (a float, so every existing consumer still works),
+    plus the evidence: the bounds the jiffy quantisation allows, the fixed
+    overhead the fit removed, and the two raw windows."""
+
+    def __new__(cls, mhz, lo, hi, overhead_s, windows):
+        self = super().__new__(cls, mhz)
+        self.lo, self.hi = lo, hi
+        self.overhead_s = overhead_s
+        self.windows = windows
+        return self
+
+    @property
+    def mhz(self) -> float:
+        return float(self)
+
+    @property
+    def pm(self) -> float:
+        return (self.hi - self.lo) / 2.0
+
+
+def clock_fit(n1: int, j1: int, n2: int, j2: int) -> ClockEstimate | None:
+    """Two-point fit. Each jiffy count is floor(60*(t + O) + phase) with its
+    own phase in [0,1), so each is within (-1,+1) of 60*(t + O) and their
+    difference within (-2,+2) of the true 60*(t2 - t1)."""
+    dc = clock_cycles(n2) - clock_cycles(n1)
+    dj = j2 - j1
+    if dc <= 0 or dj < 3:
+        return None
+    f = dc / (dj / 60.0)
+    lo = dc / ((dj + 2) / 60.0)
+    hi = dc / ((dj - 2) / 60.0)
+    # Intercept, extrapolated back from the SHORT window: j1's own (-1,+1)
+    # jiffy plus the slope's relative error times the short window's length
+    # (~0.1 jiffy when the short window is the planned 0.5 s; more when the
+    # clock was far below the expected one and it ran long).
+    t1 = clock_cycles(n1) / f
+    over = j1 / 60.0 - t1
+    over_pm = 1.0 / 60.0 + t1 * (hi - lo) / 2.0 / f
+    est = ClockEstimate(f / 1e6, lo / 1e6, hi / 1e6, over,
+                        ((n1, j1), (n2, j2)))
+    est.overhead_pm_s = over_pm
+    return est
 
 
 def run_clock_measurement(expect_mhz: int, window):
@@ -987,12 +1074,30 @@ def run_clock_measurement(expect_mhz: int, window):
     `window(outer) -> jiffies | None` is the only device-coupled step (one
     OP_CLOCK call); the self-test drives this with synthetic jiffy counts.
     """
-    outer = max(1, min(65535,
-                       int(expect_mhz * 1e6 * 0.5 / CLOCK_PASS_CYCLES)))
-    jiffies = window(outer)
-    if not jiffies:
+    n1 = _clock_passes(expect_mhz, CLOCK_SHORT_S)
+    j1 = window(n1)
+    if not j1:
         return None
-    return clock_cycles(outer) / (jiffies / 60.0) / 1e6
+    crude = clock_cycles(n1) / (j1 / 60.0) / 1e6   # overhead-biased; sizing only
+    # Sized as an EXTENSION of the short window, so the difference is ~10 s
+    # even when the short one ran long (turbo not applied: 48 expected, 1 real).
+    n2 = min(CLOCK_MAX_PASSES, n1 + _clock_passes(crude, CLOCK_LONG_S))
+    j2 = window(n2)
+    if not j2:
+        return None
+    est = clock_fit(n1, j1, n2, j2)
+    # The crude reading carries the very overhead the fit removes, so a large
+    # one shortens the extension.  If it came up well short, re-size it once
+    # from the fitted (overhead-free) slope.
+    if est is not None and (j2 - j1) < 0.8 * 60.0 * CLOCK_LONG_S:
+        n3 = min(CLOCK_MAX_PASSES,
+                 n1 + _clock_passes(est.mhz, CLOCK_LONG_S))
+        if n3 > n2:
+            j3 = window(n3)
+            if not j3:
+                return None
+            est = clock_fit(n1, j1, n3, j3)
+    return est
 
 
 class Device:
@@ -1337,6 +1442,9 @@ class CellResult:
             f"surface={self.surface}",
             f"clock={self.clock}",
             f"clock_measured={'%.1f' % measured_mhz if measured_mhz else 'UNVERIFIED'}",
+            # issue #173: the jiffy-quantisation bound travels with the value,
+            # so a reader cannot take a 1-decimal figure for a 1% claim.
+            f"clock_pm={'%.2f' % measured_mhz.pm if hasattr(measured_mhz, 'pm') else 'n/a'}",
             f"settle_cy={'native(unmitigated)' if self.settle_cy < 0 else self.settle_cy}",
             f"reu={self.reu_size.replace(' ', '')}",
             f"read={self.read_kind}",
@@ -1738,8 +1846,92 @@ def self_test() -> int:
         check("clock_cycles(n) == cycles simulated from the trampoline's "
               "bytes, n in {1,2,255,256,257,513,600} (borrow cases incl.)",
               not bad, "n: (model, simulated) " + str(bad))
+        # One pass entered at counter value v costs clock_cycles(v) -
+        # clock_cycles(v-1); simulate exactly that pass, incl. the 24-bit
+        # high-byte borrow a full run could not reach in reasonable time.
+        bad = {}
+        for v in (2, 5, 256, 512, 65536, 131072, 65536 * 3 + 256):
+            mem_ = {ARG_ADDR + 4 + k: (v >> (8 * k)) & 0xFF
+                    for k in range(CLOCK_COUNTER_BYTES)}
+            got, _ = simulate_6502(code_, TRAMPOLINE_ADDR, syms_["couter"],
+                                   {syms_["couter"], syms_["cdone"]}, mem_)
+            want = clock_cycles(v) - clock_cycles(v - 1)
+            left = sum(mem_[ARG_ADDR + 4 + k] << (8 * k)
+                       for k in range(CLOCK_COUNTER_BYTES))
+            if got != want or left != v - 1:
+                bad[v] = (want, got, left)
+        check("each single pass (incl. 24-bit high-byte borrow) costs what "
+              "clock_cycles() says and decrements the counter by exactly 1",
+              not bad, "v: (model, simulated, counter after) " + str(bad))
     except Exception as e:
         check("clock loop simulates", False, f"{type(e).__name__}: {e}")
+
+    # -- issue #173: a fixed overhead must not read as a clock deficit ------
+    # Synthetic device: the window is clock_cycles(outer) at the TRUE clock
+    # plus a fixed overhead, counted by a 60 Hz jiffy clock started at an
+    # arbitrary phase (floor), exactly what bench_start/bench_stop observe.
+    # The phase rotates per call, as it does on hardware.
+    def synth(f_mhz, over_s, phases, log):
+        it = iter(phases * 64)
+
+        def window(outer):
+            t = clock_cycles(outer) / (f_mhz * 1e6) + over_s
+            log.append(t)
+            return int(t * 60.0 + next(it))
+        return window
+
+    worst = []
+    for f_true, expect in ((1, 1), (16, 16), (48, 48), (64, 64),
+                           (47.0, 48), (60.0, 64), (1, 48), (64, 16)):
+        for over_j in (0.0, 2.0, 3.0, 15.0):
+            for phases in ((0.0, 0.0), (0.999, 0.0), (0.0, 0.999),
+                           (0.5, 0.25)):
+                log: list[float] = []
+                est = run_clock_measurement(
+                    expect, synth(f_true, over_j / 60.0, list(phases), log))
+                mhz = getattr(est, "mhz", est)
+                err = (abs(mhz - f_true) / f_true if mhz else float("inf"))
+                over = getattr(est, "overhead_s", None)
+                lo_, hi_ = (getattr(est, "lo", None), getattr(est, "hi", None))
+                o_pm = getattr(est, "overhead_pm_s", None)
+                ok = (err <= 0.006
+                      and over is not None and o_pm is not None
+                      and abs(over - over_j / 60.0) <= o_pm
+                      and (o_pm <= 1.2 / 60.0 if f_true == expect else True)
+                      and lo_ is not None and lo_ <= f_true <= hi_
+                      and (hi_ - lo_) / 2 / f_true <= 0.006
+                      and max(log) <= 40.0)
+                if not ok:
+                    worst.append(f"f={f_true} expect={expect} "
+                                 f"O={over_j:g}j ph={phases}: "
+                                 f"mhz={mhz if mhz is None else round(mhz, 3)}"
+                                 f" err={err:.2%} O_rec={over} "
+                                 f"bounds=({lo_},{hi_}) "
+                                 f"longest={max(log) if log else 0:.1f}s")
+    check("two-point clock: within 0.6% of truth, its +-bounds contain the "
+          "truth and are <= 0.6%, and the "
+          "injected overhead is recovered within its stated bound (<= 1.2 "
+          "jiffy when the clock is the expected one) at 1/16/48/64 MHz, "
+          "0/2/3/15-jiffy overhead, any phase; no window over 40 s",
+          not worst, f"{len(worst)} cases, e.g. " + "; ".join(worst[:3]))
+    # The issue's reported artifact, reproduced on the OLD estimator's shape
+    # (one 0.5 s window), is what the new one must be immune to: the same
+    # 2-jiffy overhead at every clock must leave the estimate unmoved.
+    moved = []
+    for f_true in (1, 16, 48, 64):
+        a0 = run_clock_measurement(f_true, synth(f_true, 0.0, [0.5], []))
+        a2 = run_clock_measurement(f_true, synth(f_true, 2 / 60, [0.5], []))
+        m0, m2 = getattr(a0, "mhz", a0), getattr(a2, "mhz", a2)
+        if not (m0 and m2 and abs(m2 - m0) / f_true <= 0.005):
+            moved.append(f"{f_true} MHz: {m0} -> {m2}")
+    check("injecting a 2-jiffy fixed overhead does not move the estimate",
+          not moved, "; ".join(moved))
+    est48 = run_clock_measurement(48, synth(48, 2 / 60, [0.5], []))
+    ln48 = CellResult("x", 48, 12, "512 KB", "cpu", "fetch").line(
+        "d", est48, "0" * 64)
+    check("a CELL row carries clock_measured AND its clock_pm bound",
+          est48 is not None and "clock_measured=48.0" in ln48
+          and re.search(r"clock_pm=0\.\d\d ", ln48) is not None, ln48)
 
     # -- issue #172: firmware provenance comes from the device observed ------
     # /v1/info strings as reported by the two devices this tool has met.
@@ -2104,8 +2296,13 @@ def describe_plan(opts, rows) -> None:
           "our fix. Never dropped.")
     print("  3. detector positive control (skip-the-fetch -> all-poison) and "
           "poison-without-rebuild self-check")
-    print("  4. in-band clock verification at every clock used (CIA Timer A "
-          "jiffies, NOT the CIA1 TOD clock)")
+    print(f"  4. in-band clock verification at every clock used (CIA Timer A "
+          f"jiffies, NOT the CIA1 TOD clock): a {CLOCK_SHORT_S:g} s window "
+          f"plus a ~{CLOCK_LONG_S:g} s extension, clock = slope, so a fixed "
+          f"overhead cancels and is reported; +- bound on every row "
+          f"(issue #173). The KERNAL jiffy IRQ's per-tick cost is NOT "
+          f"removed (time-proportional; ~1-2% low at 1 MHz, negligible "
+          f"at turbo)")
     print(f"  5. FETCH-path cells (the observed surface): settle "
           f"{opts.ladder} = {[stub_cycles(f, k) for f, k in lad]} cy, at "
           f"{opts.speeds} MHz, cpu-read, N={opts.n} each, index histogram "
@@ -2504,8 +2701,12 @@ def main(argv=None):
                           f"discarded")
                 else:
                     off = abs(m - mhz) / mhz
-                    print(f"    set {mhz} MHz -> measured {m:.1f} MHz "
-                          f"({off * 100:.0f}% off)"
+                    print(f"    set {mhz} MHz -> measured {m:.2f} "
+                          f"+-{m.pm:.2f} MHz ({off * 100:.1f}% off); fixed "
+                          f"overhead removed by the two-point fit "
+                          f"{m.overhead_s * 1000:.1f} +-"
+                          f"{m.overhead_pm_s * 1000:.1f} ms; windows "
+                          f"(passes, jiffies) {m.windows}"
                           + ("  <-- DISCARDED (>20%)" if off > 0.20 else ""))
                     if off > 0.20:
                         measured[mhz] = None
