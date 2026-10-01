@@ -463,7 +463,16 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .endif
 
 .if _NC_FIELD .and (.not .defined(FP_ONCHIP_MUL))
-.import LIB_NISTCURVES_PRECALC_reu_mul_SIZE
+; 131072 does not fit 16 bits, so precalc_table.inc (canonical, unedited)
+; exports this SIZE far. A plain absolute import drew ld65 "Address size
+; mismatch" in every consumer build that referenced it, and `: far` is
+; rejected under --cpu 6502 -- so the far import is declared under .p816 and
+; the consumer's CPU is restored straight after (.pushcpu/.popcpu, so a
+; 65C02 consumer stays 65C02). Imports only; no code is assembled here.
+.pushcpu
+.p816
+.import LIB_NISTCURVES_PRECALC_reu_mul_SIZE: far
+.popcpu
 .import LIB_NISTCURVES_PRECALC_reu_mul_REGION
 .import LIB_NISTCURVES_PRECALC_reu_mul_SHARED
 .endif
