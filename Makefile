@@ -126,13 +126,31 @@ STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
 # object gets a FORCE prerequisite, so `-n` prints the full rebuild a real run
 # would do and `-q` correctly answers "out of date".
 #
-# Finding the flags: MAKEFLAGS differs by make version. Measured on 3.81
-# (macOS /usr/bin/make): `-n` alone gives "n", but with a long option it is
-# " --no-print-directory -n" -- long options FIRST -- so the common
-# `$(firstword -$(MAKEFLAGS))` idiom misses it. 4.x puts the letter word
-# first ("n --no-print-directory -- VAR=val"). Dropping every `--...` word and
-# every `VAR=val` word leaves the single-letter word first on both.
-MAKE_FLAG_WORD := $(firstword $(filter-out %=%,$(filter-out --%,$(MAKEFLAGS))))
+# Finding the flags. A false DRY verdict on a real build is the dangerous
+# direction: it skips the wipe AND the stamp update, so the next build with
+# the old knobs answers "Nothing to be done" over objects built with the new
+# ones. MAKEFLAGS differs by make version:
+#   3.81 (macOS /usr/bin/make, measured): "n", or with a long option
+#        " --no-print-directory -n" -- long options FIRST, cluster dash-led,
+#        so the common `$(firstword -$(MAKEFLAGS))` idiom misses `-n`.
+#   4.x: the single-letter cluster, if any, is the FIRST word and carries no
+#        dash ("kn -Otarget -I/path --no-print-directory -- VAR=val"). With
+#        no cluster the first word is an option such as `-Otarget` or `-I/x`,
+#        whose argument can hold an n/q/t.
+# So: stop at the `--` that opens the command-line-variable section (its
+# escaped-space fragments, e.g. `../shared/include`, are values, not flags);
+# a dash-less first word is the cluster; otherwise accept only single-dash
+# words made ENTIRELY of argument-less flag letters, which rejects
+# `-Otarget`, `-I/path`, `-j4` and every `--long` option. Every word is held
+# to that letter set either way. MAKEFLAGS_UNDER_TEST is a test seam for
+# tools/check_inc_deps.py's classifier table; nothing else sets it.
+MAKEFLAGS_FOR_CLASSIFIER := $(if $(filter undefined,$(origin MAKEFLAGS_UNDER_TEST)),$(MAKEFLAGS),$(MAKEFLAGS_UNDER_TEST))
+_mf_upto_dd = $(if $(strip $1),$(if $(filter --,$(firstword $1)),,$(firstword $1) $(call _mf_upto_dd,$(wordlist 2,$(words $1),$1))))
+_mf_strip_noarg = $(subst B,,$(subst L,,$(subst R,,$(subst S,,$(subst b,,$(subst d,,$(subst e,,$(subst i,,$(subst k,,$(subst n,,$(subst p,,$(subst q,,$(subst r,,$(subst s,,$(subst t,,$(subst w,,$1))))))))))))))))
+_mf_cluster = $(if $1,$(if $(call _mf_strip_noarg,$1),,$1))
+MF_WORDS := $(strip $(call _mf_upto_dd,$(MAKEFLAGS_FOR_CLASSIFIER)))
+MF_FIRST := $(firstword $(MF_WORDS))
+MAKE_FLAG_WORD := $(if $(filter -%,$(MF_FIRST)),$(foreach w,$(filter-out --%,$(filter -%,$(MF_WORDS))),$(call _mf_cluster,$(patsubst -%,%,$(w)))),$(call _mf_cluster,$(MF_FIRST)))
 MAKE_DRY_RUN := $(findstring n,$(MAKE_FLAG_WORD))$(findstring q,$(MAKE_FLAG_WORD))$(findstring t,$(MAKE_FLAG_WORD))
 #
 # Goals that build nothing from src/ must not invalidate build/ either: a
@@ -140,7 +158,10 @@ MAKE_DRY_RUN := $(findstring n,$(MAKE_FLAG_WORD))$(findstring q,$(MAKE_FLAG_WORD
 # The stamp is left as it was, so the next BUILD with these knobs still sees
 # the mismatch and invalidates then -- the guarantee is unchanged.
 NON_BUILD_GOALS := clean dist check-harness-routing check-release-notes \
-                   check-release-state check-inc-deps
+                   check-release-state check-inc-deps print-dry-classify
+ifneq ($(filter print-dry-classify,$(MAKECMDGOALS)),)
+$(info MAKE_DRY_RUN=[$(MAKE_DRY_RUN)])
+endif
 NON_BUILD_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS)),,yes))
 ifneq ($(CURRENT_KNOBS),$(STORED_KNOBS))
 ifneq ($(MAKE_DRY_RUN),)
@@ -173,6 +194,11 @@ endif
 
 all: $(PRG)
 
+# Prints the dry-run classifier's verdict (at parse time, see above) and does
+# nothing else. Used by tools/check_inc_deps.py; a non-build goal.
+.PHONY: print-dry-classify
+print-dry-classify: ;@:
+
 # Dry-run arm of the knob stamp above (issue #178). Placed after `all:` so it
 # can never become the default goal.
 ifdef KNOB_FORCE
@@ -189,7 +215,11 @@ FORCE:
 $(wildcard $(BUILD_DIR)/*.o): Makefile
 
 # Header dependencies written by ca65 --create-dep (see ASSEMBLE, issue #178).
+# Not read for goals that build nothing: a corrupt .d is a parse error
+# ("missing separator. Stop."), and `make clean` is the recovery for it.
+ifeq ($(NON_BUILD_ONLY),)
 -include $(wildcard $(BUILD_DIR)/*.d)
+endif
 
 # --- ca65 + ld65 multi-object build (default) ---
 # -g on ca65 embeds source-line debug info in each .o; --dbgfile on ld65
@@ -856,12 +886,13 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 # Same globs the knob stamp invalidates, so the variant test PRGs
-# (nocomb / onchip / onchip-nocomb), their labels_* / labels_*_raw files and
-# the stamp itself go too -- the old explicit list left all of them behind
-# (issue #178). Dropping the stamp is safe: the next build sees "no stamp" as
-# a knob change, which on an emptied build/ deletes nothing and rewrites it.
+# (nocomb / onchip / onchip-nocomb) and their labels_* / labels_*_raw files
+# go too -- the old explicit list left them behind (issue #178). The knob
+# stamp is KEPT on purpose: it records the knobs, not an artifact, and
+# deleting it made `make clean all` leave no stamp, so the following `make
+# all` saw a "knob change" and reassembled every TU.
 clean:
-	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.d $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg $(CONTRACT_STAMP)
+	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.d $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg
 	rm -rf $(LIB_DIR)
 
 # --- Reproducible release tarball --------------------------------------------

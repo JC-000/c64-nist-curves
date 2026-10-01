@@ -33,10 +33,19 @@ contract).
   rebuild (`-n` prints it, `-q` answers "stale"); goals that build nothing
   (`clean`, `dist`, `check-release-*`, `check-harness-routing`,
   `check-inc-deps`) leave it alone as well. A real build with changed knobs
-  invalidates exactly as before (check-archives' staleness leg passes).
+  invalidates exactly as before (check-archives' staleness leg passes). The
+  dry-run test reads MAKEFLAGS in both the GNU make 3.81 form (long options
+  first, then a dash-led cluster) and the 4.x form (a dash-less cluster
+  first). It stops at the `--` that opens the command-line-variable section,
+  and it accepts only words made entirely of argument-less flag letters, so
+  `-Otarget`, `-I/path` and variable fragments such as `../shared/include`
+  cannot pass for `-n`/`-q`/`-t`. That mistake would turn a real build into
+  a dry one and leave a stale stamp.
 - **`make clean` removes the variant test PRGs** (`nist-curves-{nocomb,onchip,
-  onchip-nocomb}.prg`), their `labels_*` / `labels_*_raw` files, the `.d`
-  files and the knob stamp.
+  onchip-nocomb}.prg`), their `labels_*` / `labels_*_raw` files and the `.d`
+  files. It deliberately keeps the knob stamp, so `make clean all` followed
+  by `make all` does not reassemble anything. Goals that build nothing do not
+  read the `.d` files, so `make clean` still works over a corrupt one.
 
 ### Added
 
@@ -44,8 +53,12 @@ contract).
   set and the object set (never hard-coded), then proves in a throwaway copy
   of the tree that touching each header reassembles every object including
   it, that `make clean` leaves no artefact, and that dry runs are side-effect
-  free. Opt-in; not a prerequisite of `all`. Default PRG and all twelve
-  archives are byte-identical before and after this change.
+  free. It also feeds a table of 3.81 and 4.x MAKEFLAGS strings to the
+  dry-run classifier through a `MAKEFLAGS_UNDER_TEST` seam
+  (`make print-dry-classify`). Opt-in; not a prerequisite of `all`. All four
+  PRGs are sha256-identical before and after this change. All twelve
+  archives have identical member bytes outside the Options/Files header
+  sections, which hold an assembly datetime.
 
 ## [0.15.0] — 2026-09-11
 
