@@ -511,7 +511,13 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .import reu_mul_tables_init      ; §8.2 canonical entry
 .import reu_mul_init             ; historical nist-curves alias, same address
 .endif
-.ifndef SHARED_REU_MUL_FETCH
+; Gated EXACTLY as src/mul_8x8.s gates the export: absent under
+; SHARED_REU_MUL_FETCH (the consumer provides it) and under FP_ONCHIP_MUL (the
+; onchip profile never DMAs a row, so the archive does not ship the fetch).
+; The header used to declare it for the onchip archives too, and a consumer
+; referencing it got `Unresolved external 'reu_fetch_mul_row'` (#170).
+; Bare import, no .else pin: this is an entry point, not a value.
+.if .not (.defined(SHARED_REU_MUL_FETCH) .or .defined(FP_ONCHIP_MUL))
 ; Canonical per-row fetch: A = row index on entry; on return the 512 bytes are
 ; at LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO / _STAGE_HI. Offered to consumers
 ; that want to drive the fetch themselves — the library's own fp_mul / fp_sqr
