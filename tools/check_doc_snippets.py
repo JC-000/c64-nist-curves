@@ -173,9 +173,17 @@ def library_exports():
 
 def assemble(block, tmpdir):
     """Assemble the block verbatim. No wrapper, by policy (see module docstring)."""
-    stem = f"{block.doc.replace('.', '_')}_{block.line}"
+    # Issue #168: the stem used to be the doc path with only '.' replaced, so
+    # a --doc path with a directory component pointed into a subdirectory of
+    # tmpdir that did not exist (FileNotFoundError), and an ABSOLUTE --doc path
+    # made `Path(tmpdir) / stem` discard tmpdir altogether -- the tool wrote,
+    # and could overwrite, <stem>.s / <stem>.o beside the user's document.
+    # Every non-alphanumeric character is flattened, so the stem is a single
+    # path component; the assert keeps it that way.
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", f"{block.doc}_{block.line}").strip("_")
     spath = Path(tmpdir) / f"{stem}.s"
     opath = Path(tmpdir) / f"{stem}.o"
+    assert spath.parent == Path(tmpdir) and opath.parent == Path(tmpdir), stem
     spath.write_text("\n".join(block.body) + "\n")
     rc, out = sh(["ca65", "--cpu", "6502", "-I", str(ROOT / "src"),
                   "-o", str(opath), str(spath)])

@@ -1721,7 +1721,17 @@ def gated_surface_check(failures, archives):
             uobj = Path(td) / (obj + "_ungated.o")
             rc, out = sh(["ca65", "--cpu", "6502", *dargs,
                           "-I", "src", "-o", str(uobj), f"src/{tu}.s"])
-            urecs = od65_export_records(uobj) if not rc else None
+            if rc:
+                failures.append(f"gated surface [{arm}]: does not assemble ungated")
+                print(f"  GATE FAIL [{arm}]: does not assemble ungated: "
+                      f"{out.splitlines()[0] if out else ''}")
+                continue
+            # Issue #168: rc and an unreadable dump used to share one None
+            # and one message, so an od65 failure on an object ca65 had just
+            # built was reported as "does not assemble ungated" -- sending the
+            # operator to the wrong tool. Same two-branch split as the gated
+            # arm below.
+            urecs = od65_export_records(uobj)
             unames = set(urecs) if isinstance(urecs, dict) else urecs
             if unames is COUNT_MISMATCH:
                 failures.append(f"gated surface [{arm}]: name extraction "
@@ -1730,9 +1740,9 @@ def gated_surface_check(failures, archives):
                 print(f"  GATE FAIL [{arm}]: extraction dropped names vs Count")
                 continue
             if unames is None:
-                failures.append(f"gated surface [{arm}]: does not assemble ungated")
-                print(f"  GATE FAIL [{arm}]: does not assemble ungated: "
-                      f"{out.splitlines()[0] if out else ''}")
+                failures.append(f"gated surface [{arm}]: ungated dump is unreadable "
+                                "(ca65 assembled it; od65 could not read it)")
+                print(f"  GATE FAIL [{arm}]: ungated dump unreadable")
                 continue
             owns = bare_gated(unames)
             owned[obj] = sorted(owns)
