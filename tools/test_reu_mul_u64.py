@@ -98,7 +98,7 @@ not happen, or did not finish, for a measurement.
   2    refused to start: device lock not acquired (no --wait, or --wait
        timed out), or --firmware-note rejected against /v1/info; also
        argparse's own status for a command-line usage error
-  3   no real verdict: every cell NOT_RUN / ERROR / CONTAMINATED, or none
+  3    no real verdict: every cell NOT_RUN / ERROR / CONTAMINATED, or none
   4    partial: some declared cells NOT_RUN / ERROR / CONTAMINATED (e.g.
        a clock leg 4 discarded), the rest PASS / FAIL
   5    a FAIL at the shipped settle (106 cy body) on a mitigated build:
@@ -178,7 +178,7 @@ DEFAULT_LABELS = os.path.join(BUILD_DIR, "labels.txt")
 # note it IS the reported version (marked unverified for patch level), and an
 # explicit note must begin with the reported version verbatim or the run
 # refuses before touching anything.
-FIRMWARE_UNVERIFIED_SUFFIX = "(patch_level_unverified_by_/v1/info)"
+FIRMWARE_UNVERIFIED_SUFFIX = "(patch_level_unverified_by_v1_info)"
 
 
 def firmware_note_for_row(reported_fw, note):
@@ -195,10 +195,19 @@ def firmware_note_for_row(reported_fw, note):
     rep_ok = bool(re.match(r"\d+\.\d+", rep_core))
     if note is None:
         if not rep_ok:
-            return (f"{rep or '?'}(firmware_version_not_reported_by_/v1/info)",
+            return (f"{rep or '?'}(firmware_version_not_reported_by_v1_info)",
                     None)
         return f"{rep}{FIRMWARE_UNVERIFIED_SUFFIX}", None
-    note = str(note).strip()
+    note = str(note)
+    # The note is embedded in space-delimited key=value CELL rows, inside the
+    # '/'-delimited device field: whitespace, '=' or '/' would let it forge
+    # or split fields ("1.1.0 verdict=PASS" adds a second verdict).  A strict
+    # charset rather than a blacklist.
+    if not re.fullmatch(r"[A-Za-z0-9._+()~-]+", note):
+        return None, (f"--firmware-note {note!r} may contain only letters, "
+                      f"digits and . _ + ( ) ~ - (no whitespace, '=' or "
+                      f"'/'): it is written into space-delimited key=value "
+                      f"CELL rows and the '/'-delimited device field.")
     if not rep_ok:
         return None, (f"--firmware-note {note!r} cannot be checked: /v1/info "
                       f"reported firmware_version {reported_fw!r}, which is "
@@ -232,12 +241,22 @@ def device_identity_changed(before: dict, after: dict) -> list[str]:
     return [k for k in _IDENTITY_FIELDS if before.get(k) != after.get(k)]
 
 
+def _row_token(value) -> str:
+    """One CELL-row token: no whitespace (the row is space-delimited), no
+    '=' (key=value) and no '/' (the device field's own separator).  The
+    product name is "Ultimate 64 Elite" / "C64 Ultimate", which used to
+    split `device=` into three row tokens."""
+    return re.sub(r"[\s=/]+", "_", str(value)) or "?"
+
+
 def device_string(info: dict, note: str) -> str:
     product = info.get("product", "?")
     serial = info.get("unique_id") or info.get("serial") or "?"
     fpga = info.get("fpga_version", "?")
     core = info.get("core_version", "?")
-    return f"{product}/{serial}/fw{note}/fpga{fpga}/core{core}"
+    return "/".join(_row_token(x) for x in
+                    (product, serial, f"fw{note}", f"fpga{fpga}",
+                     f"core{core}"))
 
 
 def acquire_device_lock(lock, wait: bool, lock_timeout: float) -> int:
@@ -2023,6 +2042,20 @@ def self_test() -> int:
               f"{'accepted' if ok_want else 'REFUSED'}",
               (note == nt and why is None) if ok_want
               else (note is None and bool(why)), f"{note!r} {why!r}")
+    # The note lands inside space-delimited key=value CELL rows.
+    for nt in ("1.1.0 verdict=PASS clock_measured=64.0", "1.1.0 + patch814",
+               "1.1.0+k=v", "1.1.0\tx", "1.1.0+patch\n",
+               "1.1.0/fpga999"):
+        note, why = firmware_note_for_row("1.1.0", nt)
+        check(f"note {nt!r} (whitespace, '=' or '/') -> REFUSED",
+              note is None and bool(why), f"recorded {note!r}")
+    for dev_info in (u64e, c64u, dict(c64u, firmware_version="?")):
+        nt_, _w = firmware_note_for_row(dev_info["firmware_version"], None)
+        ds_ = device_string(dev_info, nt_)
+        check(f"device field for {dev_info['product']!r} is one token "
+              f"with exactly 5 '/'-fields (no whitespace or '=')",
+              not re.search(r"[\s=]", ds_) and len(ds_.split("/")) == 5,
+              repr(ds_))
     note, why = firmware_note_for_row("1.1.0", "1.1.5")
     check("a note claiming a different patch release (1.1.5 vs 1.1.0) -> "
           "REFUSED", note is None and bool(why), f"recorded {note!r}")
@@ -2626,7 +2659,10 @@ def parse_args(argv):
                         "'3.15+patch814'. MUST begin with the version "
                         "/v1/info reports or the run refuses (issue #172). "
                         "Default: the reported version, marked unverified "
-                        "for patch level")
+                        "for patch level. The guard pins ONLY the base "
+                        "version; everything after it is the operator's "
+                        "unverified claim. Allowed characters: letters, "
+                        "digits, . _ + ( ) ~ -")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--verify-builds", action="store_true")
