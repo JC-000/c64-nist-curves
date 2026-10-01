@@ -995,16 +995,21 @@ CLOCK_COUNTER_BYTES = 3
 CLOCK_MAX_PASSES = (1 << (8 * CLOCK_COUNTER_BYTES)) - 1
 
 # Issue #173.  The old check ran ONE window sized to ~0.5 s at the expected
-# clock and divided by its jiffy count, so any fixed overhead O inside the
-# window read as a clock deficit of 0.5/(0.5+O) -- the SAME percentage at
-# every setting, because the window was rescaled to 0.5 s each time (2
-# jiffies -> exactly 15/16, the 0.9375 seen at 16, 48 and 64 MHz -- though
-# 2.0% of that ratio was the cycle-model shortfall fixed separately, so the
-# hardware overhead was likely nearer 1-1.5 jiffies; the fit now MEASURES it
-# instead of either of us assuming it), and a 30-jiffy window quantises at
-# +-3.3%.  Now two windows are run and the clock
-# is the SLOPE: f = (cycles2 - cycles1) / (jiffies2 - jiffies1) * 60.  A
-# fixed overhead is the intercept and cancels; it is reported, not assumed.
+# clock and divided by its jiffy count.  Two properties of that shape made it
+# unfit as evidence, whatever the device was doing:
+#   * IF any fixed overhead O sat inside the window, it would read as a clock
+#     deficit of 0.5/(0.5+O) -- the same percentage at every setting, because
+#     the window was rescaled to 0.5 s each time;
+#   * a ~30-jiffy window quantises at +-3.3%.
+# Whether such an overhead exists is NOT established: bench_start /
+# bench_stop zero and read the jiffy clock on the C64 itself, around the
+# loop, so no host latency enters the window, and the real overhead may be
+# ~0.  The reported constant 0.9375 also contained the 2.0% cycle-model
+# shortfall fixed separately; what remains is not attributed here.  So the
+# clock is now the SLOPE of two windows,
+# f = (cycles2 - cycles1) / (jiffies2 - jiffies1) * 60: any fixed overhead is
+# the intercept and cancels, and the intercept is printed as MEASURED, with
+# its bound, rather than assumed in either direction.
 # The long window (~10 s, sized from the short one's crude reading so a clock
 # far from the expected one cannot run into the call timeout) puts ~570
 # jiffies between the two; each count is off by under one jiffy at its own
@@ -2754,7 +2759,8 @@ def main(argv=None):
                     off = abs(m - mhz) / mhz
                     print(f"    set {mhz} MHz -> measured {m:.2f} "
                           f"+-{m.pm:.2f} MHz ({off * 100:.1f}% off); fixed "
-                          f"overhead removed by the two-point fit "
+                          f"overhead (fit intercept, as measured; may be "
+                          f"~0) "
                           f"{m.overhead_s * 1000:.1f} +-"
                           f"{m.overhead_pm_s * 1000:.1f} ms; windows "
                           f"(passes, jiffies) {m.windows}"
