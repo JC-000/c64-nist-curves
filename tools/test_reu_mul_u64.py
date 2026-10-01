@@ -993,10 +993,12 @@ def simulate_6502(code: bytes, org: int, pc: int, stop: set[int],
             x = code[i + 1]; z = x == 0; pc += 2; cyc += 2
         elif op == DEX:
             x = (x - 1) & 0xFF; z = x == 0; pc += 1; cyc += 2
-        elif op in (LDA_ABS, ORA_ABS, DEC_ABS):
+        elif op in (LDA_ABS, STA_ABS, ORA_ABS, DEC_ABS):
             ad = code[i + 1] | (code[i + 2] << 8)
             if op == LDA_ABS:
                 a = mem.get(ad, 0); z = a == 0; cyc += 4
+            elif op == STA_ABS:
+                mem[ad] = a; cyc += 4
             elif op == ORA_ABS:
                 a |= mem.get(ad, 0); z = a == 0; cyc += 4
             else:
@@ -1996,6 +1998,71 @@ def self_test() -> int:
     est48 = run_clock_measurement(48, synth(48, 2 / 60, [0.5], []))
     ln48 = CellResult("x", 48, 12, "512 KB", "cpu", "fetch").line(
         "d", est48, "0" * 64)
+    # -- OP_CLOCK end to end: host encoding -> trampoline copy -> counter ----
+    # The loop checks above start at `couter` with the counter pre-seeded, so
+    # the ARG->counter copy and the host's encode/decode were never run.
+    # Here the ARGs are written by Device._clock_window itself, the copy runs
+    # on the assembled bytes, and the fake answers the way bench_stop does:
+    # jiffy_clock $A0 (MSB), $A1, $A2 (LSB) copied in order to bench_ticks.
+    class _FakeClockDev(Device):
+        def __init__(self, f_mhz):
+            super().__init__(None, None)
+            self.labels = fake
+            self.mem: dict[int, int] = {}
+            self.f = f_mhz
+            self.code, self.syms = build_trampoline(fake, symbols=True)
+            self.counters: list[int] = []
+
+        def write(self, addr, data):
+            for i_, b_ in enumerate(bytes(data)):
+                self.mem[addr + i_] = b_
+
+        def read(self, addr, n):
+            return bytes(self.mem.get(addr + i_, 0) for i_ in range(n))
+
+        def call(self, op, timeout, poll_interval=0.02):
+            if op != OP_CLOCK:
+                raise AssertionError(f"unexpected op {op}")
+            start = self.syms["clock"]
+            if self.code[start - TRAMPOLINE_ADDR] != JSR:
+                raise AssertionError("OP_CLOCK no longer opens with jsr")
+            simulate_6502(self.code, TRAMPOLINE_ADDR, start + 3,
+                          {self.syms["couter"]}, self.mem)
+            n_ = sum(self.mem.get(ARG_ADDR + 4 + k, 0) << (8 * k)
+                     for k in range(CLOCK_COUNTER_BYTES))
+            self.counters.append(n_)
+            j_ = int(clock_cycles(n_) / (self.f * 1e6) * 60.0 + 0.5)
+            self.write(fake["bench_ticks"],
+                       bytes([(j_ >> 16) & 0xFF, (j_ >> 8) & 0xFF, j_ & 0xFF]))
+            return 0.1
+    fake["bench_ticks"] = 0x0890
+    try:
+        bad = []
+        for f_, n_ in ((0.05, 0x012345), (0.2, 0x00FF01), (48, 0x0A0B0C),
+                       (1, 0x000102)):
+            fd = _FakeClockDev(f_)
+            j_got = fd._clock_window(n_, 48)
+            j_want = int(clock_cycles(n_) / (f_ * 1e6) * 60.0 + 0.5)
+            if fd.counters != [n_] or j_got != j_want:
+                bad.append(f"n=${n_:06X} f={f_}: counter "
+                           f"{[hex(c) for c in fd.counters]} jiffies "
+                           f"{j_got} want {j_want}")
+        check("_clock_window end to end: ARG encode -> trampoline copy -> "
+              "24-bit counter -> bench_ticks decode (3-byte jiffy counts "
+              "included)", not bad, "; ".join(bad))
+        bad = []
+        for f_ in (1, 16, 48, 64):
+            est_ = _FakeClockDev(f_).measure_mhz(f_)
+            if est_ is None or not est_.lo <= f_ <= est_.hi:
+                bad.append(f"{f_} MHz -> {est_ and (est_.lo, est_.hi)}")
+        check("measure_mhz end to end through the fake device brackets the "
+              "true clock at 1/16/48/64 MHz", not bad, "; ".join(bad))
+    except Exception as e:
+        check("OP_CLOCK end-to-end fake device", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        fake.pop("bench_ticks", None)
+
     check("a CELL row carries clock_measured AND its clock_pm bound",
           est48 is not None and "clock_measured=48.0" in ln48
           and re.search(r"clock_pm=0\.\d\d ", ln48) is not None, ln48)
@@ -2066,6 +2133,12 @@ def self_test() -> int:
           device_identity_changed(u64e, dict(u64e)) == [])
     check("a different box answering after reboot is detected",
           device_identity_changed(u64e, c64u) != [])
+    for fld, newv in (("firmware_version", "3.16"), ("fpga_version", "120"),
+                      ("core_version", "1.4E"), ("product", "C64 Ultimate"),
+                      ("unique_id", "000000")):
+        ch_ = device_identity_changed(u64e, dict(u64e, **{fld: newv}))
+        check(f"only {fld} changes across a reboot -> refused, naming it",
+              ch_ == [fld], f"changed fields reported: {ch_}")
     note, why = firmware_note_for_row("3.15", "3.15+patch814")
     check("an explicit note agreeing with /v1/info is recorded verbatim",
           note == "3.15+patch814" and why is None, f"{note!r} {why!r}")
