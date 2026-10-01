@@ -3227,6 +3227,111 @@ def footprint_basis_check(failures):
               f"the sum-based §5 measurand equals the placed span)")
 
 
+# Names the contract says no library may export in ANY configuration -- not
+# "gated", not "deprecated", forbidden. Distinct from BARE_GATED, whose names
+# a default build legitimately exports for the §6.5 window and only the
+# LIB_NO_BARE_EXPORTS build must suppress.
+#   §8.0 (SPEC.md:271)  the LIB_SHARED_PRIMITIVES_* bit constants
+#   §8.1 (SPEC.md:345)  LIB_SHARED_SQTAB_BASE, and sqtab_lo/sqtab_hi derived
+#                       from it -- the latter exported, gated, from v0.10.0
+#                       through v0.15.0 and removed at v0.16.0
+#   §8.2 (SPEC.md:389)  every LIB_SHARED_REU_MUL_* consumer-input equate
+FORBIDDEN_EXPORTS = {"sqtab_lo", "sqtab_hi", "LIB_SHARED_SQTAB_BASE"}
+FORBIDDEN_EXPORTS_RE = re.compile(r"^LIB_SHARED_(REU_MUL_|PRIMITIVES_)")
+
+
+def forbidden(names):
+    return {n for n in names if n in FORBIDDEN_EXPORTS
+            or FORBIDDEN_EXPORTS_RE.match(n)}
+
+
+@leg
+def forbidden_export_check(failures, archives):
+    """§8.0/§8.1/§8.2: names no library may export, in any arm, gated or not.
+
+    Two populations, because each misses something the other sees:
+    (1) every member of every BUILT archive, extracted with `ar65 x` -- the
+        artifact a consumer links, including deferral arms (app-owned) that
+        no source sweep reproduces unless it reads the Makefile right;
+    (2) every shipped object arm re-assembled from source both ungated and
+        under LIB_NO_BARE_EXPORTS -- "forbidden" means no configuration, and
+        the gated build is one no archive ships, so (1) cannot see it.
+    Every dump must be readable (od65_export_names is None/COUNT_MISMATCH on
+    an untrustworthy dump), and an empty population fails: an absence
+    assertion over nothing is the empty-population shape."""
+    import tempfile
+    print("\n=== §8 forbidden exports (sqtab_lo/hi, LIB_SHARED_* inputs) ===")
+    hits, unreadable, members = [], [], 0
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        built = sorted(LIBDIR.glob("*.a"))
+        if not built:
+            failures.append("forbidden exports: no archives built -- vacuous")
+            print("  FORBID FAIL: no archives found")
+            return
+        for apath in built:
+            rc, out = sh(["ar65", "t", str(apath)])
+            names = [ln.strip() for ln in out.splitlines()
+                     if ln.strip().endswith(".o")]
+            if rc or not names:
+                unreadable.append(f"{apath.name} (ar65 t)")
+                continue
+            xdir = td / apath.stem
+            xdir.mkdir()
+            p = subprocess.run(["ar65", "x", str(apath), *names], cwd=xdir,
+                               capture_output=True, text=True)
+            if p.returncode:
+                unreadable.append(f"{apath.name} (ar65 x)")
+                continue
+            for mem in names:
+                ex = od65_export_names(xdir / mem)
+                if ex is None or ex is COUNT_MISMATCH:
+                    unreadable.append(f"{apath.name}:{mem}")
+                    continue
+                members += 1
+                note_examined(1, "archive member")
+                bad = forbidden(ex)
+                if bad:
+                    hits.append(f"{apath.name}:{mem} exports {sorted(bad)}")
+        arms = shipped_object_arms(archives)
+        nsrc = 0
+        for obj, (src, defines, using) in sorted(arms.items()):
+            for gated in (False, True):
+                dargs = []
+                for d in defines:
+                    dargs += ["-D", d]
+                if gated:
+                    dargs += ["-D", "LIB_NO_BARE_EXPORTS=1"]
+                o = td / f"{'g' if gated else 'u'}_{obj}.o"
+                rc, _ = sh(["ca65", "--cpu", "6502", "-I", "src", *dargs,
+                            "-o", str(o), f"src/{src}.s"])
+                ex = None if rc else od65_export_names(o)
+                label = f"{obj}.o{' [gated]' if gated else ''}"
+                if ex is None or ex is COUNT_MISMATCH:
+                    unreadable.append(label)
+                    continue
+                nsrc += 1
+                note_examined(1, "source arm")
+                bad = forbidden(ex)
+                if bad:
+                    hits.append(f"{label} from src/{src}.s exports {sorted(bad)}")
+    if unreadable:
+        failures.append(f"forbidden exports: unreadable {unreadable} -- an "
+                        "unread dump is not a clean one")
+        print(f"  FORBID FAIL: unreadable {unreadable}")
+    if members == 0 or nsrc == 0:
+        failures.append(f"forbidden exports: examined {members} archive "
+                        f"members and {nsrc} source arms -- vacuous")
+        print("  FORBID FAIL: empty population")
+    for h in hits:
+        failures.append(f"forbidden exports: {h} (SPEC §8.0/§8.1/§8.2 MUST NOT)")
+        print(f"  FORBID FAIL: {h}")
+    if not hits and not unreadable and members and nsrc:
+        print(f"  forbidden exports OK ({members} archive members across "
+              f"{len(built)} archives + {nsrc} source arms, ungated and "
+              "gated: none exports a §8 forbidden name)")
+
+
 @leg
 def sibling_sqtab_collision_check(failures):
     """§6.1 + §8.1: the MANDATORY boot call must not drag a bare sqtab name in.
@@ -3250,27 +3355,19 @@ def sibling_sqtab_collision_check(failures):
     green in the default profile and broken in all five onchip archives, which
     a three-archive sample would have missed.
 
-    Second obligation, same leg (the drift the split introduced): `sqtab_lo`
-    used to be one symbol serving as both the equate the body indexes and the
-    name the archive exports. Since #155 they are two definitions that happen
-    to agree -- `mul_8x8.s` derives its own from `sqtab_base.inc`, and
-    `sqtab_aliases.s` derives and exports the exported pair. A `-D` cannot
-    split them (CONTRACT_DEFINES reaches both TUs) but a source edit to one
-    file silently can, and #154's "values are derived, never restated" is the
-    standing warning. So every archive that exports the pair is link-resolved
-    and compared against the base parsed out of src/sqtab_base.inc."""
+    Second obligation, same leg: NO archive may resolve `sqtab_lo` or
+    `sqtab_hi` for a consumer at all. SPEC §8.1 says they "MUST NOT be
+    exported either -- they are source-level names each consuming TU derives".
+    Through v0.15.0 this half was a value pin instead -- every archive that
+    exported the pair was checked against src/sqtab_base.inc -- because the
+    export was a gated §6.5-window item. The export is gone (v0.16.0), and the
+    value pin turned into a leg that passes by finding nothing to pin, so it is
+    now the absence assertion it should become. Absence over a link proves
+    nothing unless the probe CAN resolve: a positive control links the same
+    probe against a stand-in that does export the pair, and must succeed and
+    place `sqtab_lo` in the map, before any archive's "unresolved" counts."""
     import tempfile
-    print("\n=== §6.1 sibling bare-name collision + §8.1 value pin (sqtab_*) ===")
-
-    inc = (REPO / "src" / "sqtab_base.inc").read_text()
-    m = re.search(r"LIB_SHARED_SQTAB_BASE\s*=\s*\$([0-9a-fA-F]+)", inc)
-    if not m:
-        failures.append("sqtab collision: cannot parse the default base out of "
-                        "src/sqtab_base.inc -- the value pin below would be "
-                        "comparing against nothing")
-        print("  SQTAB FAIL: base unparsed from sqtab_base.inc")
-        return
-    base = int(m.group(1), 16)
+    print("\n=== §6.1 sibling bare-name collision + §8.1 absence (sqtab_*) ===")
 
     sibling = ('; stand-in for a sibling §8.1 adopter deriving the same two names\n'
                '.export sqtab_lo, sqtab_hi\n'
@@ -3280,10 +3377,11 @@ def sibling_sqtab_collision_check(failures):
     consumer = ('.import sqtab_init\n'
                 '.segment "CODE"\n'
                 'entry:\n\tjsr sqtab_init\n\trts\n')
-    # Value pin: import the exported name and read what it resolves to.
-    valprobe = ('.import sqtab_lo\n'
+    # Absence probe: a consumer that imports the two names from the library.
+    valprobe = ('.import sqtab_lo, sqtab_hi\n'
                 '.segment "CODE"\n'
-                'entry:\n\tlda sqtab_lo\n\trts\n')
+                'entry:\n\tlda sqtab_lo\n\tlda sqtab_hi\n\trts\n')
+    want = {"sqtab_lo", "sqtab_hi"}
 
     archives = sorted(LIBDIR.glob("*.a"))
     if not archives:
@@ -3291,7 +3389,29 @@ def sibling_sqtab_collision_check(failures):
         print("  SQTAB FAIL: no archives found")
         return
 
-    checked = pinned = 0
+    # Positive control: the probe resolves when something exports the pair.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "cfg").write_text(CONSUMER_CFG)
+        (td / "s.s").write_text(sibling)
+        (td / "v.s").write_text(valprobe)
+        ok = all(sh(["ca65", "--cpu", "6502", "-o", str(td / f"{f}.o"),
+                     str(td / f"{f}.s")])[0] == 0 for f in ("s", "v"))
+        mp = td / "pc.map"
+        rc, pout = (sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "pc.prg"),
+                        "-m", str(mp), str(td / "v.o"), str(td / "s.o")])
+                    if ok else (1, "probe did not assemble"))
+        if rc or not mp.exists() or not re.search(
+                r"^sqtab_lo\s+00A000", mp.read_text(), re.M):
+            failures.append("sqtab absence: positive control failed -- the "
+                            "probe does not resolve sqtab_lo even against a "
+                            "stand-in exporting it, so 'unresolved' in an "
+                            f"archive would prove nothing: {pout.strip()[:200]}")
+            print("  SQTAB FAIL: positive control did not resolve the probe")
+            return
+    note_examined(1, "positive control")
+
+    checked = absent = 0
     for archive in archives:
         name = archive.name
         note_examined(1, "archive")
@@ -3326,38 +3446,23 @@ def sibling_sqtab_collision_check(failures):
                 continue
             checked += 1
 
-            # Value pin, on archives that export the pair at all. app-owned
-            # gates the export out under SHARED_SQTAB_INIT, so an unresolved
-            # external there is the CORRECT result, not a failure.
-            mp = td / "v.map"
+            # Absence (§8.1 MUST NOT export): the probe must fail to link, and
+            # fail on BOTH names. A link that fails for some other reason
+            # (cfg, assembler) is not evidence of absence.
             _, vout = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "v.prg"),
-                          "-m", str(mp), str(td / "v.o"), str(archive)])
-            if "Unresolved external" in vout or "unresolved external" in vout:
-                print(f"  sqtab OK [{name}] (no collision; exports no bare "
-                      "sqtab_lo, so nothing to pin)")
+                          str(td / "v.o"), str(archive)])
+            unresolved = set(re.findall(r"Unresolved external '([^']+)'", vout))
+            if unresolved == want:
+                absent += 1
+                print(f"  sqtab OK [{name}] (boot call pulls no bare name; "
+                      "resolves neither sqtab_lo nor sqtab_hi)")
                 continue
-            if not mp.exists():
-                failures.append(f"sqtab collision: {name} value probe produced "
-                                "no map, so the pin below examined nothing")
-                print(f"  SQTAB FAIL [{name}]: no map from the value probe")
-                continue
-            vm = re.search(r"^sqtab_lo\s+([0-9A-F]{6})", mp.read_text(), re.M)
-            if not vm:
-                failures.append(f"sqtab collision: {name} links sqtab_lo but it "
-                                "is absent from the map -- pin is vacuous")
-                print(f"  SQTAB FAIL [{name}]: sqtab_lo not in map")
-                continue
-            got = int(vm.group(1), 16)
-            if got != base:
-                failures.append(
-                    f"sqtab collision: {name} exports sqtab_lo = ${got:04x} but "
-                    f"src/sqtab_base.inc says ${base:04x} -- the alias TU and "
-                    "mul_8x8.s have drifted (values are derived, never restated)")
-                print(f"  SQTAB FAIL [{name}]: sqtab_lo ${got:04x} != base ${base:04x}")
-                continue
-            pinned += 1
-            print(f"  sqtab OK [{name}] (boot call pulls no bare name; "
-                  f"sqtab_lo = ${got:04x} matches sqtab_base.inc)")
+            exported = sorted(want - unresolved)
+            failures.append(
+                f"sqtab absence: {name} resolves {exported} for a consumer -- "
+                "SPEC §8.1: sqtab_lo/sqtab_hi MUST NOT be exported"
+                + ("" if exported else f" (probe failed otherwise: {vout.strip()[:200]})"))
+            print(f"  SQTAB FAIL [{name}]: archive resolves {exported}")
 
     if checked == 0:
         failures.append("sqtab collision: no archive completed the probe -- "
@@ -3365,7 +3470,7 @@ def sibling_sqtab_collision_check(failures):
         print("  SQTAB FAIL: nothing examined")
     else:
         print(f"  sqtab summary: {checked} archive(s) collision-free, "
-              f"{pinned} value-pinned against sqtab_base.inc")
+              f"{absent} of {len(archives)} export neither sqtab name")
 
 
 @leg
@@ -4349,6 +4454,7 @@ def _run_all_legs():
         ("ZP roster reconciliation", zp_roster_reconciliation_check, (failures,)),
         ("§5 footprint basis", footprint_basis_check, (failures,)),
         ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
+        ("§8 forbidden exports", forbidden_export_check, (failures, archives)),
         ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
         ("od65 extraction canary", od65_extraction_canary, (failures,)),
         ("APP_OWNED buffer ownership", app_owned_buffer_ownership_check, (failures,)),
