@@ -3361,26 +3361,156 @@ FORBIDDEN_EXPORTS = {"sqtab_lo", "sqtab_hi", "LIB_SHARED_SQTAB_BASE"}
 FORBIDDEN_EXPORTS_RE = re.compile(r"^LIB_SHARED_(REU_MUL_|PRIMITIVES_)")
 
 
-# Consumer knobs for pass (3): the §8.1 base, the §8.2 bank and staging
-# pages, and one §2 ZP slot (through CONTRACT_ZP_DEFINES, as §6.2 routes it).
-# Values differ from every default and keep each knob's own asserts satisfied
-# (page-aligned, stage_hi = stage_lo + $100, bank < 31 and clear of the comb
-# bank, ZP slot clear of the default block).
-FORBIDDEN_KNOB_PASS = (
-    "CONTRACT_DEFINES=-D LIB_SHARED_SQTAB_BASE=0xA000"
-    " -D LIB_SHARED_REU_MUL_STAGE_LO=0x7000 -D LIB_SHARED_REU_MUL_STAGE_HI=0x7100"
-    " -D LIB_SHARED_REU_MUL_BANK=0x03",
-    "CONTRACT_ZP_DEFINES=-D fp_src1=0x50",
-)
-# Exported symbol -> value the knob pass must have produced. Every archive
-# member exporting the symbol must carry the knob value, and at least one must
-# exist; otherwise the knob never reached the build.
-FORBIDDEN_KNOB_FLIPS = {
-    "LIB_NISTCURVES_SHARED_SQTAB_BASE": 0xA000,
-    "nistcurves_mul_dma_lo": 0x7000,
-    "LIB_NISTCURVES_SHARED_REU_MUL_BANK": 0x03,
-    "fp_src1": 0x50,
+# --- Pass (3): every consumer knob, DERIVED -------------------------------
+# Review gap (tX): the knob pass used to perturb a hand-listed four knobs, so
+# `.if LIB_NISTCURVES_REU_SETTLE_ITER <> 8 / .export sqtab_lo` in reu_config.s
+# passed. The population is now derived from the sources the archives are
+# built from (derive_knobs): every `.ifndef X` whose block assigns X, plus
+# every `.ifdef X` whose block reads X as a value. Every derived knob must
+# have a row here or in KNOB_UNPERTURBABLE (an unclassified knob FAILS), and a
+# row whose knob is no longer derived also fails (stale table).
+#
+# Two passes, each a full Makefile build of all twelve archives:
+#   HI -- every perturbable knob moved, upward where it is ordered;
+#   LO -- moved again to a second value, downward where the default allows,
+#         so an inequality gate (`.if X > d` or `.if X < d`) cannot sit on
+#         one side of both. A knob with no row in LO is perturbed in HI only
+#         (its default is already the minimum, or its pair is driven there).
+# One combined pass per direction is enough: every value below satisfies
+# the knob's own asserts (page alignment, bank < 31, the 1..255 settle range,
+# the §8.0 mask subset and onchip invariants, the 48 MHz settle-floor
+# margins) with every other knob moved at the same time.
+# ZP slots are routed through CONTRACT_ZP_DEFINES (§6.2); the rest through
+# CONTRACT_DEFINES.
+KNOB_PASS_HI = {
+    "LIB_SHARED_SQTAB_BASE": 0xA000,
+    "LIB_SHARED_REU_MUL_BANK": 0x05,
+    "LIB_SHARED_REU_MUL_STAGE_LO": 0x7000,
+    "LIB_NISTCURVES_REU_BANK_COMB": 0x0A,
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P256": 0x8000,
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P384": 0xC000,
+    "LIB_NISTCURVES_REU_SETTLE_ITER": 200,
+    "REU_SETTLE_FLOOR_CYCLES_48MHZ": 55,     # < the 60 B tightest-site margin
+    "LIB_NISTCURVES_REU_BANKS_USED": 0x00FF,
+    "LIB_NISTCURVES_ZP_USAGE_BYTES": 200,
+    "LIB_NISTCURVES_RESIDENT_BYTES": 60000,
+    "LIB_NISTCURVES_COLD_BYTES": 60000,
+    "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0001,
+    "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    "LIB_SHARED_PRIMITIVES_SQTAB": 0x0010,
+    "LIB_SHARED_PRIMITIVES_REU_MUL": 0x0020,
+    "LIB_SHARED_PRIMITIVES_CT_MUL_8X8": 0x0040,
 }
+KNOB_PASS_LO = {
+    "LIB_SHARED_SQTAB_BASE": 0x9800,
+    "LIB_NISTCURVES_REU_BANK_MUL": 0x07,     # direct; SHARED_REU_MUL_BANK stays 0
+    "LIB_SHARED_REU_MUL_STAGE_LO": 0x5000,
+    "LIB_NISTCURVES_REU_BANK_COMB": 0x01,
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P384": 0x2000,
+    "LIB_NISTCURVES_REU_SETTLE_ITER": 1,
+    "REU_SETTLE_FLOOR_CYCLES_48MHZ": 1,
+    "LIB_NISTCURVES_REU_BANKS_USED": 0x0000,
+    "LIB_NISTCURVES_ZP_USAGE_BYTES": 1,
+    "LIB_NISTCURVES_RESIDENT_BYTES": 1,
+    "LIB_NISTCURVES_COLD_BYTES": 1,
+    "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
+    "LIB_NISTCURVES_SHARED_CONSUMES": 0x0001,
+}
+# Knobs that are only meaningful as a pair: the companion is driven alongside
+# with the stated offset (§8.2: stage_hi = stage_lo + $100, asserted).
+KNOB_COMPANIONS = {"LIB_SHARED_REU_MUL_STAGE_LO": ("LIB_SHARED_REU_MUL_STAGE_HI", 0x100)}
+# Knobs that cannot be moved at all, and why.
+KNOB_UNPERTURBABLE = {
+    "LIB_SHARED_REU_MUL_OFFSET": "asserted = $0000 in src/reu_banks.inc (SPEC §8.2 "
+                                 "v0.x.0 constraint); any other value is an "
+                                 "assemble error, not a configuration",
+}
+# Where a perturbed knob is SEEN in the built archives, when that is not the
+# knob's own name. Every perturbed knob is checked: each member exporting the
+# observed symbol must carry the knob value, and at least one must exist.
+KNOB_OBSERVED_AS = {
+    "LIB_SHARED_SQTAB_BASE": "LIB_NISTCURVES_SHARED_SQTAB_BASE",
+    "LIB_SHARED_REU_MUL_BANK": "LIB_NISTCURVES_SHARED_REU_MUL_BANK",
+    "LIB_SHARED_REU_MUL_STAGE_LO": "nistcurves_mul_dma_lo",
+}
+# Perturbed but not observable in any artifact, and why. Still swept for
+# forbidden exports under the perturbation -- the sweep is the point; the
+# observation only proves the knob reached the build.
+KNOB_UNOBSERVABLE = {
+    "REU_SETTLE_FLOOR_CYCLES_48MHZ": "assert-only (src/reu_dma_done.inc): a "
+                                     "measured floor, never exported",
+    "LIB_SHARED_PRIMITIVES_SQTAB": "§8.0 bit constant: MUST NOT be exported "
+                                   "(SPEC.md:271), so nothing can carry it",
+    "LIB_SHARED_PRIMITIVES_REU_MUL": "§8.0 bit constant: MUST NOT be exported",
+    "LIB_SHARED_PRIMITIVES_CT_MUL_8X8": "§8.0 bit constant: MUST NOT be exported",
+}
+KNOB_SCAN_EXCLUDE_SUFFIX = "_INCLUDED"      # header include guards, not knobs
+_KNOB_GUARD_RE = re.compile(r"^\s*\.(ifndef|ifdef)\s+([A-Za-z_]\w*)\s*(?:;.*)?$")
+
+
+def derive_knobs(archives):
+    """{knob: "file:line"} for every consumer-overridable value the archived
+    sources read, and the set of those that are ZP slots (CONTRACT_ZP_DEFINES).
+
+    Population: the source of every shipped object arm (Makefile-derived) plus
+    every file those sources `.include`, transitively. A guard is a KNOB when
+    its block -- up to the matching `.else`/`.endif` -- assigns the name
+    (`.ifndef X` ... `X = ...`) or reads it as a value (`.ifdef X` ...
+    `... = X`). A pure presence switch (`.ifdef FP_ONCHIP_MUL`), an import
+    guard (`.ifndef X` / `.import X`) and a `*_INCLUDED` header guard are not
+    knobs."""
+    srcs = {src for src, _d, _u in shipped_object_arms(archives).values()}
+    todo = [REPO / "src" / f"{x}.s" for x in sorted(srcs)]
+    files = []
+    while todo:
+        f = todo.pop()
+        if f in files or not f.exists():
+            continue
+        files.append(f)
+        for inc in re.findall(r'^\s*\.include\s+"([^"]+)"', f.read_text(), re.M):
+            todo.append(REPO / "src" / inc)
+    knobs, zp = {}, set()
+    for f in sorted(files):
+        lines = f.read_text().splitlines()
+        for i, ln in enumerate(lines):
+            m = _KNOB_GUARD_RE.match(ln)
+            if not m or m.group(2).endswith(KNOB_SCAN_EXCLUDE_SUFFIX):
+                continue
+            kind, x = m.groups()
+            depth, body = 0, []
+            for nxt in lines[i + 1:]:
+                if re.match(r"^\s*\.if", nxt):
+                    depth += 1
+                elif re.match(r"^\s*\.endif", nxt):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif re.match(r"^\s*\.else", nxt) and depth == 0:
+                    break
+                body.append(nxt.split(";", 1)[0])
+            text = "\n".join(body)
+            assigns = re.search(rf"^\s*{x}\s*:?=", text, re.M)
+            reads = re.search(rf"^\s*[A-Za-z_]\w*\s*:?=[^\n\"]*\b{x}\b", text, re.M)
+            if (kind == "ifndef" and assigns) or (kind == "ifdef" and reads):
+                knobs.setdefault(x, f"{f.name}:{i + 1}")
+                if f.name == "zp_config.s":
+                    zp.add(x)
+    return knobs, zp
+
+
+def knob_pass_values(knobs, zp):
+    """(hi, lo) value dicts for every derived knob. ZP slot values are
+    computed from each slot's parsed default rather than tabled: +$60 / +$40
+    for slots below $80, -$40 / -$30 above, which keeps every moved slot
+    clear of every default slot and of each other."""
+    zp_text = (REPO / "src" / "zp_config.s").read_text()
+    hi, lo = dict(KNOB_PASS_HI), dict(KNOB_PASS_LO)
+    for x in sorted(zp):
+        m = re.search(rf"^\s*{x}\s*=\s*\$([0-9a-fA-F]+)", zp_text, re.M)
+        d = int(m.group(1), 16)
+        hi[x] = d + 0x60 if d < 0x80 else d - 0x40
+        lo[x] = d + 0x40 if d < 0x80 else d - 0x30
+    return hi, lo
 
 
 def forbidden(names):
@@ -3400,15 +3530,17 @@ def forbidden_export_check(failures, archives):
         under LIB_NO_BARE_EXPORTS -- "forbidden" means no configuration, and
         the gated build is one no archive ships, so (1) cannot see it;
     (3) every archive rebuilt by the REAL Makefile, in a throwaway BUILD_DIR,
-        with perturbed consumer knobs (FORBIDDEN_KNOB_PASS). Review mutant sA
-        wrapped `.export sqtab_lo, sqtab_hi` in
-        `.if LIB_SHARED_SQTAB_BASE <> $9c00`. That is invisible to (1) and
-        (2), which only ever assemble at the default knob values. Driving
-        make, not ca65 directly, keeps the arms Makefile-derived: make decides
-        which TU sees CONTRACT_DEFINES and which also sees
-        CONTRACT_ZP_DEFINES, exactly as for a consumer. Each knob must be seen
-        to have reached the artifact (FORBIDDEN_KNOB_FLIPS) -- a pass whose
-        knobs silently missed the build would re-test the defaults.
+        twice (KNOB_PASS_HI / KNOB_PASS_LO), with EVERY consumer knob the
+        archived sources read moved off its default -- the knob set derived
+        by derive_knobs(), not listed. Review mutants sA (`.if
+        LIB_SHARED_SQTAB_BASE <> $9c00`) and tX (`.if
+        LIB_NISTCURVES_REU_SETTLE_ITER <> 8`) each keyed a forbidden export
+        on a knob; (1) and (2) only assemble at defaults and saw neither.
+        Driving make keeps the arms Makefile-derived (make decides which TU
+        sees CONTRACT_ZP_DEFINES). Each perturbed knob must be SEEN in the
+        artifact, or carry a recorded reason it cannot be
+        (KNOB_UNOBSERVABLE) -- a pass whose knobs silently missed the build
+        would re-test the defaults.
     Every dump must be readable (od65_export_names is None/COUNT_MISMATCH on
     an untrustworthy dump), and an empty population fails: an absence
     assertion over nothing is the empty-population shape."""
@@ -3468,53 +3600,102 @@ def forbidden_export_check(failures, archives):
                 bad = forbidden(ex)
                 if bad:
                     hits.append(f"{label} from src/{src}.s exports {sorted(bad)}")
-        # (3) perturbed-knob rebuild through the real Makefile.
-        kb = td / "knobs"
-        kb.mkdir()
-        targets = [str(kb / "lib" / a) for a in sorted(archives)]
-        rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={kb}",
-                      *FORBIDDEN_KNOB_PASS, *targets])
-        nknob, seen = 0, {k: [] for k in FORBIDDEN_KNOB_FLIPS}
-        if rc:
-            failures.append("forbidden exports: knob-pass build failed: "
-                            + out.strip()[-400:])
-            print("  FORBID FAIL: perturbed-knob build failed")
-        else:
+        # (3) derived consumer knobs, two passes, through the real Makefile.
+        nknob = 0
+        knobs, zp = derive_knobs(archives)
+        note_examined(len(knobs), "derived knob")
+        classified = set(KNOB_PASS_HI) | set(KNOB_PASS_LO) | set(KNOB_UNPERTURBABLE) | zp
+        companions = {c for c, _o in KNOB_COMPANIONS.values()}
+        unclassified = sorted(set(knobs) - classified)
+        stale = sorted(classified - set(knobs) - companions)
+        if not knobs:
+            failures.append("forbidden exports: derived no consumer knobs -- the "
+                            "knob scan examined nothing")
+        if unclassified:
+            failures.append(f"forbidden exports: knobs {unclassified} "
+                            f"({[knobs[k] for k in unclassified]}) have no "
+                            "perturbation row -- add them to KNOB_PASS_HI (and "
+                            "_LO) or KNOB_UNPERTURBABLE with a reason")
+            print(f"  FORBID FAIL: unclassified knobs {unclassified}")
+        if stale:
+            failures.append(f"forbidden exports: perturbation rows {stale} name "
+                            "no knob the sources still read -- stale table")
+            print(f"  FORBID FAIL: stale knob rows {stale}")
+        hi, lo = knob_pass_values(knobs, zp)
+        passes_ok = []
+        for pname, vals in (("HI", hi), ("LO", lo)):
+            vals = {k: v for k, v in vals.items() if k in knobs}
+            for k, (c, off) in KNOB_COMPANIONS.items():
+                if k in vals:
+                    vals[c] = vals[k] + off
+            cdef = " ".join(f"-D {k}=0x{v:X}" for k, v in sorted(vals.items())
+                            if k not in zp)
+            zdef = " ".join(f"-D {k}=0x{v:X}" for k, v in sorted(vals.items())
+                            if k in zp)
+            kb = td / f"knobs_{pname}"
+            kb.mkdir()
+            targets = [str(kb / "lib" / a) for a in sorted(archives)]
+            rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={kb}",
+                          f"CONTRACT_DEFINES={cdef}", f"CONTRACT_ZP_DEFINES={zdef}",
+                          *targets])
+            if rc:
+                failures.append(f"forbidden exports: knob pass {pname} build "
+                                f"failed: {out.strip()[-400:]}")
+                print(f"  FORBID FAIL: knob pass {pname} build failed")
+                continue
+            exported = {}          # symbol -> [(where, value)]
             for a in sorted(archives):
                 apath = kb / "lib" / a
                 rc, out = sh(["ar65", "t", str(apath)])
                 names = [ln.strip() for ln in out.splitlines()
                          if ln.strip().endswith(".o")]
-                xdir = td / f"kx_{apath.stem}"
+                xdir = td / f"kx_{pname}_{apath.stem}"
                 xdir.mkdir()
                 if rc or not names or subprocess.run(
                         ["ar65", "x", str(apath), *names], cwd=xdir,
                         capture_output=True).returncode:
-                    unreadable.append(f"{a} (knob pass)")
+                    unreadable.append(f"{a} (knob pass {pname})")
                     continue
                 for mem in names:
                     ex = od65_export_names(xdir / mem)
                     if ex is None or ex is COUNT_MISMATCH:
-                        unreadable.append(f"{a}:{mem} (knob pass)")
+                        unreadable.append(f"{a}:{mem} (knob pass {pname})")
                         continue
                     nknob += 1
                     note_examined(1, "knob-pass member")
                     bad = forbidden(ex)
                     if bad:
-                        hits.append(f"{a}:{mem} [knob pass] exports {sorted(bad)}")
-                    for sym in FORBIDDEN_KNOB_FLIPS:
+                        hits.append(f"{a}:{mem} [knob pass {pname}] exports "
+                                    f"{sorted(bad)}")
+                    for k in vals:
+                        sym = KNOB_OBSERVED_AS.get(k, k)
                         if sym in ex:
-                            seen[sym].append((f"{a}:{mem}",
-                                              od65_value([xdir / mem], sym)))
-            for sym, want in FORBIDDEN_KNOB_FLIPS.items():
-                wrong = [(w, v) for w, v in seen[sym] if v != want]
-                if not seen[sym] or wrong:
+                            exported.setdefault(sym, []).append(
+                                (f"{a}:{mem}", od65_value([xdir / mem], sym)))
+            unseen = []
+            for k, want in sorted(vals.items()):
+                if k in KNOB_UNOBSERVABLE or k in companions:
+                    continue
+                seen = exported.get(KNOB_OBSERVED_AS.get(k, k), [])
+                wrong = [(w, v) for w, v in seen if v != want]
+                if not seen or wrong:
+                    unseen.append(k)
                     failures.append(
-                        f"forbidden exports: knob for {sym} did not reach the "
-                        f"knob-pass artifacts (want ${want:04X}; "
-                        f"{'no member exports it' if not seen[sym] else wrong[:3]}) "
-                        "-- the pass would re-test default values")
-                    print(f"  FORBID FAIL: knob for {sym} did not flip the artifact")
+                        f"forbidden exports: knob {k} (pass {pname}, want "
+                        f"${want:04X}) did not reach the artifacts "
+                        f"({'nothing exports ' + KNOB_OBSERVED_AS.get(k, k) if not seen else wrong[:3]})"
+                        " -- observe it, or record why it cannot be "
+                        "(KNOB_UNOBSERVABLE)")
+            if not unseen:
+                passes_ok.append(f"{pname}: {len(vals)} knobs")
+        stale_unobs = sorted(set(KNOB_UNOBSERVABLE) - set(knobs))
+        if stale_unobs:
+            failures.append(f"forbidden exports: KNOB_UNOBSERVABLE names {stale_unobs},"
+                            " which are not derived knobs -- stale table")
+        knob_summary = (f"{len(knobs)} derived knobs ({len(zp)} ZP), "
+                        f"{len(KNOB_UNPERTURBABLE)} unperturbable, "
+                        f"{len(KNOB_UNOBSERVABLE)} perturbed-but-unobservable; "
+                        f"passes {passes_ok}")
     if unreadable:
         failures.append(f"forbidden exports: unreadable {unreadable} -- an "
                         "unread dump is not a clean one")
@@ -3530,8 +3711,9 @@ def forbidden_export_check(failures, archives):
     if not hits and not unreadable and members and nsrc and nknob:
         print(f"  forbidden exports OK ({members} archive members across "
               f"{len(built)} archives + {nsrc} source arms, ungated and "
-              f"gated + {nknob} members rebuilt with perturbed knobs, each "
-              "knob seen in the artifact: none exports a §8 forbidden name)")
+              f"gated + {nknob} members rebuilt in two derived-knob passes: "
+              "none exports a §8 forbidden name)")
+        print(f"  knob passes: {knob_summary}")
 
 
 ABI_BASELINE = REPO / "tools" / "abi_baseline.json"
