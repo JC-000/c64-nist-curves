@@ -55,8 +55,9 @@
 ; MEMORY{} block instead; there is no way to assert against a memory map
 ; we do not author.
 ;
-; Comparing against imported `sqtab_lo` rather than re-deriving the base
-; means a `-D LIB_SHARED_SQTAB_BASE=...` override is tracked automatically.
+; Comparing against LIB_SHARED_SQTAB_BASE from sqtab_base.inc (the include
+; mul_8x8.s also uses) means a `-D LIB_SHARED_SQTAB_BASE=...` override moves
+; the guard and the table together.
 ;
 ; DO NOT make either .import below conditional, weak, or optional. An
 ; `.assert ..., lderror` whose operands cannot be resolved does NOT fail --
@@ -75,8 +76,8 @@
                             ; half of it is live. (SPEC v0.10.2 §6.7: the
                             ; guard MUST NOT import the base -- §8.1 forbids
                             ; exporting it, and our previous form imported
-                            ; sqtab_lo, a gated window export whose removal
-                            ; at the next MAJOR would have broken this guard)
+                            ; sqtab_lo, a gated window export since removed
+                            ; at v0.16.0, which would have broken this guard)
 .import __MAIN_LAST__
 .assert __MAIN_LAST__ <= LIB_SHARED_SQTAB_BASE, lderror, "image overruns sqtab window (LIB_SHARED_SQTAB_BASE): raise the base or shrink the image -- see src/c64.cfg MEMORY{}"
 

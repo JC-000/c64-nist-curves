@@ -12,8 +12,9 @@ Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
 objects rather than from source comments (the alignment baseline lives in the
 session memory's lib-contract-alignment-monitor note).
 
-**Two disclosed exceptions**, so "conformant" is not read as unqualified.
-First, `zp_config.o` fails §6.1 member isolation: its bare `zp_*` aliases share
+**No disclosed exceptions remain** (as of v0.16.0). There used to be two, and
+they are recorded so "conformant" is read with its history.
+First, `zp_config.o` failed §6.1 member isolation: its bare `zp_*` aliases share
 a TU with the importable `fp_*`/`ec_*`/`sha_*` slots. contract#188 raised it and
 **SPEC v1.2.2 ruled** that §2 never required the aliases to live there (§2
 governs *claimed slots*, and a bare alias carries no registered prefix, so it is
@@ -22,12 +23,23 @@ not one) — they may move to a separate archived TU, which is not a §6.5 event
 v0.13.0 because it changes no name, value, archive or ABI and owes no §6.5
 window, whereas #148 and #149 were live. Upstream measured that of five adopters
 only this one was affected. Second, §8.1
-says `sqtab_lo` / `sqtab_hi` MUST NOT be exported, and the default archive
-still exports them. They are gated under `LIB_NO_BARE_EXPORTS` and now also
-suppressed in the `SHARED_SQTAB_INIT` deferral arm (where a provider collision
-is certain rather than possible), and no in-tree code imports them any more —
-but a §6.5 deprecation window is a schedule, not conformance. They go at the
-next MAJOR.
+says `sqtab_lo` / `sqtab_hi` MUST NOT be exported, and from v0.10.0 through
+v0.15.0 the default archive exported them anyway, gated under
+`LIB_NO_BARE_EXPORTS` as a §6.5-window item. **Removed in v0.16.0**
+(`src/sqtab_aliases.s` deleted, `LIB_NISTCURVES_ABI_VERSION` 4 → 5) — as a
+MINOR, not "at the next MAJOR" as this file used to promise. The reading:
+§7's MAJOR bullet (SPEC.md:246) makes a removed symbol a MAJOR-class change,
+and at 0.y.z the MINOR position is the breaking one (semver's pre-1.0 rule,
+our documented policy since v0.9.0). §1:39 *describes* that ("a library may
+break its surface on a MINOR bump while pre-1.0") but is an aside, not a
+grant. §7's one-MINOR deprecation cycle had been satisfied since v0.10.0, and
+v0.10.0's removal of the §8.2 `LIB_SHARED_REU_MUL_*` exports is the
+precedent. The window existed only
+because `main.s` imported `sqtab_lo`; it no longer does. `make check-archives`'
+`forbidden_export_check` now fails any archive member or source arm, gated or
+not, that exports either name (or any other §8.0/§8.1/§8.2 consumer-input
+equate). Consumers derive the pair from `build/lib/sqtab_base.inc`, which
+`make lib` ships for exactly that reason.
 
 **The contract was cut by seven eighths at 1.0.0** — 40,737 words to ~5,300 —
 and that changes how to read this file. Sections §9, §12, §13, §14, §15 and
@@ -58,10 +70,37 @@ Three later releases matter here:
   the export list changed: it moves when an entry point's return set gains a
   value, holds when undocumented behaviour becomes documented. Such a change is
   **not** thereby MAJOR and owes no deprecation cycle. `LIB_NISTCURVES_ABI_VERSION`
-  is **3** — issue #148 gave `ec_scalar_mul[_384]` a defined carry where none
-  was documented. Bump the counter in the commit that causes it: `check-archives`
-  pins it against the source, so a deferred bump validates a stale value against
-  itself and passes.
+  is **5**: 2 → 3 when issue #148 gave `ec_scalar_mul[_384]` a defined carry
+  where none was documented, 3 → 4 when issue #153 made `reu_fetch_mul_row`
+  honour `A`, 4 → 5 when v0.16.0 removed the `sqtab_lo`/`sqtab_hi` exports
+  (`src/lib_version.s` carries each rationale). Bump the counter in the commit that causes it. Until the v0.16.0 review this
+  file claimed `check-archives` "pins it against the source", and nothing did:
+  no leg read the counter's value. Two legs now do.
+  - `abi_surface_check` compares the built archives with
+    `tools/abi_baseline.json`, the last **tag's** exported surface and ABI.
+    It fails a removed name without a counter move, a decrease, or a step
+    with no `; k -> k+1 (issue #NNN or vX.Y.Z) <4+ words>` reason line in
+    `src/lib_version.s` (a bare arrow does not count).
+  - `abi_doc_binding_check` makes every documented
+    `.assert LIB_NISTCURVES_ABI_VERSION = N, lderror` in API.md,
+    `src/nistcurves.inc` and `src/lib_version.s` equal the built value.
+
+  **Release checklist:** right after tagging `vX.Y.Z`, run
+  `python3 tools/gen_abi_baseline.py vX.Y.Z` and commit the result. The
+  generator builds the tag in a throwaway worktree, not this tree, and
+  records the tag name and its commit. **`make check-release-state` enforces
+  this** (leg 5):
+  - it fails while the baseline's tag is older than the newest `vX.Y.Z` tag,
+    and the message names the command to run;
+  - it fails closed on a baseline that is missing, unreadable, or records no
+    tag, no commit, or a commit its tag no longer resolves to, and on rows
+    that no longer match the `rows_sha256` digest the generator stores
+    (check-archives verifies the same digest);
+  - in the pre-tag state (VERSION bumped, tag not cut) it passes and prints
+    which tag the baseline reflects, because the previous release's baseline
+    is the right comparand until the new tag exists.
+  It runs in the git tree only; in a release tarball, which has no tag
+  namespace, it SKIPs.
 - **1.1.1** — withdrew the §6.1 requirement that `make lib` also ship a `.inc`
   header and an example `.cfg`. We ship both anyway (`src/nistcurves.inc`,
   `cfg/nistcurves-example.cfg`) because consumers were otherwise transcribing
@@ -307,6 +346,9 @@ make check-archives                  # archive linkability contract ratchet (no 
 make check-docs                      # assemble the copy-pasteable snippets in API.md / README.md /
                                      #   CLAUDE.md and resolve their imports against real exports
                                      #   (no VICE; opt-in, never a prerequisite of `all`)
+make check-release-state             # VERSION / CHANGELOG / release notes / equates agree with the
+                                     #   tag namespace, and tools/abi_baseline.json reflects the newest
+                                     #   release tag (run after tagging; no VICE, no build)
 make check-harness-routing           # every device write in tools/ routes through the harness's
                                      #   managed layer (`transport.write_memory`) and never below it —
                                      #   see "Device traffic: the harness is the only route" below
@@ -492,12 +534,12 @@ archive contract.
 | zp_aliases.s | **The deprecated bare `zp_tmp1` / `zp_tmp2` / `zp_ptr1` / `zp_ptr2` aliases, and nothing else** (issue #154, ruled upstream at SPEC v1.2.2 / contract#188). They used to sit in `zp_config.s` beside sixteen importable slots, so a consumer importing `fp_src1` pulled the whole member and four displaceable names with it — the §6.1 defect, in the library-versus-library direction. v1.2.2 ruled that §2's dedicated-file requirement governs *claimed slots* and a bare alias is not one (§2's registry demands a registered prefix, which no bare `zp_` name has), so the alias may live in its own TU **provided it stays archived** — a same-archive move changes no name, value or archive and owes no §6.5 window, whereas moving to a never-archived TU (as c64-x25519 did, into `main.s`) would be a removed export and owe one. Built the same six ways as `zp_config.s` and added wherever the matching `zp_config*.o` appears, so eleven of twelve keep the alias (the SHA-only archive has no bare spelling to keep). **Values are derived, never restated:** each alias is an `.importzp` of its canonical `nistcurves_zp_*` name re-exported bare, so it has no address of its own and cannot drift. Consequence for §6.2: this TU defines no slot, so its recipes take `CONTRACT_DEFINES` but **NOT `CONTRACT_ZP_DEFINES`** — a `-D` of an imported name is `Symbol already defined`; the override reaches `zp_config.o` alone and the alias follows through the link. Pinned by three legs of `make check-archives`: the R2 audit (partition reconciliation + exact per-variant alias set), the bare-alias link-identity leg (every alias link-resolved from every archive to its canonical slot's address; the SHA archive asserted in the opposite direction), and the §6.2 override leg (a real `CONTRACT_ZP_DEFINES` driven through the make recipes and out of a link). |
 | zp_config.s | Zero-page allocations (consumer-tunable, `.exportzp` per SPEC §2). Exports **no bare `zp_` name** since issue #154 — see `zp_aliases.s` above; keep the two files' variant arms in step. 27 bytes claimed by default (issue #90 — was 32 through v0.8.0; `fp_loop`, `poly_i`/`poly_j`/`poly_carry`/`poly_tmp`, and `proc_port` were claimed but referenced by no archived object and were dropped, while `ec_scalar_ptr` was found to be a 2-byte pointer, not the 1 byte previously documented — net 32 − 6 + 1 = 27). `proc_port` moved to `main.s` as a local equate; it is no longer a library-exported slot in any archive. Built six ways: default (27 B), `-D LIB_P256_VERIFY_ONLY` / `-D LIB_P384_VERIFY_ONLY` (`zp_config_p256verify.o` / `zp_config_p384verify.o`, 15 B each — identical slot sets, kept as separate objects for future divergence), `-D LIB_P384_CURVE_ONLY` (`zp_config_p384curve.o`, 23 B), `-D LIB_P256_COMB_ONLY` (`zp_config_p256comb.o`, 17 B — the verify 9 slots plus `nistcurves_zp_ptr1`, issue #117), and `-D LIB_SHA384_ONLY` (`zp_config_sha384.o`, 8 B, issue #88 — unchanged by #90). ZP truth does not depend on `FP_ONCHIP_MUL`: each variant's onchip and DMA-profile archives share the same `zp_config_<variant>.o`. General-purpose scratch is canonically `nistcurves_zp_{tmp1,tmp2,ptr1,ptr2}` per the §2 ZP registry (lib-contract #83); the bare `zp_*` aliases are export-gated, live in `zp_aliases.s`, and are removed at next MAJOR. |
 | reu_config.s | REU bank/offset equates per SPEC §3 (`LIB_NISTCURVES_REU_BANK_MUL` / `_COMB`, `_OFFSET_COMB_P256` / `_P384`) plus the SPEC v0.13.0 §8.2 settle knob `LIB_NISTCURVES_REU_SETTLE_ITER` (default 8, exported `:abs` as the code-read value), all consumer-overridable via `ca65 -D` |
-| lib_version.s | Semver + ABI version equates per SPEC §1: canonical prefixed `LIB_NISTCURVES_VERSION_MAJOR` / `_MINOR` / `_PATCH` / `LIB_NISTCURVES_ABI_VERSION`, plus the deprecated bare `LIB_VERSION_*` / `LIB_ABI_VERSION` aliases (emitted by default, suppressed by `-D LIB_NO_BARE_EXPORTS=1`, removed at contract v1.0). **TU isolation is load-bearing** — this file must export the version equates and nothing else, or the bare names ride into a consumer's link uninvited via ld65's whole-member pull and collide with a sibling library (issue #86). |
+| lib_version.s | Semver + ABI version equates per SPEC §1: canonical prefixed `LIB_NISTCURVES_VERSION_MAJOR` / `_MINOR` / `_PATCH` / `LIB_NISTCURVES_ABI_VERSION`, plus the deprecated bare `LIB_VERSION_*` / `LIB_ABI_VERSION` aliases (emitted by default, suppressed by `-D LIB_NO_BARE_EXPORTS=1`; contract 1.0.0 deferred their once-scheduled v1.0 removal to a future contract MAJOR, SPEC §1). **TU isolation is load-bearing** — this file must export the version equates and nothing else, or the bare names ride into a consumer's link uninvited via ld65's whole-member pull and collide with a sibling library (issue #86). |
 | lib_manifest.s | Aggregate manifest equates per SPEC §5 (`LIB_NISTCURVES_REU_BANKS_USED` / `_ZP_USAGE_BYTES` / `_RESIDENT_BYTES` / `_COLD_BYTES`) plus the §8.0 mask pair `LIB_NISTCURVES_SHARED_PRIMITIVES` (owned) and `LIB_NISTCURVES_SHARED_CONSUMES` (consumed). The two masks differ by design: profile gates (`FP_ONCHIP_MUL`) drop a bit from **both**, `SHARED_*` deferral switches drop it from **ownership only** — that gap is what distinguishes "deferring consumer, needs a provider in the link" from "non-consumer, needs none". Subset invariant `.assert`ed in-file. Built eleven ways (issue #90 made it nine; #117 added the comb pair; was three through v0.8.0): default, `-D FP_ONCHIP_MUL`, `-D LIB_P256_VERIFY_ONLY` [`± FP_ONCHIP_MUL`], `-D LIB_P384_VERIFY_ONLY` [`± FP_ONCHIP_MUL`], `-D LIB_P384_CURVE_ONLY` [`± FP_ONCHIP_MUL`], `-D LIB_P256_COMB_ONLY` [`± FP_ONCHIP_MUL`] (issue #117), and `-D LIB_SHA384_ONLY` (no onchip sibling) — one object per archive, `lib_manifest_<variant>[_onchip].o`, each reporting figures true to that archive's actual contents. `RESIDENT_BYTES` keys off variant alone (shared across a variant's onchip/DMA pair); `REU_BANKS_USED`/`COLD_BYTES`/precalc-row enumeration key off variant **and** profile. Full per-archive table: API.md §8.4. Before issue #90 every non-SHA archive inherited whole-library figures from one shared manifest object regardless of what it actually contained — six of nine archives had a wrong `REU_BANKS_USED`, and the default ZP claim of 32 was itself off by one (`ec_scalar_ptr` mis-documented as a 1-byte index when it is a 2-byte pointer) on top of six dead-slot bytes now removed; true default is 27. |
 | precalc_manifest.s | Precalc-table enumeration per SPEC §8.4: one `LIB_PRECALC_TABLE` invocation per qualifying table (sqtab, reu_mul, lim_lee_comb_p256/p384, sha384_k), gated by row-presence flags computed from the same six variant switches as `lib_manifest.s` (issue #90; the two `lim_lee_comb_*` rows gate separately per curve since issue #117, so the P-256 comb archive enumerates its own 16 KB table without advertising the 24 KB P-384 one) so each archive enumerates only the tables it actually contains — a P-256-only verify archive no longer advertises the 24 KB P-384 comb table, for instance. Each row passes `"NISTCURVES"` as the §1 library prefix so the emitted equates are collision-free. Exports both `LIB_NISTCURVES_PRECALC_<name>_{SIZE,REGION,SHARED}` and the deprecated bare `LIB_PRECALC_<name>_*` triple. Doc twin (with rationale + Profiles column): `docs/precalc-tables.md` — the two must stay in lock-step. Linked into every archive; eleven build variants total (was three through v0.8.0, nine through v0.10.2), one per archive — `precalc_manifest_<variant>[_onchip].o` — enumerating 1 to 5 rows depending on which of sqtab/reu_mul/lim_lee_comb_p256/lim_lee_comb_p384/sha384_k that archive's linked objects actually build or read. |
 | reu_dma_done.inc | `REU_DMA_CONFIRM` macro (SPEC v0.13.0 §8.2, issue #130): inline `bit reu_status / bvs` end-of-block confirm for the six hot `fp_mul`/`fp_sqr` row-fetch sites, falling into `nistcurves_reu_dma_wait` only if bit 6 is clear. The header comment is the per-site rationale (which sites settle structurally, which `jsr` the full wait). Included by fp256.s / fp384.s. |
 | precalc_table.inc | Canonical `LIB_PRECALC_TABLE` macro + region/shared constants, copied byte-for-byte from `c64-lib-contract/precalc_table.inc` (currently at upstream `9da3aca`, SPEC v0.7.4). Do not edit locally; updates land via coordinated cross-repo PR. |
-| mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, an exported public helper for the REU multiply-table row-fetch DMA sequence (moved here from main.s by issue #18 fix so standalone-link consumers resolve it) — offered to consumers that want to drive the row-fetch themselves, but **not called anywhere in the library's own code**: `fp_mul`/`fp_sqr`/`fp_mul_384`/`fp_sqr_384` each inline their own three-register-write fetch directly. Classified `COLD` in the §5 footprint accounting for exactly that reason. Hosted `nistcurves_reu_dma_wait` from issue #130 until issue #155 moved it to `data_reu_wait.s`; it is **not** here any more. Since #155 this TU also no longer *exports* `sqtab_lo`/`sqtab_hi` — it still derives them locally from `sqtab_base.inc` (the body indexes them and the SMC page-delta math is computed from them), but the exports live in `sqtab_aliases.s`. Do not re-add either: both moves exist to stop the mandatory `sqtab_init` boot call dragging displaceable names into a consumer's link. |
+| mul_8x8.s | Quarter-square 8x8->16 multiply table init + constant-time `mul_8x8` primitive (issue #14, ported from c64-ChaCha20-Poly1305 v0.3.0 `ct_mul_8x8`). Also hosts `reu_fetch_mul_row`, an exported public helper for the REU multiply-table row-fetch DMA sequence (moved here from main.s by issue #18 fix so standalone-link consumers resolve it) — offered to consumers that want to drive the row-fetch themselves, but **not called anywhere in the library's own code**: `fp_mul`/`fp_sqr`/`fp_mul_384`/`fp_sqr_384` each inline their own three-register-write fetch directly. Classified `COLD` in the §5 footprint accounting for exactly that reason. Hosted `nistcurves_reu_dma_wait` from issue #130 until issue #155 moved it to `data_reu_wait.s`; it is **not** here any more. It derives `sqtab_lo`/`sqtab_hi` locally from `sqtab_base.inc` (the body indexes them and the SMC page-delta math is computed from them) and exports **neither** — SPEC §8.1 forbids it. It does export the prefixed output `LIB_NISTCURVES_SHARED_SQTAB_BASE` (v0.16.0), gated to the arms where this TU reads the table; `nistcurves.inc` pins a consumer's `LIB_SHARED_SQTAB_BASE` against it. Issue #155 moved the then-gated exports out to `sqtab_aliases.s` so the mandatory `sqtab_init` boot call stopped dragging displaceable names into a consumer's link, and v0.16.0 deleted that file outright (ABI 4 → 5). Do not re-add an export of either name, here or in a new TU: `forbidden_export_check` in `make check-archives` fails it in every arm, gated or not. |
 | fp256.s | 32-byte field arithmetic (add/sub/mul/sqr) with X25519 optimizations |
 | mod256.s | P-256 Solinas reduction, modular ops, binary GCD inverse, P-256 prime |
 | curve256.s | P-256 curve parameters (little-endian). A duplicate copy of the RFC 6979 self-test vectors used to live here; issue #91 deleted it — nothing referenced it, and ld65's whole-member pull shipped 288 B of dead data into every P-256 archive. The vectors the test suite uses are unaffected: they live in `tools/test_ecdsa_verify.py`, transcribed from the RFC (an on-chip copy could not serve as an oracle anyway — see the testing-model note below). |
@@ -524,7 +566,7 @@ archive contract.
 | data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`, and the `fp_tmp2..4` harness staging slots — no .s code references those; the Python tools poke operands there). Linked into the standalone PRG; excluded from every consumer archive. |
 | c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. Note `define = yes` on MAIN is load-bearing, not cosmetic: `src/main.s` imports `__MAIN_LAST__` and asserts with `lderror` that the image ends at or below `sqtab_lo`. Do not make that import conditional — an `lderror` assert whose operands are unresolvable degrades to a `Cannot evaluate assertion` warning, so the guard survives only because a missing external is itself a hard link error. Also carries the SPEC §4 **load-bearing cfg attribute declarations**: inline comments stating which placement attributes the library's correctness or timing depends on, and what breaks without them (`align = $100` on the two table segments; `type = rw`, i.e. never `bss`, on the self-modifying code segments and the REU DMA landing pages; plus the `$9C00..$9FFF` sqtab window that is an equate rather than a segment and so is invisible to ld65). Consumers author their own SEGMENTS{} block, so these are the contract — measured on ld65 V2.18, a dropped `align` and a zero-filled `rw`→`bss` flip both link with **no diagnostic at all**. |
 | exports.inc | Cross-module .import/.export dependency map |
-| nistcurves.inc | **Consumer-facing header.** Not contract-required — 1.0.0 briefly demanded it of `make lib`, 1.1.1 withdrew that as a tightening the text cut had carried unannounced; shipped anyway because consumers were otherwise transcribing symbols out of API.md prose, and §3 binds any header that exists. Not included by any library TU — `make lib*` copies it to `build/lib/nistcurves.inc` for downstream projects to `.include`. Publishes the §1 version equates, §5 manifest equates, §3 REU placement equates, §8.2 prefixed placement outputs, §8.4 precalc triples and the public entry points, gated by the same variant switches (`LIB_P256_VERIFY_ONLY`, `FP_ONCHIP_MUL`, the `SHARED_*` deferral set, …) that `lib_manifest.s` / `precalc_manifest.s` use, and `make check-archives` links it against all twelve archives with each one's switch set. **The §3 guard rule is per-symbol and load-bearing:** an import is `.ifndef`-guarded iff its defining TU guards the definition, and every such guard carries an `.else` asserting the consumer's `-D` against the archive's exported value — a bare guard alone turns a compile error into silent divergence. The `.else` imports the same-named export into a private `.scope` and compares across the boundary (`NISTCURVES_PIN_OVERRIDE`), so no duplicate "output alias" export exists to keep in sync. Symbols whose defining TU assigns unconditionally keep a **bare** import on purpose, so a `-D` on them collides loudly. Pinned by the `§6.1 consumer packaging + §3 header guards` leg of `make check-archives`, which drives every guarded symbol at the archive's real value and at value XOR 1. |
+| nistcurves.inc | **Consumer-facing header.** Not contract-required — 1.0.0 briefly demanded it of `make lib`, 1.1.1 withdrew that as a tightening the text cut had carried unannounced; shipped anyway because consumers were otherwise transcribing symbols out of API.md prose, and §3 binds any header that exists. Not included by any library TU — `make lib*` copies it to `build/lib/nistcurves.inc` for downstream projects to `.include`. Since v0.16.0 `make lib*` also copies `src/sqtab_base.inc` to `build/lib/sqtab_base.inc`: with the `sqtab_lo`/`sqtab_hi` exports gone, a consumer derives them in its own TU from that shipped default (the header says how), and the packaging leg of `make check-archives` assembles that derivation with `-I build/lib` alone — so `sqtab_base.inc` must stay self-contained. Publishes the §1 version equates, §5 manifest equates, §3 REU placement equates, §8.2 prefixed placement outputs, §8.4 precalc triples and the public entry points, gated by the same variant switches (`LIB_P256_VERIFY_ONLY`, `FP_ONCHIP_MUL`, the `SHARED_*` deferral set, …) that `lib_manifest.s` / `precalc_manifest.s` use, and `make check-archives` links it against all twelve archives with each one's switch set. **The §3 guard rule is per-symbol and load-bearing:** an import is `.ifndef`-guarded iff its defining TU guards the definition, and every such guard carries an `.else` asserting the consumer's `-D` against the archive's exported value — a bare guard alone turns a compile error into silent divergence. The `.else` imports the same-named export into a private `.scope` and compares across the boundary (`NISTCURVES_PIN_OVERRIDE`), so no duplicate "output alias" export exists to keep in sync. Symbols whose defining TU assigns unconditionally keep a **bare** import on purpose, so a `-D` on them collides loudly. Pinned by the `§6.1 consumer packaging + §3 header guards` leg of `make check-archives`, which drives every guarded symbol at the archive's real value and at value XOR 1. |
 | *(repo root)* `cfg/nistcurves-example.cfg` | **Example consumer linker config** (SPEC §4's standalone-build clause; §6.1 no longer asks for it). Copied by `make lib*` to `build/lib/cfg/`. Maps all twenty `LIB_NISTCURVES_*` segments and restates the load-bearing placement attributes from `src/c64.cfg` with their consequences, because that is the file consumers actually copy. Not the library's own build — `src/c64.cfg` stays canonical for `make`. |
 
 ### Benchmarks
@@ -909,10 +951,11 @@ keep all library calls on a single thread of control.
   issue #132 carry). The `ECDSA_NO_COMB` variants route `u1·G` through the
   variable-base ladder and never reach this path. Giving these entry points a
   defined carry where none was documented is a SPEC v1.1.0 §7 ABI-counter
-  event — `LIB_NISTCURVES_ABI_VERSION` went to 3 at this change (it is 4 as of
-  issue #153), bumped in the
-  commit that caused it (check-archives pins the counter against the source,
-  so a deferred bump would validate a stale value against itself and pass).
+  event — `LIB_NISTCURVES_ABI_VERSION` went to 3 at this change (4 at issue #153,
+  5 at v0.16.0's sqtab export removal), bumped in the commit that caused it.
+  Since v0.16.0, check-archives' `abi_surface_check` really does pin the
+  counter, against the last tag's exported surface; before that, the "pins
+  against the source" claim made here was untrue.
   Contract: API.md §5.3 and the comb-table-integrity note below it.
 - **`fp_mod_inv` residue-class-0 guard / `ec_jacobian_to_affine` Z=0
   guard (issue #132, adversarial audit F-1 — FIXED).** The binary

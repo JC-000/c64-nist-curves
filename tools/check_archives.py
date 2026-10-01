@@ -196,8 +196,9 @@ CT_MUL_PROVIDER_SYMS = {"ct_mul_8x8", "smc_sum_a_imm", "smc_diff_a_imm",
 # across every adopter, so a consumer linking two sibling libraries and
 # importing both manifests hits `ld65: Duplicate external identifier`. The
 # bare forms stay emitted by default for back-compat and are suppressed
-# build-wide with `ca65 -D LIB_NO_BARE_EXPORTS=1`; they are removed at
-# contract v1.0. Pinning the prefixed set guards against a regression that
+# build-wide with `ca65 -D LIB_NO_BARE_EXPORTS=1`. Their once-scheduled removal
+# at contract v1.0 was deferred by contract 1.0.0 to a future MAJOR (SPEC §1;
+# §8.4 schedules none). Pinning the prefixed set guards against a regression that
 # drops the fifth "NISTCURVES" LIB_PRECALC_TABLE argument or reverts
 # src/lib_version.s to bare-only.
 MANIFEST_VERSION_SYMS = {
@@ -268,6 +269,14 @@ REU_OUTPUT_SYMS = {
     "LIB_NISTCURVES_SHARED_REU_MUL_OFFSET",
     "LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED",
 }
+
+# §8.1 prefixed OUTPUT (v0.16.0): the sqtab base the archive's code reads.
+# §8.1 forbids exporting LIB_SHARED_SQTAB_BASE and sqtab_lo/_hi; the prefixed
+# counterpart is how a consumer verifies its own derivation agrees (the §8.2
+# LIB_NISTCURVES_SHARED_REU_MUL_* precedent, SPEC.md:389). Exported wherever
+# mul_8x8.s carries code that reads the table -- every field archive but the
+# fully-deferring app-owned one -- and nowhere else.
+SQTAB_OUTPUT_SYMS = {"LIB_NISTCURVES_SHARED_SQTAB_BASE"}
 
 REU_PLACEMENT_SYMS = {
     "LIB_SHARED_REU_MUL_BANK",
@@ -532,6 +541,16 @@ for _a in MUST_EXPORT:
         MUST_EXPORT[_a] = MUST_EXPORT[_a] | CT_MUL_PROVIDER_SYMS
 MUST_NOT_EXPORT["nistcurves-app-owned.a"] = (
     MUST_NOT_EXPORT["nistcurves-app-owned.a"] | CT_MUL_PROVIDER_SYMS)
+
+# §8.1 sqtab-base output: both directions, same split as the §8.3 surface --
+# the sha384 archive has no mul_8x8 member, and the app-owned arm's mul_8x8
+# reads no table (every reader is deferred), so publishing a base there would
+# be a number no code in the archive reads.
+for _a in MUST_EXPORT:
+    if _a in ("nistcurves-p384-sha384.a", "nistcurves-app-owned.a"):
+        MUST_NOT_EXPORT[_a] = MUST_NOT_EXPORT[_a] | SQTAB_OUTPUT_SYMS
+    else:
+        MUST_EXPORT[_a] = MUST_EXPORT[_a] | SQTAB_OUTPUT_SYMS
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
 # expect_link True  -> documented as linkable, must link clean.
@@ -1158,7 +1177,8 @@ BARE_GATED = {
     # every deprecated bare name the LIB_NO_BARE_EXPORTS gate must suppress
     "zp_tmp1", "zp_tmp2", "zp_ptr1", "zp_ptr2",
     "mul_dma_lo", "mul_dma_hi", "mul_cached_a", "mul_src2_buf",
-    "sqtab_lo", "sqtab_hi",
+    # sqtab_lo/sqtab_hi left this roster at v0.16.0: they are no longer
+    # gated-but-exported, they are exported by nothing (FORBIDDEN_EXPORTS).
     "LIB_VERSION_MAJOR", "LIB_VERSION_MINOR", "LIB_VERSION_PATCH",
     "LIB_ABI_VERSION",
 }
@@ -1191,12 +1211,17 @@ def bare_gated(names):
 # it must export no bare name in either configuration -- is asserted by
 # zp_alias_audit() below, which has the populated-dump sentinel that makes an
 # absence assertion mean something.
-GATE_TUS = ["zp_aliases", "mul_aliases", "data_shared", "sqtab_aliases",
+GATE_TUS = ["zp_aliases", "mul_aliases", "data_shared",
             "lib_version", "precalc_manifest"]
 # `mul_8x8` left this list at issue #155: it owns no bare name any more, the
 # two it used to own (sqtab_lo/sqtab_hi) having moved to `sqtab_aliases.s`.
 # The sentinel above would fail it as a permanently-green entry -- which is
 # the check working, and is how this edit was found rather than remembered.
+# `sqtab_aliases` left at v0.16.0, with the file: SPEC §8.1 forbids the
+# export outright, so the pair went rather than riding the window. Left in,
+# two legs fire -- "are in GATE_TUS but ship in no archive" and "are in
+# GATE_TUS but own no displaceable name" (observed). Their absence from
+# every archive is forbidden_export_check's job, not this roster's.
 
 
 # --- R2 exported-vs-summed ZP audit (issue #113, chacha-template method) -----
@@ -2053,6 +2078,7 @@ HEADER_ARCHIVE_SWITCHES = {
 HEADER_BARE_SYMS = [
     "LIB_NISTCURVES_ABI_VERSION",                # src/lib_version.s:71
     "LIB_NISTCURVES_SHARED_REU_MUL_BANK",        # src/reu_config.s:205
+    "LIB_NISTCURVES_SHARED_SQTAB_BASE",          # src/mul_8x8.s (v0.16.0)
     "LIB_NISTCURVES_PRECALC_sqtab_SIZE",         # src/precalc_table.inc:86
     "LIB_NISTCURVES_SHA384_UPDATE_MAX",          # src/lib_manifest.s (a fact,
                                                  # not a knob -- see there)
@@ -2291,6 +2317,8 @@ def packaging_check(failures, archives):
     src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
     shipped_inc = LIBDIR / "nistcurves.inc"
     shipped_cfg = LIBDIR / "cfg" / "nistcurves-example.cfg"
+    src_sqb = REPO / "src" / "sqtab_base.inc"
+    shipped_sqb = LIBDIR / "sqtab_base.inc"
     archive = LIBDIR / "nistcurves.a"
 
     # (1) `make lib` produced all three artifacts, and the shipped header/cfg
@@ -2298,20 +2326,65 @@ def packaging_check(failures, archives):
     # exactly the drift this pin exists to catch).
     ok = True
     for label, p in (("archive", archive), ("header", shipped_inc),
-                     ("example cfg", shipped_cfg)):
+                     ("example cfg", shipped_cfg),
+                     ("sqtab base include", shipped_sqb)):
         if not p.exists():
             failures.append(f"packaging: `make lib` did not produce the {label} ({p})")
             print(f"  PACKAGING FAIL: missing {label}: {p}")
             ok = False
     for label, s, d in (("header", src_inc, shipped_inc),
-                        ("example cfg", src_cfg, shipped_cfg)):
+                        ("example cfg", src_cfg, shipped_cfg),
+                        ("sqtab base include", src_sqb, shipped_sqb)):
         if s.exists() and d.exists() and s.read_bytes() != d.read_bytes():
             failures.append(f"packaging: shipped {label} differs from {s}")
             print(f"  PACKAGING FAIL: build/lib copy of the {label} is stale")
             ok = False
     if not ok:
         return
-    print("  artifacts OK (.a + .inc + example .cfg, shipped copies match src/)")
+    print("  artifacts OK (.a + .inc + sqtab_base.inc + example .cfg, shipped "
+          "copies match src/)")
+
+    # (1b) sqtab_base.inc is self-contained from build/lib alone (v0.16.0).
+    # With the bare sqtab_lo/sqtab_hi exports gone (SPEC §8.1), deriving them
+    # in the consumer's own TU is the ONLY way to obtain them, and
+    # nistcurves.inc tells consumers to do it with this include. So assemble
+    # exactly that, with -I pointing at build/lib and nowhere else, and check
+    # the derived value both at the shipped default and under a -D override.
+    # The default is not restated here: it is parsed from src/sqtab_base.inc,
+    # which (1) has just proved byte-identical to the shipped copy.
+    mdef = re.search(r"LIB_SHARED_SQTAB_BASE\s*=\s*\$([0-9a-fA-F]+)",
+                     src_sqb.read_text())
+    sqb_ok = mdef is not None
+    if not mdef:
+        failures.append("packaging: cannot parse the default out of "
+                        "src/sqtab_base.inc -- the derivation probe would "
+                        "compare against nothing")
+        print("  SQTAB INC FAIL: default unparsed")
+    # Failures here do not end the leg: the header rows below are independent
+    # of this file, and returning early would hide their result.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        rows = ((int(mdef.group(1), 16), []),
+                (0xA000, ["-D", "LIB_SHARED_SQTAB_BASE=0xA000"])) if mdef else ()
+        for want, dargs in rows:
+            (td / "d.s").write_text(
+                '.include "sqtab_base.inc"\n'
+                "sqtab_lo = LIB_SHARED_SQTAB_BASE\n"
+                "sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200\n"
+                f".assert sqtab_lo = ${want:04X}, error, \"derived sqtab_lo\"\n"
+                f".assert sqtab_hi = ${want + 0x200:04X}, error, \"derived sqtab_hi\"\n")
+            rc, out = sh(["ca65", "--cpu", "6502", "-I", str(LIBDIR), *dargs,
+                          "-o", str(td / "d.o"), str(td / "d.s")])
+            note_examined(1, "sqtab derivation probe")
+            if rc:
+                failures.append(f"packaging: deriving sqtab_lo from the shipped "
+                                f"sqtab_base.inc {dargs or '(default)'} failed: "
+                                f"{out.strip()[:200]}")
+                print(f"  SQTAB INC FAIL {dargs or '(default)'}: {out.strip()[:200]}")
+                sqb_ok = False
+    if sqb_ok:
+        print("  sqtab_base.inc OK (consumer derivation from build/lib alone: "
+              "default and -D override both land where asserted)")
 
     # (2) Every LIB_NISTCURVES_* segment the sources emit must be mapped by the
     # example cfg. A consumer copies that SEGMENTS block; an unmapped segment
@@ -2496,6 +2569,54 @@ def packaging_check(failures, archives):
                 print(f"  GUARD FAIL [{sym}]: link failed for some other reason:\n{lout.strip()}")
                 continue
             print(f"  guard OK [{sym}] = {real}: matching -D links, {wrong} trips the .else assert")
+
+        # (4b) §8.1 consumer-base pin (v0.16.0). A consumer derives
+        # sqtab_lo/_hi itself from LIB_SHARED_SQTAB_BASE (§8.1 forbids the
+        # library exporting either), so the one silent failure left is a
+        # consumer whose base disagrees with the archive's: its table and the
+        # library's reads land on different pages, and the link is clean. The
+        # header must turn that into an lderror against the archive's
+        # LIB_NISTCURVES_SHARED_SQTAB_BASE. Driven with -D, which is how both
+        # a CONTRACT_DEFINES-style build and an earlier
+        # `.include "sqtab_base.inc"` present it to the header. The matching
+        # value is the default parsed from src/sqtab_base.inc, which the
+        # default-built archive under test was assembled with; it is NOT read
+        # back from the archive, so a missing export cannot make the row pass.
+        if mdef:
+            real = int(mdef.group(1), 16)
+            wrong = real ^ 0x0100          # still page-aligned, so §8.1-valid
+            arc, aout, lrc, lout, perr = _header_link(
+                td, LIBDIR, src_cfg, archive,
+                ["-D", f"LIB_SHARED_SQTAB_BASE={real}"])
+            note_examined(1, "sqtab base pin row")
+            if perr or arc != 0 or lrc != 0:
+                failures.append(f"header: a consumer at the archive's own sqtab "
+                                f"base ${real:04X} does not link: "
+                                f"{(perr or aout or lout).strip()[:300]}")
+                print(f"  SQTAB PIN FAIL: matching base ${real:04X} rejected")
+            else:
+                arc, aout, lrc, lout, perr = _header_link(
+                    td, LIBDIR, src_cfg, archive,
+                    ["-D", f"LIB_SHARED_SQTAB_BASE={wrong}"])
+                note_examined(1, "sqtab base pin row")
+                if perr or arc != 0:
+                    failures.append(f"header: sqtab base ${wrong:04X} consumer "
+                                    f"does not assemble: {(perr or aout).strip()[:300]}")
+                    print(f"  SQTAB PIN FAIL: wrong-base row did not assemble")
+                elif lrc == 0:
+                    failures.append(
+                        f"header: a consumer deriving sqtab at ${wrong:04X} "
+                        f"links clean against an archive built at ${real:04X} "
+                        "-- its table and the library's reads are on different "
+                        "pages and nothing says so (§8.1 base pin missing)")
+                    print(f"  SQTAB PIN FAIL: ${wrong:04X} vs ${real:04X} linked clean")
+                elif "sqtab base disagrees" not in lout:
+                    failures.append(f"header: sqtab base ${wrong:04X} failed to "
+                                    f"link, but not on the base pin: {lout.strip()[:300]}")
+                    print(f"  SQTAB PIN FAIL: link failed for another reason")
+                else:
+                    print(f"  sqtab pin OK: consumer base ${real:04X} links, "
+                          f"${wrong:04X} trips the lderror")
 
         # (5) Bare-import symbols: their defining TU assigns unconditionally,
         # so §3 says the -D must collide loudly rather than be absorbed.
@@ -3227,6 +3348,769 @@ def footprint_basis_check(failures):
               f"the sum-based §5 measurand equals the placed span)")
 
 
+# Names the contract says no library may export in ANY configuration -- not
+# "gated", not "deprecated", forbidden. Distinct from BARE_GATED, whose names
+# a default build legitimately exports for the §6.5 window and only the
+# LIB_NO_BARE_EXPORTS build must suppress.
+#   §8.0 (SPEC.md:271)  the LIB_SHARED_PRIMITIVES_* bit constants
+#   §8.1 (SPEC.md:345)  LIB_SHARED_SQTAB_BASE, and sqtab_lo/sqtab_hi derived
+#                       from it -- the latter exported, gated, from v0.10.0
+#                       through v0.15.0 and removed at v0.16.0
+#   §8.2 (SPEC.md:389)  every LIB_SHARED_REU_MUL_* consumer-input equate
+FORBIDDEN_EXPORTS = {"sqtab_lo", "sqtab_hi", "LIB_SHARED_SQTAB_BASE"}
+FORBIDDEN_EXPORTS_RE = re.compile(r"^LIB_SHARED_(REU_MUL_|PRIMITIVES_)")
+
+
+# --- Pass (3): every consumer knob, DERIVED -------------------------------
+# Review gap (tX): the knob pass used to perturb a hand-listed four knobs, so
+# `.if LIB_NISTCURVES_REU_SETTLE_ITER <> 8 / .export sqtab_lo` in reu_config.s
+# passed. The population is now derived from the sources the archives are
+# built from (derive_knobs): every `.ifndef X` whose block assigns X, plus
+# every `.ifdef X` whose block reads X as a value. Every derived knob must
+# have a row here or in KNOB_UNPERTURBABLE (an unclassified knob FAILS), and a
+# row whose knob is no longer derived also fails (stale table).
+#
+# Two passes, each a full Makefile build of all twelve archives:
+#   HI -- every perturbable knob moved, upward where it is ordered;
+#   LO -- moved again to a second value, downward where the default allows,
+#         so an inequality gate (`.if X > d` or `.if X < d`) cannot sit on
+#         one side of both. A knob with no row in LO is perturbed in HI only
+#         (its default is already the minimum, or its pair is driven there).
+# One combined pass per direction is enough: every value below satisfies
+# the knob's own asserts (page alignment, bank < 31, the 1..255 settle range,
+# the §8.0 mask subset and onchip invariants, the 48 MHz settle-floor
+# margins) with every other knob moved at the same time.
+# ZP slots are routed through CONTRACT_ZP_DEFINES (§6.2); the rest through
+# CONTRACT_DEFINES.
+KNOB_PASS_HI = {
+    "LIB_SHARED_SQTAB_BASE": 0xA000,
+    "LIB_SHARED_REU_MUL_BANK": 0x05,
+    "LIB_SHARED_REU_MUL_STAGE_LO": 0x7000,
+    "LIB_NISTCURVES_REU_BANK_COMB": 0x0A,
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P256": 0x8000,
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P384": 0xC000,
+    "LIB_NISTCURVES_REU_SETTLE_ITER": 200,
+    "REU_SETTLE_FLOOR_CYCLES_48MHZ": 55,     # < the 60 B tightest-site margin
+    "LIB_NISTCURVES_REU_BANKS_USED": 0x00FF,
+    "LIB_NISTCURVES_ZP_USAGE_BYTES": 200,
+    "LIB_NISTCURVES_RESIDENT_BYTES": 60000,
+    "LIB_NISTCURVES_COLD_BYTES": 60000,
+    "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0001,
+    "LIB_NISTCURVES_SHARED_CONSUMES": 0x0005,
+    "LIB_SHARED_PRIMITIVES_SQTAB": 0x0010,
+    "LIB_SHARED_PRIMITIVES_REU_MUL": 0x0020,
+    "LIB_SHARED_PRIMITIVES_CT_MUL_8X8": 0x0040,
+}
+KNOB_PASS_LO = {
+    "LIB_SHARED_SQTAB_BASE": 0x9800,
+    "LIB_NISTCURVES_REU_BANK_MUL": 0x07,     # direct; SHARED_REU_MUL_BANK stays 0
+    "LIB_SHARED_REU_MUL_STAGE_LO": 0x5000,
+    "LIB_NISTCURVES_REU_BANK_COMB": 0x01,
+    "LIB_NISTCURVES_REU_OFFSET_COMB_P384": 0x2000,
+    "LIB_NISTCURVES_REU_SETTLE_ITER": 1,
+    "REU_SETTLE_FLOOR_CYCLES_48MHZ": 1,
+    "LIB_NISTCURVES_REU_BANKS_USED": 0x0000,
+    "LIB_NISTCURVES_ZP_USAGE_BYTES": 1,
+    "LIB_NISTCURVES_RESIDENT_BYTES": 1,
+    "LIB_NISTCURVES_COLD_BYTES": 1,
+    "LIB_NISTCURVES_SHARED_PRIMITIVES": 0x0000,
+    "LIB_NISTCURVES_SHARED_CONSUMES": 0x0001,
+}
+# Knobs that are only meaningful as a pair: the companion is driven alongside
+# with the stated offset (§8.2: stage_hi = stage_lo + $100, asserted).
+KNOB_COMPANIONS = {"LIB_SHARED_REU_MUL_STAGE_LO": ("LIB_SHARED_REU_MUL_STAGE_HI", 0x100)}
+# Knobs that cannot be moved at all, and why.
+KNOB_UNPERTURBABLE = {
+    "LIB_SHARED_REU_MUL_OFFSET": "asserted = $0000 in src/reu_banks.inc (SPEC §8.2 "
+                                 "v0.x.0 constraint); any other value is an "
+                                 "assemble error, not a configuration",
+}
+# Where a perturbed knob is SEEN in the built archives, when that is not the
+# knob's own name. Every perturbed knob is checked: each member exporting the
+# observed symbol must carry the knob value, and at least one must exist.
+KNOB_OBSERVED_AS = {
+    "LIB_SHARED_SQTAB_BASE": "LIB_NISTCURVES_SHARED_SQTAB_BASE",
+    "LIB_SHARED_REU_MUL_BANK": "LIB_NISTCURVES_SHARED_REU_MUL_BANK",
+    "LIB_SHARED_REU_MUL_STAGE_LO": "nistcurves_mul_dma_lo",
+}
+# Perturbed but not observable in any artifact, and why. Still swept for
+# forbidden exports under the perturbation -- the sweep is the point; the
+# observation only proves the knob reached the build.
+KNOB_UNOBSERVABLE = {
+    "REU_SETTLE_FLOOR_CYCLES_48MHZ": "assert-only (src/reu_dma_done.inc): a "
+                                     "measured floor, never exported",
+    # The three §8.0 bit constants are not exported (SPEC.md:271 forbids it),
+    # and their only consumer in the archive, the LIB_NISTCURVES_SHARED_*
+    # mask derivation in src/lib_manifest.s, is itself overridden in pass HI
+    # (KNOB_PASS_HI sets both masks), so no exported value depends on them
+    # in the one pass that moves them.
+    "LIB_SHARED_PRIMITIVES_SQTAB": "§8.0 bit constant: not exported (SPEC.md:271); "
+                                   "its only reader, the mask derivation, is "
+                                   "overridden in the same pass",
+    "LIB_SHARED_PRIMITIVES_REU_MUL": "§8.0 bit constant: not exported; its mask "
+                                     "reader is overridden in the same pass",
+    "LIB_SHARED_PRIMITIVES_CT_MUL_8X8": "§8.0 bit constant: not exported; its mask "
+                                        "reader is overridden in the same pass",
+}
+KNOB_SCAN_EXCLUDE_SUFFIX = "_INCLUDED"      # header include guards, not knobs
+# ca65 directives are case-insensitive, and a guard has three spellings:
+#   .ifndef X  /  .if .not .defined(X)      -> "ifndef"
+#   .ifdef X   /  .if .defined(X)           -> "ifdef"
+# Review mutants k1 (`.if .not .defined(NC_K1)`) and k3 (`.IFNDEF NC_K3`) each
+# introduced a knob the old, lower-case, `.ifndef`/`.ifdef`-only scan missed.
+_KNOB_GUARD_RE = re.compile(
+    r"^\s*(?:\.(?P<kw>ifndef|ifdef)\s+(?P<x1>[A-Za-z_]\w*)"
+    r"|\.if\s+(?P<neg>\.not\s+)?\.defined\s*\(\s*(?P<x2>[A-Za-z_]\w*)\s*\))"
+    r"\s*(?:;.*)?$", re.I)
+_INCLUDE_RE = re.compile(r'^\s*\.include\s+"([^"]+)"', re.M | re.I)
+
+
+def _guard_kind(m):
+    """("ifndef"|"ifdef", name) for a _KNOB_GUARD_RE match."""
+    if m.group("kw"):
+        return m.group("kw").lower(), m.group("x1")
+    return ("ifndef" if m.group("neg") else "ifdef"), m.group("x2")
+
+
+def archived_source_files(archives):
+    """Every source a shipped arm is assembled from, plus every file those
+    `.include`, transitively (Makefile-derived; .include matched case-
+    insensitively, as ca65 does)."""
+    srcs = {src for src, _d, _u in shipped_object_arms(archives).values()}
+    todo = [REPO / "src" / f"{x}.s" for x in sorted(srcs)]
+    files = []
+    while todo:
+        f = todo.pop()
+        if f in files or not f.exists():
+            continue
+        files.append(f)
+        todo += [REPO / "src" / inc for inc in _INCLUDE_RE.findall(f.read_text())]
+    return sorted(files)
+
+
+def derive_knobs(archives):
+    """{knob: "file:line"} for every consumer-overridable value the archived
+    sources read, and the set of those that are ZP slots (CONTRACT_ZP_DEFINES).
+
+    Population: the source of every shipped object arm (Makefile-derived) plus
+    every file those sources `.include`, transitively. A guard is a KNOB when
+    its block -- up to the matching `.else`/`.endif` -- assigns the name
+    (`.ifndef X` ... `X = ...`) or reads it as a value (`.ifdef X` ...
+    `... = X`). A pure presence switch (`.ifdef FP_ONCHIP_MUL`), an import
+    guard (`.ifndef X` / `.import X`) and a `*_INCLUDED` header guard are not
+    knobs."""
+    files = archived_source_files(archives)
+    knobs, zp = {}, set()
+    for f in files:
+        lines = f.read_text().splitlines()
+        for i, ln in enumerate(lines):
+            m = _KNOB_GUARD_RE.match(ln)
+            if not m:
+                continue
+            kind, x = _guard_kind(m)
+            if x.endswith(KNOB_SCAN_EXCLUDE_SUFFIX):
+                continue
+            depth, body = 0, []
+            for nxt in lines[i + 1:]:
+                if re.match(r"^\s*\.if", nxt, re.I):
+                    depth += 1
+                elif re.match(r"^\s*\.endif", nxt, re.I):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif re.match(r"^\s*\.else", nxt, re.I) and depth == 0:
+                    break
+                body.append(nxt.split(";", 1)[0])
+            text = "\n".join(body)
+            assigns = re.search(rf"^\s*{x}\s*:?=", text, re.M)   # symbols are case-sensitive
+            reads = re.search(rf"^\s*[A-Za-z_]\w*\s*:?=[^\n\"]*\b{x}\b", text, re.M)
+            if (kind == "ifndef" and assigns) or (kind == "ifdef" and reads):
+                knobs.setdefault(x, f"{f.name}:{i + 1}")
+                if f.name == "zp_config.s":
+                    zp.add(x)
+    return knobs, zp
+
+
+# --- Pass (4): presence switches -------------------------------------------
+# Review mutant k5 keyed a forbidden export on
+#   .if .defined(SHARED_SQTAB_INIT) .and (.not .defined(SHARED_CT_MUL_8X8))
+# -- the shape of a consumer's deferral build, c64-https's among them -- and
+# passed: passes (1)-(3) only ever build each arm with the switches the
+# Makefile gives it. Every presence switch the archived sources test is now
+# DERIVED (derive_switches) and must be classified here, ratcheted both ways:
+#   CONSUMER_SWITCHES -- switches a consumer sets through CONTRACT_DEFINES on
+#     EVERY TU. Swept below, alone and in the documented combinations.
+#   VARIANT_SWITCHES -- arm selectors the Makefile sets per object rule; each
+#     shipped arm is already swept with its own set by passes (1)-(3). The
+#     claim is checked: each must appear in a Makefile object rule.
+CONSUMER_SWITCHES = {
+    "LIB_NO_BARE_EXPORTS": "§6.5 build-wide gate for deprecated bare names",
+    "SHARED_SQTAB_INIT": "§8.1 deferral",
+    "SHARED_CT_MUL_8X8": "§8.3 deferral",
+    "SHARED_REU_MUL_INIT": "§8.2 deferral (moves with _FETCH)",
+    "SHARED_REU_MUL_FETCH": "§8.2 deferral (moves with _INIT)",
+}
+VARIANT_SWITCHES = {
+    "ECDSA_NO_COMB", "FP_ONCHIP_MUL", "LIB_P256_COMB_ONLY",
+    "LIB_P256_VERIFY_ONLY", "LIB_P384_CURVE_ONLY", "LIB_P384_VERIFY_ONLY",
+    "LIB_SHA384_ONLY",
+}
+# Switches that may only be set together: lib_manifest.s errors out on
+# SHARED_REU_MUL_INIT without SHARED_REU_MUL_FETCH (§8.2 both-or-neither), so
+# a "single-switch" arm for either is the pair.
+SWITCH_UNITS = [
+    ("LIB_NO_BARE_EXPORTS",),
+    ("SHARED_SQTAB_INIT",),
+    ("SHARED_CT_MUL_8X8",),
+    ("SHARED_REU_MUL_INIT", "SHARED_REU_MUL_FETCH"),
+]
+# Documented consumer combinations, each swept as its own full build. The
+# first is c64-https's P-256 CONTRACT_DEFINES verbatim
+# (tools/integration/build_nistcurves_p256.sh:371 in that repo), base
+# included; the second is the minimal deferral pair the review named; the
+# third is full §8.1-§8.3 deferral without the bare-name gate.
+SWITCH_COMBOS = {
+    "c64-https P-256": "-D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT "
+                       "-D SHARED_REU_MUL_FETCH -D SHARED_CT_MUL_8X8 "
+                       "-D LIB_NO_BARE_EXPORTS=1 -D LIB_SHARED_SQTAB_BASE=0xBC00",
+    "bare-gate + sqtab deferral": "-D LIB_NO_BARE_EXPORTS=1 -D SHARED_SQTAB_INIT",
+    "full §8.1-§8.3 deferral": "-D SHARED_SQTAB_INIT -D SHARED_CT_MUL_8X8 "
+                               "-D SHARED_REU_MUL_INIT -D SHARED_REU_MUL_FETCH",
+}
+_SWITCH_NAME_RE = re.compile(
+    r"\.(?:ifn?def)\s+([A-Za-z_]\w*)|\.defined\s*\(\s*([A-Za-z_]\w*)\s*\)", re.I)
+
+
+def derive_switches(archives, knobs):
+    """{switch: [files]}: every name the archived sources test for presence
+    (`.ifdef`, `.ifndef`, `.defined()`, any case) that is not a knob and not a
+    `*_INCLUDED` guard."""
+    found = {}
+    for f in archived_source_files(archives):
+        for ln in f.read_text().splitlines():
+            for m in _SWITCH_NAME_RE.finditer(ln.split(";", 1)[0]):
+                x = m.group(1) or m.group(2)
+                if x in knobs or x.endswith(KNOB_SCAN_EXCLUDE_SUFFIX):
+                    continue
+                found.setdefault(x, set()).add(f.name)
+    return {k: sorted(v) for k, v in found.items()}
+
+
+def knob_pass_values(knobs, zp):
+    """(hi, lo) value dicts for every derived knob. ZP slot values are
+    computed from each slot's parsed default rather than tabled: +$60 / +$40
+    for slots below $80, -$40 / -$30 above, which keeps every moved slot
+    clear of every default slot and of each other."""
+    zp_text = (REPO / "src" / "zp_config.s").read_text()
+    hi, lo = dict(KNOB_PASS_HI), dict(KNOB_PASS_LO)
+    for x in sorted(zp):
+        m = re.search(rf"^\s*{x}\s*=\s*\$([0-9a-fA-F]+)", zp_text, re.M)
+        d = int(m.group(1), 16)
+        hi[x] = d + 0x60 if d < 0x80 else d - 0x40
+        lo[x] = d + 0x40 if d < 0x80 else d - 0x30
+    return hi, lo
+
+
+def forbidden(names):
+    return {n for n in names if n in FORBIDDEN_EXPORTS
+            or FORBIDDEN_EXPORTS_RE.match(n)}
+
+
+@leg
+def forbidden_export_check(failures, archives):
+    """§8.0/§8.1/§8.2: names no library may export, in any arm, gated or not.
+
+    Two populations, because each misses something the other sees:
+    (1) every member of every BUILT archive, extracted with `ar65 x` -- the
+        artifact a consumer links, including deferral arms (app-owned) that
+        no source sweep reproduces unless it reads the Makefile right;
+    (2) every shipped object arm re-assembled from source both ungated and
+        under LIB_NO_BARE_EXPORTS -- "forbidden" means no configuration, and
+        the gated build is one no archive ships, so (1) cannot see it;
+    (3) every archive rebuilt by the REAL Makefile, in a throwaway BUILD_DIR,
+        twice (KNOB_PASS_HI / KNOB_PASS_LO), with EVERY consumer knob the
+        archived sources read moved off its default -- the knob set derived
+        by derive_knobs(), not listed. Review mutants sA (`.if
+        LIB_SHARED_SQTAB_BASE <> $9c00`) and tX (`.if
+        LIB_NISTCURVES_REU_SETTLE_ITER <> 8`) each keyed a forbidden export
+        on a knob; (1) and (2) only assemble at defaults and saw neither.
+        Driving make keeps the arms Makefile-derived (make decides which TU
+        sees CONTRACT_ZP_DEFINES). Each perturbed knob must be SEEN in the
+        artifact, or carry a recorded reason it cannot be
+        (KNOB_UNOBSERVABLE) -- a pass whose knobs silently missed the build
+        would re-test the defaults;
+    (4) every presence switch the archived sources test (derive_switches),
+        each consumer switch alone (SWITCH_UNITS) and in the documented
+        combinations (SWITCH_COMBOS, incl. c64-https's exact P-256 set), one
+        real `make -k` build each in a throwaway BUILD_DIR, scanning the
+        OBJECTS produced. Review mutant k5 keyed a forbidden export on
+        `.defined(SHARED_SQTAB_INIT) .and .not .defined(SHARED_CT_MUL_8X8)`;
+        (1)-(3) never build an arm with a switch its Makefile rule lacks. An
+        object may be missing only when its own rule already sets one of the
+        configuration's switches (ca65 `'X' is already defined` -- the
+        app-owned arm, swept as itself by (1)); any other gap fails.
+    Every dump must be readable (od65_export_names is None/COUNT_MISMATCH on
+    an untrustworthy dump), and an empty population fails: an absence
+    assertion over nothing is the empty-population shape."""
+    import tempfile
+    print("\n=== §8 forbidden exports (sqtab_lo/hi, LIB_SHARED_* inputs) ===")
+    hits, unreadable, members = [], [], 0
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        built = sorted(LIBDIR.glob("*.a"))
+        if not built:
+            failures.append("forbidden exports: no archives built -- vacuous")
+            print("  FORBID FAIL: no archives found")
+            return
+        for apath in built:
+            rc, out = sh(["ar65", "t", str(apath)])
+            names = [ln.strip() for ln in out.splitlines()
+                     if ln.strip().endswith(".o")]
+            if rc or not names:
+                unreadable.append(f"{apath.name} (ar65 t)")
+                continue
+            xdir = td / apath.stem
+            xdir.mkdir()
+            p = subprocess.run(["ar65", "x", str(apath), *names], cwd=xdir,
+                               capture_output=True, text=True)
+            if p.returncode:
+                unreadable.append(f"{apath.name} (ar65 x)")
+                continue
+            for mem in names:
+                ex = od65_export_names(xdir / mem)
+                if ex is None or ex is COUNT_MISMATCH:
+                    unreadable.append(f"{apath.name}:{mem}")
+                    continue
+                members += 1
+                note_examined(1, "archive member")
+                bad = forbidden(ex)
+                if bad:
+                    hits.append(f"{apath.name}:{mem} exports {sorted(bad)}")
+        arms = shipped_object_arms(archives)
+        nsrc = 0
+        for obj, (src, defines, using) in sorted(arms.items()):
+            for gated in (False, True):
+                dargs = []
+                for d in defines:
+                    dargs += ["-D", d]
+                if gated:
+                    dargs += ["-D", "LIB_NO_BARE_EXPORTS=1"]
+                o = td / f"{'g' if gated else 'u'}_{obj}.o"
+                rc, _ = sh(["ca65", "--cpu", "6502", "-I", "src", *dargs,
+                            "-o", str(o), f"src/{src}.s"])
+                ex = None if rc else od65_export_names(o)
+                label = f"{obj}.o{' [gated]' if gated else ''}"
+                if ex is None or ex is COUNT_MISMATCH:
+                    unreadable.append(label)
+                    continue
+                nsrc += 1
+                note_examined(1, "source arm")
+                bad = forbidden(ex)
+                if bad:
+                    hits.append(f"{label} from src/{src}.s exports {sorted(bad)}")
+        # (3) derived consumer knobs, two passes, through the real Makefile.
+        nknob = 0
+        knobs, zp = derive_knobs(archives)
+        note_examined(len(knobs), "derived knob")
+        classified = set(KNOB_PASS_HI) | set(KNOB_PASS_LO) | set(KNOB_UNPERTURBABLE) | zp
+        companions = {c for c, _o in KNOB_COMPANIONS.values()}
+        unclassified = sorted(set(knobs) - classified)
+        stale = sorted(classified - set(knobs) - companions)
+        if not knobs:
+            failures.append("forbidden exports: derived no consumer knobs -- the "
+                            "knob scan examined nothing")
+        if unclassified:
+            failures.append(f"forbidden exports: knobs {unclassified} "
+                            f"({[knobs[k] for k in unclassified]}) have no "
+                            "perturbation row -- add them to KNOB_PASS_HI (and "
+                            "_LO) or KNOB_UNPERTURBABLE with a reason")
+            print(f"  FORBID FAIL: unclassified knobs {unclassified}")
+        if stale:
+            failures.append(f"forbidden exports: perturbation rows {stale} name "
+                            "no knob the sources still read -- stale table")
+            print(f"  FORBID FAIL: stale knob rows {stale}")
+        hi, lo = knob_pass_values(knobs, zp)
+        passes_ok = []
+        for pname, vals in (("HI", hi), ("LO", lo)):
+            vals = {k: v for k, v in vals.items() if k in knobs}
+            for k, (c, off) in KNOB_COMPANIONS.items():
+                if k in vals:
+                    vals[c] = vals[k] + off
+            cdef = " ".join(f"-D {k}=0x{v:X}" for k, v in sorted(vals.items())
+                            if k not in zp)
+            zdef = " ".join(f"-D {k}=0x{v:X}" for k, v in sorted(vals.items())
+                            if k in zp)
+            kb = td / f"knobs_{pname}"
+            kb.mkdir()
+            targets = [str(kb / "lib" / a) for a in sorted(archives)]
+            rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={kb}",
+                          f"CONTRACT_DEFINES={cdef}", f"CONTRACT_ZP_DEFINES={zdef}",
+                          *targets])
+            if rc:
+                failures.append(f"forbidden exports: knob pass {pname} build "
+                                f"failed: {out.strip()[-400:]}")
+                print(f"  FORBID FAIL: knob pass {pname} build failed")
+                continue
+            exported = {}          # symbol -> [(where, value)]
+            for a in sorted(archives):
+                apath = kb / "lib" / a
+                rc, out = sh(["ar65", "t", str(apath)])
+                names = [ln.strip() for ln in out.splitlines()
+                         if ln.strip().endswith(".o")]
+                xdir = td / f"kx_{pname}_{apath.stem}"
+                xdir.mkdir()
+                if rc or not names or subprocess.run(
+                        ["ar65", "x", str(apath), *names], cwd=xdir,
+                        capture_output=True).returncode:
+                    unreadable.append(f"{a} (knob pass {pname})")
+                    continue
+                for mem in names:
+                    ex = od65_export_names(xdir / mem)
+                    if ex is None or ex is COUNT_MISMATCH:
+                        unreadable.append(f"{a}:{mem} (knob pass {pname})")
+                        continue
+                    nknob += 1
+                    note_examined(1, "knob-pass member")
+                    bad = forbidden(ex)
+                    if bad:
+                        hits.append(f"{a}:{mem} [knob pass {pname}] exports "
+                                    f"{sorted(bad)}")
+                    for k in vals:
+                        sym = KNOB_OBSERVED_AS.get(k, k)
+                        if sym in ex:
+                            exported.setdefault(sym, []).append(
+                                (f"{a}:{mem}", od65_value([xdir / mem], sym)))
+            unseen = []
+            for k, want in sorted(vals.items()):
+                if k in KNOB_UNOBSERVABLE or k in companions:
+                    continue
+                seen = exported.get(KNOB_OBSERVED_AS.get(k, k), [])
+                wrong = [(w, v) for w, v in seen if v != want]
+                if not seen or wrong:
+                    unseen.append(k)
+                    failures.append(
+                        f"forbidden exports: knob {k} (pass {pname}, want "
+                        f"${want:04X}) did not reach the artifacts "
+                        f"({'nothing exports ' + KNOB_OBSERVED_AS.get(k, k) if not seen else wrong[:3]})"
+                        " -- observe it, or record why it cannot be "
+                        "(KNOB_UNOBSERVABLE)")
+            if not unseen:
+                passes_ok.append(f"{pname}: {len(vals)} knobs")
+        # (4) presence switches: single-unit arms + documented combinations.
+        switches = derive_switches(archives, knobs)
+        note_examined(len(switches), "derived switch")
+        arms = shipped_object_arms(archives)
+        mk_switches = {d.split("=")[0] for _s, ds, _u in arms.values() for d in ds}
+        roster = set(CONSUMER_SWITCHES) | VARIANT_SWITCHES
+        unrostered = sorted(set(switches) - roster)
+        stale_sw = sorted(roster - set(switches))
+        fake_variant = sorted(VARIANT_SWITCHES - mk_switches)
+        unit_names = {x for u in SWITCH_UNITS for x in u}
+        if not switches:
+            failures.append("forbidden exports: derived no presence switches")
+        if unrostered:
+            failures.append(f"forbidden exports: presence switches {unrostered} "
+                            f"({[switches[x] for x in unrostered]}) are in neither "
+                            "CONSUMER_SWITCHES nor VARIANT_SWITCHES -- classify "
+                            "them so pass (4) sweeps or justifies them")
+            print(f"  FORBID FAIL: unclassified switches {unrostered}")
+        if stale_sw:
+            failures.append(f"forbidden exports: switch roster names {stale_sw}, "
+                            "which no archived source tests -- stale roster")
+        if fake_variant:
+            failures.append(f"forbidden exports: VARIANT_SWITCHES {fake_variant} "
+                            "are set by no Makefile object rule, so no arm "
+                            "sweeps them -- they are consumer switches")
+        if set(CONSUMER_SWITCHES) != unit_names:
+            failures.append(f"forbidden exports: SWITCH_UNITS covers "
+                            f"{sorted(unit_names)}, CONSUMER_SWITCHES is "
+                            f"{sorted(CONSUMER_SWITCHES)} -- every consumer switch "
+                            "needs a single-unit arm")
+        configs = [(f"switch {'+'.join(u)}",
+                    " ".join(f"-D {x}" + ("=1" if x == "LIB_NO_BARE_EXPORTS" else "")
+                             for x in u)) for u in SWITCH_UNITS]
+        configs += [(f"combo {n}", d) for n, d in SWITCH_COMBOS.items()]
+        nswitch, sw_ok = 0, []
+        for label, cdef in configs:
+            set_here = set(re.findall(r"-D\s+([A-Za-z_]\w*)", cdef))
+            kb = td / ("sw_" + re.sub(r"\W+", "_", label))
+            kb.mkdir()
+            targets = [str(kb / "lib" / a) for a in sorted(archives)]
+            # -k: an arm whose own Makefile rule already sets one of these
+            # switches cannot take it twice (`'X' is already defined`) --
+            # the app-owned arm -- and must not stop the rest of the build.
+            # The scan is over the OBJECTS make produced, not a link.
+            _rc, out = sh(["make", "-k", "-C", str(REPO), f"BUILD_DIR={kb}",
+                           f"CONTRACT_DEFINES={cdef}", *targets])
+            scanned, missing = 0, []
+            for obj, (src, defines, _using) in sorted(arms.items()):
+                o = kb / f"{obj}.o"
+                if not o.exists():
+                    dup = set_here & {d.split("=")[0] for d in defines}
+                    if dup and any(f"'{d}' is already defined" in out for d in dup):
+                        continue        # the arm already carries the switch
+                    missing.append(obj)
+                    continue
+                ex = od65_export_names(o)
+                if ex is None or ex is COUNT_MISMATCH:
+                    unreadable.append(f"{obj}.o ({label})")
+                    continue
+                scanned += 1
+                nswitch += 1
+                note_examined(1, "switch-pass object")
+                bad = forbidden(ex)
+                if bad:
+                    hits.append(f"{obj}.o [{label}] exports {sorted(bad)}")
+            if missing:
+                failures.append(f"forbidden exports: [{label}] objects {missing} "
+                                "were not built for a reason other than an arm "
+                                "already carrying the switch -- unscanned: "
+                                + out.strip()[-300:])
+                print(f"  FORBID FAIL: [{label}] unbuilt objects {missing}")
+            elif scanned == 0:
+                failures.append(f"forbidden exports: [{label}] scanned nothing")
+            else:
+                sw_ok.append(f"{label}: {scanned}")
+        stale_unobs = sorted(set(KNOB_UNOBSERVABLE) - set(knobs))
+        if stale_unobs:
+            failures.append(f"forbidden exports: KNOB_UNOBSERVABLE names {stale_unobs},"
+                            " which are not derived knobs -- stale table")
+        knob_summary = (f"{len(knobs)} derived knobs ({len(zp)} ZP), "
+                        f"{len(KNOB_UNPERTURBABLE)} unperturbable, "
+                        f"{len(KNOB_UNOBSERVABLE)} perturbed-but-unobservable; "
+                        f"passes {passes_ok}; {len(switches)} derived switches, "
+                        f"{len(configs)} switch builds, {nswitch} objects {sw_ok}")
+    if unreadable:
+        failures.append(f"forbidden exports: unreadable {unreadable} -- an "
+                        "unread dump is not a clean one")
+        print(f"  FORBID FAIL: unreadable {unreadable}")
+    if members == 0 or nsrc == 0 or nknob == 0:
+        failures.append(f"forbidden exports: examined {members} archive "
+                        f"members, {nsrc} source arms and {nknob} knob-pass "
+                        "members -- vacuous")
+        print("  FORBID FAIL: empty population")
+    for h in hits:
+        failures.append(f"forbidden exports: {h} (SPEC §8.0/§8.1/§8.2 MUST NOT)")
+        print(f"  FORBID FAIL: {h}")
+    if not hits and not unreadable and members and nsrc and nknob:
+        print(f"  forbidden exports OK ({members} archive members across "
+              f"{len(built)} archives + {nsrc} source arms, ungated and "
+              f"gated + {nknob} members rebuilt in two derived-knob passes: "
+              "none exports a §8 forbidden name)")
+        print(f"  knob passes: {knob_summary}")
+
+
+ABI_BASELINE = REPO / "tools" / "abi_baseline.json"
+ABI_DOC_FILES = ("API.md", "src/nistcurves.inc", "src/lib_version.s")
+_ABI_DOC_RE = re.compile(r"LIB_NISTCURVES_ABI_VERSION\s*=\s*(\d+)\s*,\s*lderror")
+
+
+def built_archive_exports(apath, td):
+    """Union of every member's exports for one BUILT archive, or None if any
+    member's dump is untrustworthy (an unread member is not an empty one)."""
+    rc, out = sh(["ar65", "t", str(apath)])
+    names = [ln.strip() for ln in out.splitlines() if ln.strip().endswith(".o")]
+    if rc or not names:
+        return None
+    xdir = Path(td) / f"x_{apath.stem}"
+    xdir.mkdir(exist_ok=True)
+    p = subprocess.run(["ar65", "x", str(apath), *names], cwd=xdir,
+                       capture_output=True, text=True)
+    if p.returncode:
+        return None
+    exp = set()
+    for mem in names:
+        ex = od65_export_names(xdir / mem)
+        if ex is None or ex is COUNT_MISMATCH:
+            return None
+        exp |= ex
+    return exp
+
+
+def built_abi_version():
+    """LIB_NISTCURVES_ABI_VERSION as the BUILT lib_version.o carries it."""
+    return od65_value([BUILD / "lib_version.o"], "LIB_NISTCURVES_ABI_VERSION")
+
+
+ABI_REASON_MIN_WORDS = 4
+_ABI_REASON_REF_RE = re.compile(r"#\d+|\bv\d+\.\d+\.\d+\b")
+
+
+def abi_step_reason(text, k):
+    """The stated reason for ABI step k -> k+1 in src/lib_version.s, or None.
+
+    The reason is the rest of the `; k -> k+1` line. It must name an issue or
+    a release and say at least ABI_REASON_MIN_WORDS words; otherwise the step
+    is unexplained.
+
+    ACCEPTED LIMIT (review tV2): this is a floor against the accidental bare
+    arrow, not a judge of content. Determined filler ("#1 a b c d") satisfies
+    it. Reviewing that the reason is true is the PR review's job."""
+    for m in re.finditer(rf"^;\s*{k}\s*->\s*{k + 1}\b(.*)$", text, re.M):
+        rest = m.group(1)
+        words = re.findall(r"[A-Za-z][A-Za-z'-]+", _ABI_REASON_REF_RE.sub(" ", rest))
+        if _ABI_REASON_REF_RE.search(rest) and len(words) >= ABI_REASON_MIN_WORDS:
+            return rest.strip()
+    return None
+
+
+@leg
+def abi_surface_check(failures):
+    """SPEC §1/§7: a name the last RELEASE exported may disappear only if
+    LIB_NISTCURVES_ABI_VERSION has moved past that release's value.
+
+    Nothing tied the counter to the surface before this leg. CLAUDE.md said
+    check-archives "pins the counter against the source", but no leg read the
+    counter's VALUE: version_identity_check compares MAJOR/MINOR/PATCH only,
+    and the manifest roster checks the ABI equate's presence. Review mutant
+    sC (v0.16.0) kept the sqtab removal and set the counter back to 4, and
+    check-archives passed.
+
+    The comparand is tools/abi_baseline.json: the per-archive exports and ABI
+    value of the last TAG, built from that tag by tools/gen_abi_baseline.py.
+    Refresh it right after tagging each release. A baseline restated from this
+    tree's sources would be self-comparison.
+
+    Rules:
+      * a baseline name no longer exported by the same archive, or a baseline
+        archive no longer built, needs ABI > baseline ABI;
+      * the ABI never goes down;
+      * every step k -> k+1 between the two values needs a stated reason: a
+        `; k -> k+1 <reason>` comment line in src/lib_version.s, where the
+        reason on that line carries an issue reference (`#NNN`) or a release
+        (`vX.Y.Z`) AND at least ABI_REASON_MIN_WORDS words. A bare arrow is not
+        a reason: review mutant tV went ABI 4 -> 6 on `; 5 -> 6` alone and
+        passed. An ABI that moved with no removal is allowed (§7 moves it for
+        behaviour too), but not silently.
+    Scope: the DEFAULT configuration, the one the baseline records. A missing,
+    unparseable or empty baseline fails; an empty population proves
+    nothing."""
+    import json
+    print("\n=== §1/§7 ABI counter vs the last release's exported surface ===")
+    try:
+        base = json.loads(ABI_BASELINE.read_text())
+        base_abi = int(base["abi"])
+        rows = base["archives"]
+        tag = base.get("tag", "?")
+    except FileNotFoundError:
+        failures.append(f"abi surface: {ABI_BASELINE.relative_to(REPO)} is "
+                        "missing -- nothing to compare the surface against")
+        print("  ABI FAIL: baseline missing")
+        return
+    except (ValueError, KeyError, TypeError) as e:
+        failures.append(f"abi surface: baseline unreadable ({e!r})")
+        print(f"  ABI FAIL: baseline unreadable: {e!r}")
+        return
+    sys.path.insert(0, str(REPO / "tools"))
+    from gen_abi_baseline import rows_digest
+    if not isinstance(rows, dict) or base.get("rows_sha256") != rows_digest(base_abi, rows):
+        failures.append(
+            f"abi surface: baseline content does not match its rows_sha256 "
+            f"(recorded {str(base.get('rows_sha256'))[:12]}) -- a row or the ABI "
+            "value was edited after generation, or the file predates the "
+            "digest; regenerate with tools/gen_abi_baseline.py <tag>")
+        print("  ABI FAIL: baseline content digest mismatch")
+        return
+    empty = sorted(a for a, v in rows.items() if not v) if isinstance(rows, dict) else ["?"]
+    if not isinstance(rows, dict) or not rows or empty:
+        failures.append(f"abi surface: baseline has no archives, or empty rows "
+                        f"{empty} -- an absence check over nothing is vacuous")
+        print("  ABI FAIL: baseline population empty")
+        return
+    cur_abi = built_abi_version()
+    if cur_abi is None:
+        failures.append("abi surface: LIB_NISTCURVES_ABI_VERSION not readable "
+                        "from build/lib_version.o")
+        print("  ABI FAIL: built ABI unreadable")
+        return
+    removed, unread = {}, []
+    with tempfile.TemporaryDirectory() as td:
+        for aname, names in sorted(rows.items()):
+            apath = LIBDIR / aname
+            note_examined(len(names), "baseline export")
+            if not apath.exists():
+                removed[aname] = sorted(names)        # the whole archive went
+                continue
+            cur = built_archive_exports(apath, td)
+            if cur is None:
+                unread.append(aname)
+                continue
+            gone = sorted(set(names) - cur)
+            if gone:
+                removed[aname] = gone
+    if unread:
+        failures.append(f"abi surface: could not read {unread}")
+        print(f"  ABI FAIL: unreadable archives {unread}")
+    gone_names = sorted({n for v in removed.values() for n in v})
+    if cur_abi < base_abi:
+        failures.append(f"abi surface: ABI went DOWN, {base_abi} ({tag}) -> "
+                        f"{cur_abi}; the counter is monotonic")
+        print(f"  ABI FAIL: {base_abi} -> {cur_abi} is a decrease")
+    if gone_names and cur_abi <= base_abi:
+        failures.append(
+            f"abi surface: {len(gone_names)} name(s) {tag} exported are gone "
+            f"({gone_names[:8]}{' ...' if len(gone_names) > 8 else ''} from "
+            f"{sorted(removed)}) but LIB_NISTCURVES_ABI_VERSION is {cur_abi}, "
+            f"not above {tag}'s {base_abi} -- SPEC §1: a removed symbol moves "
+            "the counter")
+        print(f"  ABI FAIL: removal without a counter move ({base_abi} -> {cur_abi})")
+    if cur_abi > base_abi:
+        lv = (REPO / "src" / "lib_version.s").read_text()
+        missing = [f"{k} -> {k + 1}" for k in range(base_abi, cur_abi)
+                   if abi_step_reason(lv, k) is None]
+        if missing:
+            failures.append(f"abi surface: ABI {base_abi} -> {cur_abi} with no "
+                            f"stated reason for step(s) {missing} -- each needs a "
+                            "`; k -> k+1 (issue #NNN or vX.Y.Z) <at least "
+                            f"{ABI_REASON_MIN_WORDS} words>` line in "
+                            "src/lib_version.s; a bare arrow is not a reason")
+            print(f"  ABI FAIL: unexplained step(s) {missing}")
+    if not failures or not any(f.startswith("abi surface") for f in failures):
+        print(f"  abi surface OK ({len(rows)} archives, "
+              f"{sum(len(v) for v in rows.values())} {tag} export rows; "
+              f"{len(gone_names)} name(s) gone {gone_names}; ABI {base_abi} -> "
+              f"{cur_abi}, every step stated in src/lib_version.s)")
+
+
+@leg
+def abi_doc_binding_check(failures):
+    """The documented consumer gate must equal the built counter.
+
+    API.md, src/nistcurves.inc and src/lib_version.s each show
+    `.assert LIB_NISTCURVES_ABI_VERSION = N, lderror, ...` for consumers to
+    copy. Under review mutant sC (counter set back to 4), check-docs still
+    passed with every snippet saying 5. A consumer copying the snippet then
+    fails to link against an archive that is otherwise fine, or worse, the
+    snippet lags a real bump and waves a breaking release through. Every
+    occurrence must equal the value in the BUILT lib_version.o, and each file
+    must carry at least one (population sentinel: an emptied file is not a
+    clean one)."""
+    print("\n=== documented ABI gate == built LIB_NISTCURVES_ABI_VERSION ===")
+    cur = built_abi_version()
+    if cur is None:
+        failures.append("abi docs: built ABI unreadable from build/lib_version.o")
+        print("  ABI DOC FAIL: built ABI unreadable")
+        return
+    bad = []
+    for rel in ABI_DOC_FILES:
+        text = (REPO / rel).read_text()
+        hits = [(text.count("\n", 0, m.start()) + 1, int(m.group(1)))
+                for m in _ABI_DOC_RE.finditer(text)]
+        note_examined(len(hits), "documented ABI gate")
+        if not hits:
+            failures.append(f"abi docs: {rel} shows no `.assert "
+                            "LIB_NISTCURVES_ABI_VERSION = N, lderror` gate -- "
+                            "nothing to bind")
+            print(f"  ABI DOC FAIL: {rel} has no gate snippet")
+        bad += [f"{rel}:{ln} says {v}" for ln, v in hits if v != cur]
+    for b in bad:
+        failures.append(f"abi docs: {b}, built lib_version.o says {cur}")
+        print(f"  ABI DOC FAIL: {b} (built: {cur})")
+    if not bad:
+        print(f"  abi docs OK (every documented gate in {list(ABI_DOC_FILES)} "
+              f"says {cur}, as built)")
+
+
 @leg
 def sibling_sqtab_collision_check(failures):
     """§6.1 + §8.1: the MANDATORY boot call must not drag a bare sqtab name in.
@@ -3250,27 +4134,19 @@ def sibling_sqtab_collision_check(failures):
     green in the default profile and broken in all five onchip archives, which
     a three-archive sample would have missed.
 
-    Second obligation, same leg (the drift the split introduced): `sqtab_lo`
-    used to be one symbol serving as both the equate the body indexes and the
-    name the archive exports. Since #155 they are two definitions that happen
-    to agree -- `mul_8x8.s` derives its own from `sqtab_base.inc`, and
-    `sqtab_aliases.s` derives and exports the exported pair. A `-D` cannot
-    split them (CONTRACT_DEFINES reaches both TUs) but a source edit to one
-    file silently can, and #154's "values are derived, never restated" is the
-    standing warning. So every archive that exports the pair is link-resolved
-    and compared against the base parsed out of src/sqtab_base.inc."""
+    Second obligation, same leg: NO archive may resolve `sqtab_lo` or
+    `sqtab_hi` for a consumer at all. SPEC §8.1 says they "MUST NOT be
+    exported either -- they are source-level names each consuming TU derives".
+    Through v0.15.0 this half was a value pin instead -- every archive that
+    exported the pair was checked against src/sqtab_base.inc -- because the
+    export was a gated §6.5-window item. The export is gone (v0.16.0), and the
+    value pin turned into a leg that passes by finding nothing to pin, so it is
+    now the absence assertion it should become. Absence over a link proves
+    nothing unless the probe CAN resolve: a positive control links the same
+    probe against a stand-in that does export the pair, and must succeed and
+    place `sqtab_lo` in the map, before any archive's "unresolved" counts."""
     import tempfile
-    print("\n=== §6.1 sibling bare-name collision + §8.1 value pin (sqtab_*) ===")
-
-    inc = (REPO / "src" / "sqtab_base.inc").read_text()
-    m = re.search(r"LIB_SHARED_SQTAB_BASE\s*=\s*\$([0-9a-fA-F]+)", inc)
-    if not m:
-        failures.append("sqtab collision: cannot parse the default base out of "
-                        "src/sqtab_base.inc -- the value pin below would be "
-                        "comparing against nothing")
-        print("  SQTAB FAIL: base unparsed from sqtab_base.inc")
-        return
-    base = int(m.group(1), 16)
+    print("\n=== §6.1 sibling bare-name collision + §8.1 absence (sqtab_*) ===")
 
     sibling = ('; stand-in for a sibling §8.1 adopter deriving the same two names\n'
                '.export sqtab_lo, sqtab_hi\n'
@@ -3280,10 +4156,11 @@ def sibling_sqtab_collision_check(failures):
     consumer = ('.import sqtab_init\n'
                 '.segment "CODE"\n'
                 'entry:\n\tjsr sqtab_init\n\trts\n')
-    # Value pin: import the exported name and read what it resolves to.
-    valprobe = ('.import sqtab_lo\n'
+    # Absence probe: a consumer that imports the two names from the library.
+    valprobe = ('.import sqtab_lo, sqtab_hi\n'
                 '.segment "CODE"\n'
-                'entry:\n\tlda sqtab_lo\n\trts\n')
+                'entry:\n\tlda sqtab_lo\n\tlda sqtab_hi\n\trts\n')
+    want = {"sqtab_lo", "sqtab_hi"}
 
     archives = sorted(LIBDIR.glob("*.a"))
     if not archives:
@@ -3291,7 +4168,29 @@ def sibling_sqtab_collision_check(failures):
         print("  SQTAB FAIL: no archives found")
         return
 
-    checked = pinned = 0
+    # Positive control: the probe resolves when something exports the pair.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "cfg").write_text(CONSUMER_CFG)
+        (td / "s.s").write_text(sibling)
+        (td / "v.s").write_text(valprobe)
+        ok = all(sh(["ca65", "--cpu", "6502", "-o", str(td / f"{f}.o"),
+                     str(td / f"{f}.s")])[0] == 0 for f in ("s", "v"))
+        mp = td / "pc.map"
+        rc, pout = (sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "pc.prg"),
+                        "-m", str(mp), str(td / "v.o"), str(td / "s.o")])
+                    if ok else (1, "probe did not assemble"))
+        if rc or not mp.exists() or not re.search(
+                r"^sqtab_lo\s+00A000", mp.read_text(), re.M):
+            failures.append("sqtab absence: positive control failed -- the "
+                            "probe does not resolve sqtab_lo even against a "
+                            "stand-in exporting it, so 'unresolved' in an "
+                            f"archive would prove nothing: {pout.strip()[:200]}")
+            print("  SQTAB FAIL: positive control did not resolve the probe")
+            return
+    note_examined(1, "positive control")
+
+    checked = absent = 0
     for archive in archives:
         name = archive.name
         note_examined(1, "archive")
@@ -3326,38 +4225,23 @@ def sibling_sqtab_collision_check(failures):
                 continue
             checked += 1
 
-            # Value pin, on archives that export the pair at all. app-owned
-            # gates the export out under SHARED_SQTAB_INIT, so an unresolved
-            # external there is the CORRECT result, not a failure.
-            mp = td / "v.map"
+            # Absence (§8.1 MUST NOT export): the probe must fail to link, and
+            # fail on BOTH names. A link that fails for some other reason
+            # (cfg, assembler) is not evidence of absence.
             _, vout = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "v.prg"),
-                          "-m", str(mp), str(td / "v.o"), str(archive)])
-            if "Unresolved external" in vout or "unresolved external" in vout:
-                print(f"  sqtab OK [{name}] (no collision; exports no bare "
-                      "sqtab_lo, so nothing to pin)")
+                          str(td / "v.o"), str(archive)])
+            unresolved = set(re.findall(r"Unresolved external '([^']+)'", vout))
+            if unresolved == want:
+                absent += 1
+                print(f"  sqtab OK [{name}] (boot call pulls no bare name; "
+                      "resolves neither sqtab_lo nor sqtab_hi)")
                 continue
-            if not mp.exists():
-                failures.append(f"sqtab collision: {name} value probe produced "
-                                "no map, so the pin below examined nothing")
-                print(f"  SQTAB FAIL [{name}]: no map from the value probe")
-                continue
-            vm = re.search(r"^sqtab_lo\s+([0-9A-F]{6})", mp.read_text(), re.M)
-            if not vm:
-                failures.append(f"sqtab collision: {name} links sqtab_lo but it "
-                                "is absent from the map -- pin is vacuous")
-                print(f"  SQTAB FAIL [{name}]: sqtab_lo not in map")
-                continue
-            got = int(vm.group(1), 16)
-            if got != base:
-                failures.append(
-                    f"sqtab collision: {name} exports sqtab_lo = ${got:04x} but "
-                    f"src/sqtab_base.inc says ${base:04x} -- the alias TU and "
-                    "mul_8x8.s have drifted (values are derived, never restated)")
-                print(f"  SQTAB FAIL [{name}]: sqtab_lo ${got:04x} != base ${base:04x}")
-                continue
-            pinned += 1
-            print(f"  sqtab OK [{name}] (boot call pulls no bare name; "
-                  f"sqtab_lo = ${got:04x} matches sqtab_base.inc)")
+            exported = sorted(want - unresolved)
+            failures.append(
+                f"sqtab absence: {name} resolves {exported} for a consumer -- "
+                "SPEC §8.1: sqtab_lo/sqtab_hi MUST NOT be exported"
+                + ("" if exported else f" (probe failed otherwise: {vout.strip()[:200]})"))
+            print(f"  SQTAB FAIL [{name}]: archive resolves {exported}")
 
     if checked == 0:
         failures.append("sqtab collision: no archive completed the probe -- "
@@ -3365,7 +4249,7 @@ def sibling_sqtab_collision_check(failures):
         print("  SQTAB FAIL: nothing examined")
     else:
         print(f"  sqtab summary: {checked} archive(s) collision-free, "
-              f"{pinned} value-pinned against sqtab_base.inc")
+              f"{absent} of {len(archives)} export neither sqtab name")
 
 
 @leg
@@ -4349,6 +5233,9 @@ def _run_all_legs():
         ("ZP roster reconciliation", zp_roster_reconciliation_check, (failures,)),
         ("§5 footprint basis", footprint_basis_check, (failures,)),
         ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
+        ("§8 forbidden exports", forbidden_export_check, (failures, archives)),
+        ("§1/§7 ABI vs last release", abi_surface_check, (failures,)),
+        ("documented ABI gate", abi_doc_binding_check, (failures,)),
         ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
         ("od65 extraction canary", od65_extraction_canary, (failures,)),
         ("APP_OWNED buffer ownership", app_owned_buffer_ownership_check, (failures,)),

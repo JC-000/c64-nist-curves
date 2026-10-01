@@ -81,8 +81,20 @@
 ;   SHA-384 input pointer/length; `.importzp` those yourself if you drive
 ;   SHA-384 directly.
 ; * `sqtab_lo` / `sqtab_hi` (SPEC §8.1). Consumer INPUT derived from
-;   `LIB_SHARED_SQTAB_BASE`, not an import: derive them in your own TU with
-;   the §8.1 pattern, or `.include "sqtab_base.inc"`.
+;   `LIB_SHARED_SQTAB_BASE`, not an import -- and since v0.16.0 not
+;   importable at all: §8.1 says they MUST NOT be exported, and no archive
+;   does. Derive them in your own TU from the shipped default, which `make
+;   lib` copies beside this header as build/lib/sqtab_base.inc:
+;       .include "sqtab_base.inc"       ; FIRST: LIB_SHARED_SQTAB_BASE, .ifndef-guarded
+;       .include "nistcurves.inc"       ; then this header, which pins the base
+;       sqtab_lo = LIB_SHARED_SQTAB_BASE
+;       sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200
+;   If you relocate the table, pass the SAME `-D LIB_SHARED_SQTAB_BASE=0x..`
+;   to your own ca65 as to the library's CONTRACT_DEFINES. This header then
+;   asserts your base against the archive's prefixed output
+;   LIB_NISTCURVES_SHARED_SQTAB_BASE at link (see §8.1 below), but only if
+;   LIB_SHARED_SQTAB_BASE is defined BEFORE this header is read: `-D`, or
+;   include sqtab_base.inc first, as above.
 ; * The `LIB_SHARED_*` placement knobs (§8.1 / §8.2). Those are consumer
 ;   input, deliberately unexported by every adopter — two exporters of an
 ;   unprefixed name collide in a composed link. What you read back instead
@@ -227,17 +239,17 @@ NISTCURVES_INC_INCLUDED = 1
 ; =============================================================================
 ; SPEC §1 — version identification
 ; =============================================================================
-; src/lib_version.s:68-71 assigns all four UNCONDITIONALLY, so these imports
+; src/lib_version.s assigns all four UNCONDITIONALLY, so these imports
 ; are bare: they are not overridable, and a `-D` on one must collide.
 ;
 ; Gate your integration on the ABI counter, not on MAJOR — it is a generation
 ; counter for the exported surface and moves independently of the semantic
 ; version (§1/§7):
-;   .assert LIB_NISTCURVES_ABI_VERSION = 4, lderror, "c64-nist-curves exported surface changed; re-check the integration"
+;   .assert LIB_NISTCURVES_ABI_VERSION = 5, lderror, "c64-nist-curves exported surface changed; re-check the integration"
 .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
-; Deprecated bare aliases (src/lib_version.s:100-109). Present in the archive
+; Deprecated bare aliases (src/lib_version.s, the LIB_NO_BARE_EXPORTS block). Present in the archive
 ; only when it was built WITHOUT LIB_NO_BARE_EXPORTS, so the same define gates
 ; the import. They collide across libraries by construction — every adopter
 ; exports the same four names — so a composing consumer suppresses them on
@@ -513,6 +525,27 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .ifndef SHARED_SQTAB_INIT
 .import mul_tables_init          ; §8.1 canonical entry
 .import sqtab_init               ; historical nist-curves alias, same address
+.endif
+
+; §8.1 prefixed OUTPUT: the sqtab base this archive's code reads (v0.16.0).
+; BARE import: src/mul_8x8.s assigns it unconditionally from
+; LIB_SHARED_SQTAB_BASE, so it is derived, not a knob, and a `-D` of it must
+; collide. Gated exactly as mul_8x8.s gates the export, i.e. present wherever
+; the archive carries a table reader (sqtab_init, the §8.3 body, or the onchip
+; row generator); absent only in the fully-deferring app-owned archive.
+.if (.not .defined(SHARED_SQTAB_INIT)) .or (.not .defined(SHARED_CT_MUL_8X8)) .or .defined(FP_ONCHIP_MUL)
+.import LIB_NISTCURVES_SHARED_SQTAB_BASE
+; Base pin. LIB_SHARED_SQTAB_BASE is consumer INPUT that §8.1 forbids the
+; library to export, so there is nothing to `.ifndef`-guard; what can be
+; checked is agreement, the same shape as the §8.2 knob cross-checks below. If
+; your TU derives sqtab_lo/_hi from a base the archive was not built with,
+; your table and the library's reads land on different pages and the link is
+; otherwise clean. Active only if LIB_SHARED_SQTAB_BASE is already defined when
+; this header is read: pass it with -D, or `.include "sqtab_base.inc"` BEFORE
+; this header.
+.ifdef LIB_SHARED_SQTAB_BASE
+.assert LIB_SHARED_SQTAB_BASE = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive: pass the same -D to CONTRACT_DEFINES and your own build"
+.endif
 .endif
 
 ; --- §8.2 REU multiply table -------------------------------------------------

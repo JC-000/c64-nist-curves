@@ -54,6 +54,18 @@ Legs
 2. metadata   -- CHANGELOG `## [X]` section and RELEASE_NOTES_vX.md, as a unit
 3. inflight   -- if tag vX is absent, `[Unreleased]` must be empty
 4. equates    -- src/lib_version.s VERSION_MAJOR/_MINOR/_PATCH match VERSION
+5. baseline   -- tools/abi_baseline.json was generated from the NEWEST release
+                 tag. `make check-archives`' abi_surface_check compares the
+                 tree's exported surface against it, so a baseline left at an
+                 older tag silently compares against the wrong release: a
+                 name removed and re-added across two releases, or a counter
+                 bump that the newest release already made, both escape.
+                 Refreshing it is a release-checklist step
+                 (`python3 tools/gen_abi_baseline.py <tag>` right after
+                 tagging); this leg is what makes forgetting it visible. In
+                 the pre-tag state (VERSION bumped, its tag not yet cut) the
+                 previous tag's baseline is the correct one, and the leg says
+                 which tag it reflects.
 
 Leg 4 is a **fast pre-check, not the source of truth.**  ``make
 check-archives`` pins the same three equates from the *built objects* (via
@@ -87,6 +99,7 @@ REPO = TOOLS.parent
 CHANGELOG = REPO / "CHANGELOG.md"
 VERSION_FILE = REPO / "VERSION"
 LIB_VERSION = REPO / "src" / "lib_version.s"
+ABI_BASELINE = REPO / "tools" / "abi_baseline.json"
 
 #: A CHANGELOG release heading. Anchored at `## ` so a `### ` subheading
 #: and a trailing `[0.15.0]: https://...` link reference are both excluded
@@ -120,6 +133,49 @@ RE_EQUATE = re.compile(
 )
 
 RE_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+#: A release tag. Anything else (`archive/...`, `v1.0.0-rc1`) is not a release
+#: and must not count as "the newest release".
+RE_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def newest_release_tag(tags: list[str]) -> str | None:
+    """Highest `vX.Y.Z` by numeric comparison (never lexical: v0.9.0 < v0.10.0)."""
+    rel = [(tuple(map(int, m.groups())), t)
+           for t in tags if (m := RE_RELEASE_TAG.match(t))]
+    return max(rel)[1] if rel else None
+
+
+def baseline_verdict(newest: str | None, base_tag: str | None,
+                     version: str, version_tagged: bool) -> tuple[bool, str]:
+    """Leg 5's decision, kept pure so leg 0 can drive every branch.
+
+    Returns (ok, message). `newest` is the newest release tag in the
+    repository, `base_tag` the tag tools/abi_baseline.json records.
+    """
+    if base_tag is None or not RE_RELEASE_TAG.match(base_tag):
+        return False, (f"[baseline] tools/abi_baseline.json records no release "
+                       f"tag (got {base_tag!r}) -- regenerate it with "
+                       f"`python3 tools/gen_abi_baseline.py <tag>`")
+    if newest is None:
+        return False, ("[baseline] no `vX.Y.Z` release tag in the repository -- "
+                       "cannot tell which release the baseline should reflect")
+    key = lambda t: tuple(map(int, RE_RELEASE_TAG.match(t).groups()))
+    if key(base_tag) < key(newest):
+        return False, (f"[baseline] tools/abi_baseline.json reflects {base_tag}, "
+                       f"but {newest} is the newest release tag. "
+                       f"check-archives' ABI pin is comparing against an older "
+                       f"release. Run `python3 tools/gen_abi_baseline.py "
+                       f"{newest}` and commit the result.")
+    if key(base_tag) > key(newest):
+        return False, (f"[baseline] tools/abi_baseline.json claims {base_tag}, "
+                       f"newer than every release tag ({newest} is newest) -- "
+                       f"it was not generated from a real tag")
+    if not version_tagged:
+        return True, (f"baseline reflects {base_tag}, the newest release; "
+                      f"correct while v{version} is in flight (refresh after "
+                      f"tagging v{version})")
+    return True, f"baseline reflects {base_tag}, the newest release tag"
 
 
 # --------------------------------------------------------------------------
@@ -354,16 +410,44 @@ def _self_test() -> list[str]:
     check("RE_VERSION(tag-shaped)",
           bool(RE_VERSION.match("v0.15.0")), False)
 
+    # Leg 5's decision, every branch. Numeric, not lexical, ordering is the
+    # trap worth pinning: "v0.9.0" > "v0.10.0" as strings.
+    check("newest_release_tag(numeric order, non-release tags ignored)",
+          newest_release_tag(["v0.9.0", "v0.10.0", "archive/x", "v0.10.0-rc1"]),
+          "v0.10.0")
+    check("newest_release_tag(no release tags)",
+          newest_release_tag(["archive/acme-legacy-build"]), None)
+    check("baseline_verdict(lagging tag)",
+          baseline_verdict("v0.16.0", "v0.15.0", "0.16.0", True)[0], False)
+    check("baseline_verdict(lag message names the command)",
+          "gen_abi_baseline.py v0.16.0" in
+          baseline_verdict("v0.16.0", "v0.15.0", "0.16.0", True)[1], True)
+    check("baseline_verdict(equal)",
+          baseline_verdict("v0.16.0", "v0.16.0", "0.16.0", True)[0], True)
+    check("baseline_verdict(pre-tag bump)",
+          baseline_verdict("v0.15.0", "v0.15.0", "0.16.0", False),
+          (True, "baseline reflects v0.15.0, the newest release; correct while "
+                 "v0.16.0 is in flight (refresh after tagging v0.16.0)"))
+    check("baseline_verdict(no recorded tag)",
+          baseline_verdict("v0.15.0", None, "0.15.0", True)[0], False)
+    check("baseline_verdict(baseline ahead of every tag)",
+          baseline_verdict("v0.15.0", "v0.17.0", "0.15.0", True)[0], False)
+    check("baseline_verdict(numeric compare v0.9.0 vs v0.10.0)",
+          baseline_verdict("v0.10.0", "v0.9.0", "0.10.0", True)[0], False)
+
     # The tag probe, round-tripped against a tag that really exists and one
     # that cannot. Without this, leg 3's "tag absent" branch could be the
     # verdict of a probe that answers False to everything.
     try:
         tags = all_tags()
-    except NoGitRepo as exc:
-        # Not a repository (the release tarball is one). Leg 3 is skipped
-        # by main(); say so here rather than letting the controls below
-        # report a vacuous probe as a defect.
-        return bad + [f"SKIP: tag namespace unreadable ({exc})"]
+    except NoGitRepo:
+        # Not a repository (the release tarball is one). Only the tag-probe
+        # controls are skipped -- main() reports that, and says which legs it
+        # skipped. Every parser control ABOVE has already run, and its
+        # failures are returned, not discarded: through v0.15.0 this branch
+        # returned a "SKIP: ..." entry that main() then threw away together
+        # with every real control failure, and exited 0.
+        return bad
     if not tags:
         bad.append(
             "population is EMPTY: `git tag --list` returned no tags -- leg 3 "
@@ -425,22 +509,25 @@ def main() -> int:
             f"{CHANGELOG.relative_to(REPO)} -- legs 2 and 3 examined nothing"
         )
 
+    # No tag namespace (an extracted release tarball) is NOT an early exit:
+    # legs 2 and 4 and the baseline-file checks need no git and still run,
+    # and leg 0's failures still count. Only leg 3 and leg 5's tag comparison
+    # are skipped, and the verdict says exactly that. Through v0.15.0 this
+    # path returned 0 before legs 2/4 ran, discarded every leg-0 failure, and
+    # printed "Legs 1, 2 and 4 ran and passed".
+    git_ok = True
     try:
         tagged = tag_exists(tag)
     except NoGitRepo as exc:
+        git_ok, tagged = False, None
         print(f"  git tag {tag} : UNREADABLE -- {exc}")
-        print(
-            f"\nSKIP — leg 3 needs the tag namespace and this tree is not a\n"
-            f"git repository (an extracted release tarball, most likely).\n"
-            f"Legs 1, 2 and 4 ran and passed; the in-flight question is\n"
-            f"unanswerable here and is NOT being reported as a pass."
-        )
-        return 0
     print(f"  VERSION        : {version}")
-    print(f"  git tag {tag:<8}: {'present' if tagged else 'ABSENT (release in flight)'}")
+    if git_ok:
+        print(f"  git tag {tag:<8}: {'present' if tagged else 'ABSENT (release in flight)'}")
     print(f"  changelog      : {len(sections)} section(s) parsed")
     print(f"  self-test      : {len(controls)} control failure(s) "
-          f"across parser, equate, version and tag probes")
+          f"across parser, equate, version"
+          f"{' and tag probes' if git_ok else ' probes (tag-probe controls skipped: no git)'}")
 
     # --- Leg 2: release metadata, complete or absent as a unit -----------
     section = section_body(text, version)
@@ -478,7 +565,7 @@ def main() -> int:
             f"section -- this check cannot tell whether work has piled up, so "
             f"treat its silence as unknown, not as a pass"
         )
-    elif not tagged:
+    elif tagged is False:          # None = no tag namespace: leg 3 skipped
         entries = content_lines(unreleased)
         if entries:
             preview = "\n".join(f"      {l.strip()}" for l in entries[:12])
@@ -516,13 +603,75 @@ def main() -> int:
                 f"is the same mismatch seen a build earlier."
             )
 
+    # --- Leg 5: ABI baseline reflects the newest release tag ---------------
+    # Fails closed: a missing or unparseable baseline, or one that does not
+    # record both its tag and that tag's commit, is a finding, never a skip.
+    import json
+    try:
+        base = json.loads(ABI_BASELINE.read_text())
+        base_tag, base_commit = base.get("tag"), base.get("commit")
+    except FileNotFoundError:
+        base = base_tag = base_commit = None
+        failures.append(f"[baseline] {ABI_BASELINE.relative_to(REPO)} is missing "
+                        f"-- check-archives' ABI pin has nothing to compare "
+                        f"against; run `python3 tools/gen_abi_baseline.py "
+                        f"<newest tag>`")
+    except (ValueError, AttributeError) as exc:
+        base = base_tag = base_commit = None
+        failures.append(f"[baseline] {ABI_BASELINE.relative_to(REPO)} is "
+                        f"unreadable ({exc!r})")
+    if base is not None:
+        sys.path.insert(0, str(TOOLS))
+        from gen_abi_baseline import rows_digest
+        try:
+            digest_ok = base.get("rows_sha256") == rows_digest(
+                base.get("abi"), base.get("archives") or {})
+        except (TypeError, ValueError, AttributeError):
+            digest_ok = False
+        if not digest_ok:
+            failures.append(
+                f"[baseline] {ABI_BASELINE.relative_to(REPO)} content does not "
+                f"match its rows_sha256 -- a row or the ABI value was edited "
+                f"after generation; regenerate with "
+                f"`python3 tools/gen_abi_baseline.py <tag>`")
+            base = None
+    if base is not None and not git_ok:
+        print("  abi baseline   : tag comparison SKIPPED (no git)")
+    elif base is not None:
+        newest = newest_release_tag(all_tags())
+        ok, msg = baseline_verdict(newest, base_tag, version, tagged)
+        if not ok:
+            failures.append(msg)
+        elif not base_commit:
+            failures.append(f"[baseline] {ABI_BASELINE.relative_to(REPO)} records "
+                            f"tag {base_tag} but no commit -- regenerate it")
+        else:
+            real = subprocess.run(
+                ["git", "-C", str(REPO), "rev-parse", f"{base_tag}^{{commit}}"],
+                capture_output=True, text=True).stdout.strip()
+            if real != base_commit:
+                failures.append(
+                    f"[baseline] {ABI_BASELINE.relative_to(REPO)} says {base_tag} "
+                    f"is {base_commit[:12]}, but the tag resolves to "
+                    f"{real[:12] or '(nothing)'} -- the tag moved or the file "
+                    f"was edited; regenerate it")
+            else:
+                print(f"  abi baseline   : {msg} ({base_commit[:12]})")
+
     if failures:
         print(f"\nFAIL — {len(failures)} finding(s):\n")
         for f in failures:
             print(f"  {f}")
         return 1
 
-    if tagged:
+    if not git_ok:
+        print(f"\nPASS (partial) — legs 0 (parser controls), 1, 2 and 4 and the "
+              f"baseline-file checks ran and passed.\nSKIPPED, not passed: leg "
+              f"3 (in-flight), leg 5's tag comparison and the tag-probe "
+              f"controls -- this tree is not a git repository (an extracted "
+              f"release tarball, most likely), so the tag namespace they "
+              f"examine does not exist here.")
+    elif tagged:
         print(f"\nPASS — {version} is tagged; `[Unreleased]` is free to accumulate.")
     else:
         print(f"\nPASS — {version} is in flight and `[Unreleased]` is empty.")

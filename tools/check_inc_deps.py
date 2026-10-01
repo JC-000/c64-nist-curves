@@ -792,6 +792,7 @@ def run(work: Path) -> int:
             fail("q-paths", f"`make -q {rel}`: unchanged knobs exit {c} (want 0), "
                  f"changed knobs exit {s} (want 1)")
     pkg = [p for p in (bdir / "lib" / "nistcurves.inc",
+                       bdir / "lib" / "sqtab_base.inc",
                        bdir / "lib" / "cfg" / "nistcurves-example.cfg") if p.is_file()]
     pkg_q = {str(p.relative_to(work)):
              make(work, "-q", str(p.relative_to(work)),

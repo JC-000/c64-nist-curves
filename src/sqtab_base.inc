@@ -14,6 +14,13 @@
 ;
 ; Included, not imported: §8.1 (v0.9.1) forbids exporting this equate — every
 ; adopter derives the same name, so an export is a #82-class collision.
+;
+; Also SHIPPED: `make lib` copies this file to build/lib/sqtab_base.inc (from
+; v0.16.0), because sqtab_lo / sqtab_hi are no longer exported and a consumer
+; must derive them from this base in its own TU (see src/nistcurves.inc).
+; Keep it self-contained — no other .include, nothing but the guarded default
+; — or the shipped copy stops assembling from build/lib alone
+; (check-archives' packaging leg assembles it with -I build/lib only).
 ; =============================================================================
 .ifndef LIB_SHARED_SQTAB_BASE
         LIB_SHARED_SQTAB_BASE = $9c00

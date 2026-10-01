@@ -103,7 +103,7 @@ git archive \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
   src/precalc_manifest.s src/precalc_table.inc src/sqtab_base.inc \
   src/reu_dma_done.inc \
-  src/main.s src/mul_8x8.s src/sqtab_aliases.s src/reu_mul_init.s \
+  src/main.s src/mul_8x8.s src/reu_mul_init.s \
   src/fp256.s src/mod256.s src/curve256.s src/inv256.s \
   src/points256_core.s src/points256_comb.s src/ecdsa256.s \
   src/fp384.s src/mod384.s src/curve384.s \
@@ -118,7 +118,8 @@ git archive \
   src/data_p384.s src/data_p384_limlee.s \
   src/data_sha.s src/data_test.s \
   Makefile tools/build_release.sh \
-  tools/check_archives.py tools/check_doc_snippets.py \
+  tools/check_archives.py tools/abi_baseline.json tools/gen_abi_baseline.py \
+  tools/check_doc_snippets.py \
   tools/check_release_notes.py tools/check_harness_routing.py \
   tools/check_release_state.py tools/check_inc_deps.py \
   tools/bench_reu_mult.py \
