@@ -1943,8 +1943,16 @@ HEADER_BARE_SYMS = [
 ]
 
 # A consumer TU: includes the shipped header, emits the 2-byte PRG load
-# address the example cfg expects, and nothing else. Every import the header
-# makes must resolve against the archive for this to link.
+# address the example cfg expects, and REFERENCES every name the header
+# declares for the switch set in force (header_stub_for).
+#
+# The reference is load-bearing (issue #170). The header is nothing but
+# `.import`s and equates, and ca65 DROPS an import nothing references: the
+# stub without references assembled to an object whose only import was
+# __LOADADDR__, so linking it "against an archive" pulled zero archive
+# members, and a header declaring a symbol no archive exports printed twelve
+# `header OK [<archive>]` rows anyway. With every declared name referenced,
+# each one survives into the object and ld65 must resolve it from the archive.
 HEADER_STUB = """\
 .include "nistcurves.inc"
 
@@ -1957,23 +1965,156 @@ entry:
     rts
 """
 
+_HDR_IMPORT_RE = re.compile(r"^\s*\.import(?:zp)?\s+(.+)$", re.I)
+# Import-declaring directives the enumeration below does not model. Finding
+# one is a failure, not a skip: a name it declares would go unreferenced, and
+# an unreferenced import is exactly the vacuity this machinery exists to end.
+_HDR_UNMODELLED_RE = re.compile(
+    r"^\s*\.(global|globalzp|forceimport)\b", re.I)
+
+
+def header_declared_imports(td, incdir, defines):
+    """The names `incdir/nistcurves.inc` .imports under `defines`, as ca65
+    itself decides them -- not as a regex over every conditional arm guesses.
+
+    An instrumented copy of the header gets a `.out` after each top-level
+    `.import` line (macro bodies are skipped: NISTCURVES_PIN_OVERRIDE's
+    scoped import is referenced by its own assert, and its `sym` is a macro
+    parameter, not a name). ca65 executes a `.out` only in an ACTIVE
+    conditional arm, so the printed names are exactly the ones this switch
+    set declares.
+
+    Returns (declared, text_names, unmodelled, rc, out): `declared` is None
+    when the instrumented copy does not assemble (the caller then reports the
+    real header's own assemble error), `text_names` is every name any arm
+    could declare, `unmodelled` lists import directives this does not handle.
+    """
+    text = (Path(incdir) / "nistcurves.inc").read_text()
+    out_lines, text_names, unmodelled = [], set(), []
+    in_macro = False
+    for ln in text.splitlines():
+        out_lines.append(ln)
+        code = ln.split(";", 1)[0]
+        if re.match(r"^\s*\.macro\b", code, re.I):
+            in_macro = True
+            continue
+        if re.match(r"^\s*\.endmacro\b", code, re.I):
+            in_macro = False
+            continue
+        if in_macro:
+            continue
+        if _HDR_UNMODELLED_RE.match(code):
+            unmodelled.append(ln.strip())
+            continue
+        m = _HDR_IMPORT_RE.match(code)
+        if not m:
+            continue
+        for n in m.group(1).split(","):
+            n = n.split(":", 1)[0].strip()
+            if n:
+                text_names.add(n)
+                out_lines.append(f'.out "NCHDRIMPORT {n}"')
+    idir = Path(td) / "hdr_instr"
+    idir.mkdir(exist_ok=True)
+    (idir / "nistcurves.inc").write_text("\n".join(out_lines) + "\n")
+    src = idir / "enum.s"
+    src.write_text('.include "nistcurves.inc"\n')
+    rc, out = sh(["ca65", "--cpu", "6502", *defines, "-I", str(idir),
+                  "-o", str(idir / "enum.o"), str(src)])
+    if rc:
+        return None, text_names, unmodelled, rc, out
+    declared = set(re.findall(r"^NCHDRIMPORT (\S+)\s*$", out, re.M))
+    return declared, text_names, unmodelled, rc, out
+
+
+def header_stub_for(declared):
+    """HEADER_STUB plus one `.dword` per declared name, so ca65 keeps every
+    import and ld65 has to resolve each one. `.dword` because several declared
+    equates exceed 16 bits (the 128 KB reu_mul precalc SIZE, for one)."""
+    refs = "".join(f"    .dword {n}\n" for n in sorted(declared))
+    return (HEADER_STUB
+            + "\n; issue #170: reference every declared import so none is dropped\n"
+            + refs)
+
+
+# ld65 warnings a header-referencing consumer link is KNOWN to draw, and why
+# the header cannot fix them. Any other warning fails the header leg; an entry
+# here that no row produces fails it too (shrink the table), so this cannot
+# quietly outlive its cause.
+HEADER_KNOWN_WARNINGS = {
+    # precalc_table.inc (canonical, byte-for-byte from c64-lib-contract, not
+    # edited locally) exports SIZE with no address-size hint so 131072 exports
+    # 'far'; ca65 rejects `.import X: far` for --cpu 6502 ("Invalid address
+    # size specification for current CPU"), so no 6502 consumer import can
+    # match it. Fixing it means changing the export, i.e. upstream.
+    "LIB_NISTCURVES_PRECALC_reu_mul_SIZE":
+        "far export from the canonical LIB_PRECALC_TABLE macro; no 6502 "
+        "import can match it",
+}
+
+
+def _ld65_warnings(out, seen_known=None):
+    """ld65 warning lines NOT accounted for by HEADER_KNOWN_WARNINGS,
+    path-stripped so they read the same every run. Known ones are recorded
+    in `seen_known` (a set) for the leg's stale-entry check."""
+    unexpected = []
+    for ln in (out or "").splitlines():
+        if "Warning:" not in ln:
+            continue
+        m = re.search(r"Address size mismatch for '([^']+)'", ln)
+        if m and m.group(1) in HEADER_KNOWN_WARNINGS:
+            if seen_known is not None:
+                seen_known.add(m.group(1))
+            continue
+        unexpected.append(re.sub(r"/\S*/", "", ln.strip()))
+    return unexpected
+
 
 def _header_link(td, incdir, cfg, archive, defines):
-    """Assemble HEADER_STUB (+ defines) against `incdir`, link vs `archive`.
+    """Assemble the referencing header stub (+ defines) against `incdir`,
+    link vs `archive`.
 
-    Returns (asm_rc, asm_out, link_rc, link_out); link_* are (None, "") when
-    the assemble failed.
+    Returns (asm_rc, asm_out, link_rc, link_out, probe_err); link_* are
+    (None, "") when the assemble failed. `probe_err` is a string when the
+    probe itself cannot vouch for its result -- an unmodelled import
+    directive, an empty declared set, or a declared name ca65 still dropped --
+    and None otherwise. A caller must treat a non-None probe_err as a failure
+    in its own right, never as "assembles/links fine".
     """
+    declared, _, unmodelled, erc, eout = header_declared_imports(
+        td, incdir, defines)
     src = td / "hdr_consumer.s"
-    src.write_text(HEADER_STUB)
     obj = td / "hdr_consumer.o"
+    if declared is None:
+        # The instrumented copy failed, so the real one will too (the bare-
+        # import rows rely on exactly that). Report the REAL header's error.
+        src.write_text(HEADER_STUB)
+        arc, aout = sh(["ca65", "--cpu", "6502", *defines, "-I", str(incdir),
+                        "-o", str(obj), str(src)])
+        if arc == 0:
+            return arc, aout, None, "", (
+                "the instrumented header copy failed to assemble while the "
+                f"real one assembled -- the import enumeration is broken:\n{eout}")
+        return arc, aout, None, "", None
+    if unmodelled:
+        return 0, "", None, "", (f"header uses import directives this probe "
+                                 f"does not reference: {unmodelled}")
+    if not declared:
+        return 0, "", None, "", ("header declares no import under this switch "
+                                 "set -- a link would bind nothing")
+    src.write_text(header_stub_for(declared))
     arc, aout = sh(["ca65", "--cpu", "6502", *defines, "-I", str(incdir),
                     "-o", str(obj), str(src)])
     if arc != 0:
-        return arc, aout, None, ""
+        return arc, aout, None, "", None
+    kept = od65_names(obj, "--dump-imports")
+    dropped = sorted(declared - kept)
+    if dropped:
+        return arc, aout, None, "", (f"ca65 dropped declared imports {dropped} "
+                                     "-- the link would not resolve them")
     lrc, lout = sh(["ld65", "-C", str(cfg), "-o", str(td / "hdr_consumer.prg"),
                     str(obj), str(archive)])
-    return arc, aout, lrc, lout
+    return arc, aout, lrc, lout, None
 
 
 def packaging_check(failures, archives):
@@ -2060,16 +2201,42 @@ def packaging_check(failures, archives):
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
 
-        arc, aout, lrc, lout = _header_link(td, LIBDIR, src_cfg, archive, [])
+        # Population sentinel for the per-archive rows below: every name the
+        # header could declare, and which of them some archive row actually
+        # drives. A name no row drives is unproven by this leg, and is listed
+        # every run rather than silently left out (issue #170).
+        _, all_names, unmodelled, _, _ = header_declared_imports(td, LIBDIR, [])
+        if unmodelled:
+            failures.append(f"header: import directives the probe does not "
+                            f"model: {unmodelled}")
+            print(f"  HEADER FAIL: unmodelled import directives {unmodelled}")
+        driven, seen_known = set(), set()
+
+        arc, aout, lrc, lout, perr = _header_link(td, LIBDIR, src_cfg, archive, [])
+        if perr:
+            failures.append(f"header: probe cannot vouch for nistcurves.a: {perr}")
+            print(f"  HEADER FAIL: probe vs nistcurves.a: {perr}")
+            return
         if arc != 0:
             failures.append("header: the shipped .inc does not assemble")
             print(f"  HEADER FAIL: plain include does not assemble:\n{aout}")
             return
         if lrc != 0:
-            failures.append("header: a consumer including the shipped .inc does not link")
+            unres = sorted(set(re.findall(r"Unresolved external '([^']+)'", lout)))
+            failures.append(f"header: a consumer including the shipped .inc does "
+                            f"not link vs nistcurves.a (unresolved {unres})")
             print(f"  HEADER FAIL: plain include does not link vs nistcurves.a:\n{lout}")
-            return
-        print("  header OK (plain .include assembles and links against nistcurves.a)")
+        elif _ld65_warnings(lout, seen_known):
+            # Recorded, not returned on: the per-archive rows below still run
+            # and say which archives share the defect.
+            failures.append(f"header: plain include links vs nistcurves.a with "
+                            f"ld65 warnings: {_ld65_warnings(lout, seen_known)}")
+            print("  HEADER FAIL: plain include links with ld65 warnings:")
+            for w in _ld65_warnings(lout, seen_known):
+                print(f"      {w}")
+        else:
+            print("  header OK (plain .include assembles; every declared name "
+                  "resolves against nistcurves.a, no unexpected ld65 warning)")
 
         # (3b) ... and against EVERY archive, with the variant switch set that
         # archive is built with. The header gates ~650 lines by those switches,
@@ -2086,15 +2253,47 @@ def packaging_check(failures, archives):
             dargs = []
             for d in adefs:
                 dargs += ["-D", d]
-            arc, aout, lrc, lout = _header_link(td, LIBDIR, src_cfg, apath, dargs)
-            if arc != 0:
+            arc, aout, lrc, lout, perr = _header_link(td, LIBDIR, src_cfg, apath, dargs)
+            declared = header_declared_imports(td, LIBDIR, dargs)[0] or set()
+            driven |= declared
+            warns = _ld65_warnings(lout, seen_known)
+            if perr:
+                failures.append(f"header [{aname}]: probe cannot vouch: {perr}")
+                print(f"  HEADER FAIL [{aname}]: {perr}")
+            elif arc != 0:
                 failures.append(f"header: does not assemble for {aname}'s switch set")
                 print(f"  HEADER FAIL [{aname}]: assemble:\n{aout}")
             elif lrc != 0:
-                failures.append(f"header: does not link against {aname}")
-                print(f"  HEADER FAIL [{aname}]: link:\n{lout}")
+                unres = sorted(set(re.findall(r"Unresolved external '([^']+)'", lout)))
+                failures.append(f"header: declares {unres or '(see ld65)'} for "
+                                f"{aname}'s switch set, but the archive does not "
+                                "resolve them")
+                print(f"  HEADER FAIL [{aname}]: link, unresolved {unres}:\n{lout.strip()}")
+            elif warns:
+                # A warning here lands in every consumer build that references
+                # the name, e.g. an import whose address size disagrees with
+                # the defining TU's export. The header is what decides that,
+                # so it is the header's defect.
+                failures.append(f"header [{aname}]: links with ld65 warnings: {warns}")
+                print(f"  HEADER FAIL [{aname}]: ld65 warnings:")
+                for w in warns:
+                    print(f"      {w}")
             else:
-                print(f"  header OK [{aname}]")
+                print(f"  header OK [{aname}] ({len(declared)} declared names "
+                      "referenced, each resolved from the archive, no unexpected ld65 warning)")
+        undriven = sorted(all_names - driven)
+        print(f"  header names driven by an archive row: {len(driven)} of "
+              f"{len(all_names)}" + (f"; not driven (only reachable under a "
+                                     f"consumer -D): {undriven}" if undriven else ""))
+        stale_warn = sorted(set(HEADER_KNOWN_WARNINGS) - seen_known)
+        if stale_warn:
+            failures.append(f"header: HEADER_KNOWN_WARNINGS entries {stale_warn} "
+                            "were drawn by no row -- the cause is gone, shrink "
+                            "the table")
+            print(f"  HEADER FAIL: known-warning entries no longer drawn: {stale_warn}")
+        elif seen_known:
+            print(f"  known ld65 warnings drawn (documented, not header-fixable): "
+                  f"{sorted(seen_known)}")
 
         # (4) Guarded symbols: right value assembles AND links; wrong value
         # assembles but MUST be rejected at link by the .else assert.
@@ -2105,8 +2304,12 @@ def packaging_check(failures, archives):
                 print(f"  GUARD FAIL [{sym}]: not exported by the archive")
                 continue
 
-            arc, aout, lrc, lout = _header_link(
+            arc, aout, lrc, lout, perr = _header_link(
                 td, LIBDIR, src_cfg, archive, ["-D", f"{sym}={real}"])
+            if perr:
+                failures.append(f"header: -D {sym}={real}: probe cannot vouch: {perr}")
+                print(f"  GUARD FAIL [{sym}]: {perr}")
+                continue
             if arc != 0:
                 failures.append(f"header: -D {sym}={real} does not assemble ({sym} import is not .ifndef-guarded)")
                 print(f"  GUARD FAIL [{sym}]: documented override does not assemble "
@@ -2118,8 +2321,12 @@ def packaging_check(failures, archives):
                 continue
 
             wrong = real ^ 1
-            arc, aout, lrc, lout = _header_link(
+            arc, aout, lrc, lout, perr = _header_link(
                 td, LIBDIR, src_cfg, archive, ["-D", f"{sym}={wrong}"])
+            if perr:
+                failures.append(f"header: -D {sym}={wrong}: probe cannot vouch: {perr}")
+                print(f"  GUARD FAIL [{sym}]: {perr}")
+                continue
             if arc != 0:
                 failures.append(f"header: -D {sym}={wrong} does not assemble")
                 print(f"  GUARD FAIL [{sym}]: wrong override does not assemble:\n{aout.strip()}")
@@ -2139,7 +2346,7 @@ def packaging_check(failures, archives):
         # (5) Bare-import symbols: their defining TU assigns unconditionally,
         # so §3 says the -D must collide loudly rather than be absorbed.
         for sym in HEADER_BARE_SYMS:
-            arc, aout, _, _ = _header_link(td, LIBDIR, src_cfg, archive,
+            arc, aout, _, _, _ = _header_link(td, LIBDIR, src_cfg, archive,
                                            ["-D", f"{sym}=1"])
             if arc == 0:
                 failures.append(f"header: -D {sym}=1 assembled -- a derived equate's import "
@@ -2423,11 +2630,19 @@ def gated_link_check(failures, archives):
                 # reference to a name the gate deleted show up as ld65's
                 # `Unresolved external` -- the failure this leg exists for, and
                 # the one no per-object assertion can see.
+                #
+                # Issue #170: the stub also REFERENCES every name the header
+                # declares under this switch set (+ the gate). Without that,
+                # every header import was dropped and "links against the
+                # shipped header" bound nothing about the header: a bare
+                # `.import mul_dma_lo` moved outside the header's
+                # `.ifndef LIB_NO_BARE_EXPORTS` linked clean here.
                 dargs = list(switches)
                 if gated:
                     dargs += ["-D", "LIB_NO_BARE_EXPORTS=1"]
                 hs = td / f"{'g' if gated else 'u'}_hdr.s"
-                hs.write_text(HEADER_STUB)
+                hdecl = header_declared_imports(td, LIBDIR, dargs)[0]
+                hs.write_text(header_stub_for(hdecl) if hdecl else HEADER_STUB)
                 ho = td / f"{'g' if gated else 'u'}_hdr.o"
                 arc, aout = sh(["ca65", "--cpu", "6502", *dargs, "-I", str(LIBDIR),
                                 "-o", str(ho), str(hs)])
@@ -2520,7 +2735,9 @@ def gated_link_check(failures, archives):
         total = sum(n for _, n in done)
         print(f"  gated link OK ({len(done)} archives rebuilt with "
               f"-D LIB_NO_BARE_EXPORTS=1, {total} bare names suppressed across "
-              "them, each links against the shipped header)")
+              "them; each archive's member objects, rebuilt under the gate, "
+              "linked explicitly with a stub that references every name the "
+              "gate-defined header declares)")
 
 
 def gate_tus_derivation_check(failures):
