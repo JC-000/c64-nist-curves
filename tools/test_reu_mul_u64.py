@@ -87,6 +87,25 @@ WHAT THIS RUN IS NOT ENTITLED TO CLAIM
     handshake cannot separate "tables correct" from "tables wrong but the
     protocol survived", so it is not commensurable with a row check.
 
+EXIT STATUS
+-----------
+A wrapper that reads only the exit status must never mistake a run that did
+not happen, or did not finish, for a measurement.
+  0    complete run: every declared cell reached PASS or FAIL, and no FAIL
+       at the shipped settle (sub-floor FAILs are expected bracket data)
+  1    aborted (ABORT / missing build / exception), or --self-test /
+       --verify-builds failed, or U64_HOST unset / device unreachable
+  2    refused to start: device lock not acquired (no --wait, or --wait
+       timed out), or --firmware-note rejected against /v1/info; also
+       argparse's own status for a command-line usage error
+  3   no real verdict: every cell NOT_RUN / ERROR / CONTAMINATED, or none
+  4    partial: some declared cells NOT_RUN / ERROR / CONTAMINATED (e.g.
+       a clock leg 4 discarded), the rest PASS / FAIL
+  5    a FAIL at the shipped settle (106 cy body) on a mitigated build:
+       the library as shipped returned wrong rows -- a regression signal
+  130  interrupted (^C); device config restored before exit
+Precedence when several apply: 130 > 3 > 5 > 4 > 0.
+
 This tool never prints a recommendation for LIB_NISTCURVES_REU_SETTLE_ITER.
 A threshold measured on one device generation is not a fleet margin
 (c64-lib-contract §13.6: the C64 Ultimate needed materially more settle than
@@ -128,6 +147,15 @@ os.environ.setdefault("U64_REQUIRE_DEVICE_LOCK", "1")
 # already counted against the budget, not just its single boot upload.
 # Forcing `U64_AUTO_TEMP_GC=1` would override that decision from the call
 # site; see CLAUDE.md "Device traffic: the harness is the only route".
+
+# Exit status contract -- see EXIT STATUS in the module docstring.
+EXIT_OK = 0             # complete run: every declared cell PASS or FAIL
+EXIT_ABORT = 1          # aborted / self-test or verify-builds failed
+EXIT_REFUSED = 2        # refused to start: lock not acquired, bad fw note
+EXIT_NO_VERDICT = 3     # no cell reached PASS or FAIL
+EXIT_PARTIAL = 4        # some declared cells NOT_RUN / ERROR / CONTAMINATED
+EXIT_ORIG_FAIL = 5      # a FAIL at the shipped settle on a mitigated build
+EXIT_INTERRUPTED = 130  # ^C (device state restored first)
 
 BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
 DEFAULT_PRG = os.path.join(BUILD_DIR, "nist-curves.prg")
@@ -217,7 +245,7 @@ def acquire_device_lock(lock, wait: bool, lock_timeout: float) -> int:
         print("FATAL: device lock not acquired"
               + ("" if wait else " and --wait was not given")
               + f"; holder {lock.read_info()}")
-        return 2
+        return EXIT_REFUSED
     print("  [lock] acquired")
     return 0
 
@@ -2041,10 +2069,10 @@ def self_test() -> int:
           f"rc={rc_held}")
 
     # -- a run that produced no real verdict must not exit 0 ----------------
-    def _cells(*verdicts):
+    def _cells(*verdicts, settle=12):
         out = []
         for i, v in enumerate(verdicts):
-            c_ = CellResult(f"c{i}", 48, 12, "512 KB", "cpu", "fetch")
+            c_ = CellResult(f"c{i}", 48, settle, "512 KB", "cpu", "fetch")
             if v in ("PASS", "FAIL"):
                 c_.n, c_.k = 10, (0 if v == "PASS" else 1)
             elif v == "ERROR":
@@ -2057,28 +2085,53 @@ def self_test() -> int:
     _got = [re.search(r" verdict=(\S+)", l_).group(1) for l_ in _cells(*_fx)]
     check("exit-status fixtures really carry the verdicts they name",
           tuple(_got) == _fx, str(_got))
+    orig_pass = _cells("PASS", settle=ORIG_CYCLES)
+    orig_fail = _cells("FAIL", settle=ORIG_CYCLES)
+    # (name, lines, rc in, mitigated build, exit status wanted) -- the codes
+    # are the documented contract, so they are literals here, not constants.
     exit_cases = [
-        ("every cell NOT_RUN", _cells("NOT_RUN", "NOT_RUN"), 0, "nonzero"),
-        ("every cell ERROR", _cells("ERROR", "ERROR"), 0, "nonzero"),
-        ("every cell CONTAMINATED", _cells("CONTAMINATED"), 0, "nonzero"),
+        ("every cell NOT_RUN", _cells("NOT_RUN", "NOT_RUN"), 0, True, 3),
+        ("every cell ERROR", _cells("ERROR", "ERROR"), 0, True, 3),
+        ("every cell CONTAMINATED", _cells("CONTAMINATED"), 0, True, 3),
         ("NOT_RUN + ERROR + CONTAMINATED only",
-         _cells("NOT_RUN", "ERROR", "CONTAMINATED"), 0, "nonzero"),
-        ("no CELL line at all", [], 0, "nonzero"),
-        ("one PASS among NOT_RUNs", _cells("NOT_RUN", "PASS"), 0, "zero"),
-        ("a FAIL is a real verdict (a measured result)",
-         _cells("FAIL", "ERROR"), 0, "zero"),
-        ("^C keeps 130 even with verdicts", _cells("PASS"), 130, "130"),
+         _cells("NOT_RUN", "ERROR", "CONTAMINATED"), 0, True, 3),
+        ("no CELL line at all", [], 0, True, 3),
+        ("one PASS among NOT_RUNs is PARTIAL", _cells("NOT_RUN", "PASS"),
+         0, True, 4),
+        ("1 PASS + 21 ERROR is PARTIAL", _cells("PASS", *["ERROR"] * 21),
+         0, True, 4),
+        ("1 PASS + 21 NOT_RUN is PARTIAL", _cells("PASS", *["NOT_RUN"] * 21),
+         0, True, 4),
+        ("1 FAIL + 21 CONTAMINATED is PARTIAL",
+         _cells("FAIL", *["CONTAMINATED"] * 21), 0, True, 4),
+        ("complete run, all PASS", _cells("PASS", "PASS") + orig_pass,
+         0, True, 0),
+        ("complete run, sub-floor FAILs are bracket data",
+         _cells("FAIL", "PASS") + orig_pass, 0, True, 0),
+        ("a FAIL at the shipped orig settle is a regression signal",
+         _cells("PASS") + orig_fail, 0, True, 5),
+        ("orig FAIL outranks partial", _cells("NOT_RUN") + orig_fail,
+         0, True, 5),
+        ("orig FAIL on an UNMITIGATED control is expected, not 5",
+         _cells("PASS") + orig_fail, 0, False, 0),
+        ("^C keeps 130 even with verdicts", _cells("PASS"), 130, True, 130),
     ]
-    for name_, cl_, rc_in, want in exit_cases:
+    _eh = exit_status_help()
+    _codes = (EXIT_OK, EXIT_ABORT, EXIT_REFUSED, EXIT_NO_VERDICT,
+              EXIT_PARTIAL, EXIT_ORIG_FAIL, EXIT_INTERRUPTED)
+    _undoc = [c_ for c_ in _codes
+              if not re.search(rf"^  {c_}\s", _eh, re.M)]
+    check("every EXIT_* code is documented in the docstring / --help",
+          not _undoc and len(set(_codes)) == len(_codes), f"undocumented {_undoc}")
+    for name_, cl_, rc_in, mit_, want in exit_cases:
         _out = sys.stdout
         try:
             sys.stdout = open(os.devnull, "w")
-            got = run_exit_status(cl_, rc_in)
+            got = run_exit_status(cl_, rc_in, mitigated=mit_)
         finally:
             sys.stdout.close()
             sys.stdout = _out
-        ok = {"nonzero": got != 0, "zero": got == 0, "130": got == 130}[want]
-        check(f"exit status: {name_} -> {want}", ok, f"got {got}")
+        check(f"exit status: {name_} -> {want}", got == want, f"got {got}")
 
     if os.path.exists(DEFAULT_PRG) and os.path.exists(DEFAULT_LABELS):
         from c64_test_harness.labels import Labels
@@ -2155,7 +2208,7 @@ def verify_builds(iters: list[int]) -> int:
         print(f"\nverify-builds: FAILED — the user's {BUILD_DIR} was modified "
               f"({len(changes)} entries): " + "; ".join(changes[:8])
               + (" ..." if len(changes) > 8 else ""))
-        return 1
+        return EXIT_ABORT
     print(f"  user's build/ untouched: {len(user_build_before)} files, same "
           f"names, sizes and mtimes")
     return rc
@@ -2498,10 +2551,21 @@ def normalise_size(spec: str) -> str:
                      f"{sorted(REU_SIZE_ALIASES)}")
 
 
+def exit_status_help() -> str:
+    """The EXIT STATUS section of the module docstring, verbatim, so --help
+    and the docstring cannot drift apart."""
+    doc = __doc__ or ""
+    start = doc.find("EXIT STATUS\n")
+    end = doc.find("\n\n", doc.find("Precedence", start))
+    return doc[start:end].rstrip() if start >= 0 else ""
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(
         prog="test_reu_mul_u64.py",
-        description="U64 hardware probe for the SPEC §8.2 REU DMA settle.")
+        description="U64 hardware probe for the SPEC §8.2 REU DMA settle.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=exit_status_help())
     p.add_argument("--only", default="arbiter,fetch,stash",
                    help=f"stages, in order: {','.join(STAGES)} "
                         f"(default arbiter,fetch,stash)")
@@ -2570,28 +2634,49 @@ def parse_args(argv):
 # Main                                                                         #
 # --------------------------------------------------------------------------- #
 
-def run_exit_status(cell_lines: list[str], rc: int) -> int:
-    """Process exit status from the CELL lines the run actually emitted.
+def run_exit_status(cell_lines: list[str], rc: int,
+                    mitigated: bool = True) -> int:
+    """Process exit status from the CELL lines the run actually emitted
+    (every declared cell has one, run or NOT_RUN).  See EXIT STATUS in the
+    module docstring.  Precedence: an rc already decided (130) > 3 (no real
+    verdict) > 5 (FAIL at the shipped settle) > 4 (partial) > 0.
 
-    A run in which no cell reached a real verdict (PASS or FAIL: every
-    cell NOT_RUN, ERROR or CONTAMINATED, or no cell at all) did not take
-    the measurement, and must not report success to a wrapper, CI step or
-    agent that reads only the exit status: it exits 3. A FAIL is a measured
-    result, not a tool failure, so it alone does not make the run non-zero.
-    A non-zero rc already decided (130 on ^C) is kept.
+    A FAIL below the shipped settle is expected bracket data, not a tool
+    failure.  A FAIL at the shipped body (settle_cy == ORIG_CYCLES) on a
+    MITIGATED build means the library as shipped returned wrong rows: a
+    regression signal, distinct from everything else.  On the unmitigated
+    control a FAIL is the expected outcome, so it never yields 5.
     """
     if rc:
         return rc
-    verdicts = [m.group(1) for m in
-                (re.search(r" verdict=(\S+)", ln) for ln in cell_lines
-                 if ln.startswith("CELL "))
-                if m]
-    if not any(v in ("PASS", "FAIL") for v in verdicts):
-        print(f"\nNO REAL VERDICT: {len(verdicts)} CELL line(s), none PASS or "
-              f"FAIL ({sorted(set(verdicts)) or 'none'}). The measurement "
-              f"did not happen; exiting 3.")
-        return 3
-    return 0
+    cells = []
+    for ln in cell_lines:
+        if not ln.startswith("CELL "):
+            continue
+        v = re.search(r" verdict=(\S+)", ln)
+        s = re.search(r" settle_cy=(\S+)", ln)
+        cells.append((v.group(1) if v else "?", s.group(1) if s else "?"))
+    verdicts = [v for v, _ in cells]
+    real = [v for v in verdicts if v in ("PASS", "FAIL")]
+    counts = {v: verdicts.count(v) for v in sorted(set(verdicts))}
+    print(f"\nRUN COMPLETENESS: declared {len(cells)} cell(s), ran "
+          f"{len(cells) - counts.get('NOT_RUN', 0)}, real verdicts "
+          f"{len(real)}; verdict counts {counts or '{}'}")
+    if not real:
+        print("  NO REAL VERDICT: the measurement did not happen; exit 3.")
+        return EXIT_NO_VERDICT
+    orig_fails = [1 for v, s in cells
+                  if v == "FAIL" and s == str(ORIG_CYCLES)] if mitigated else []
+    if orig_fails:
+        print(f"  {len(orig_fails)} FAIL(s) AT THE SHIPPED SETTLE "
+              f"({ORIG_CYCLES} cy): the library as shipped returned wrong "
+              f"rows -- a regression signal, not bracket data; exit 5.")
+        return EXIT_ORIG_FAIL
+    if len(real) < len(cells):
+        print(f"  PARTIAL: {len(cells) - len(real)} declared cell(s) ended "
+              f"NOT_RUN / ERROR / CONTAMINATED; exit 4.")
+        return EXIT_PARTIAL
+    return EXIT_OK
 
 
 def main(argv=None):
@@ -2610,7 +2695,7 @@ def main(argv=None):
     host = os.environ.get("U64_HOST")
     if not host:
         print("U64_HOST not set — refusing to guess a device address.")
-        return 1
+        return EXIT_ABORT
 
     from c64_test_harness.backends.device_lock import DeviceLock
     from c64_test_harness.backends.ultimate64 import Ultimate64Transport
@@ -2622,7 +2707,7 @@ def main(argv=None):
     probe = probe_u64(host)
     if not getattr(probe, "reachable", False):
         print(f"U64 at {host} not reachable: {probe}")
-        return 1
+        return EXIT_ABORT
 
     try:
         DeviceLock.cleanup_stale()
@@ -2638,6 +2723,7 @@ def main(argv=None):
     prose: list[str] = []
     stage_times: list[tuple[str, float]] = []
     rc = 0
+    mitigated_build = True      # set from the labels once the build is known
     ladder = parse_ladder(opts.ladder)
     ladder_min_cy = min(stub_cycles(f, k) for f, k in ladder)
     declared: list[tuple] = []      # every cell we intend to run
@@ -2664,7 +2750,7 @@ def main(argv=None):
         if refusal:
             # Nothing has been written, rebooted or snapshotted yet.
             print(f"FATAL: {refusal}")
-            rc = 2
+            rc = EXIT_REFUSED
             return rc
         devstr = device_string(info, fw_note)
         print(f"        fw {fw} (reported) -> recorded as "
@@ -2713,6 +2799,7 @@ def main(argv=None):
         prg_sha = sha256_of(prg)
         print(f"  PRG sha256 {prg_sha}")
         _mit = [n for n in MITIGATION_LABELS if labels.address(n) is not None]
+        mitigated_build = bool(_mit)
         if len(_mit) == len(MITIGATION_LABELS):
             print(f"  nistcurves_reu_dma_wait @ "
                   f"${labels['nistcurves_reu_dma_wait']:04X}, reu_mul_init @ "
@@ -2944,7 +3031,7 @@ def main(argv=None):
 
     except KeyboardInterrupt:
         print("\nINTERRUPTED — restoring device state before exit.")
-        rc = 130
+        rc = EXIT_INTERRUPTED
     finally:
         if dev is not None:
             dev.restore_settle()
@@ -2990,7 +3077,7 @@ def main(argv=None):
         print("\nElapsed per stage:")
         for name, secs in stage_times:
             print(f"  {name:22} {secs:7.0f} s")
-    return run_exit_status(lines, rc)
+    return run_exit_status(lines, rc, mitigated=mitigated_build)
 
 
 if __name__ == "__main__":
