@@ -1096,6 +1096,9 @@ issue #83 and c64-x25519 `docs/design/issue_72_onchip_mul.md`.
   Accordingly the onchip archives do not ship `reu_mul_init.o` (the
   §8.2 provider object every default-profile archive carries,
   issue #81) — `reu_mul_init` is deliberately unlinkable from them.
+  So is the §8.2 row fetch `reu_fetch_mul_row`: `src/mul_8x8.s` does not
+  export it under `FP_ONCHIP_MUL`, and `nistcurves.inc` does not declare
+  it for these archives (issue #170).
 - **Resident/cold (§5):** the row generator (~250 B) becomes verify-hot
   and the REU row-fetch path drops out — a net delta inside the §5
   rounding, so `RESIDENT_BYTES` still shares one figure across both

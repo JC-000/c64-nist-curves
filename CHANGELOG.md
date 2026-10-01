@@ -14,6 +14,34 @@ contract).
 
 ### Fixed
 
+- **`nistcurves.inc` declared names some archives do not provide, or
+  declared them with the wrong address size (issue #170).** The header leg
+  of `make check-archives` used to pull no archive member, so none of this
+  was visible. Its stub now references every name the header declares
+  under each archive's switch set, and any ld65 warning fails the leg.
+  Three consumer-visible header changes followed. No archive or PRG bytes
+  change.
+  - `reu_fetch_mul_row` is no longer declared under `FP_ONCHIP_MUL`. The
+    five `*-onchip` archives deliberately do not ship it; `src/mul_8x8.s`
+    gates the export on `SHARED_REU_MUL_FETCH` or `FP_ONCHIP_MUL`. A
+    consumer referencing it got `Unresolved external 'reu_fetch_mul_row'`
+    at link; it now gets an undefined-symbol error at assembly, which names
+    the real cause.
+  - `FP256_SIZE` / `FP384_SIZE` are now `.importzp`, matching their
+    zeropage export from `constants.s`. With the old header,
+    `ldx #FP256_SIZE` failed to assemble with `Range error`; it now
+    assembles. **Breaking for one pattern:** a consumer TU that includes
+    the header AND says `.import FP256_SIZE` itself now fails with
+    `Address size mismatch for symbol 'FP256_SIZE'`. Delete the redundant
+    `.import`, or write `.importzp`.
+  - `LIB_NISTCURVES_PRECALC_reu_mul_SIZE` (131072) is now imported `far`,
+    inside `.pushcpu` / `.p816` ... `.popcpu`. The canonical
+    `precalc_table.inc` exports it far, and an absolute import drew an
+    `Address size mismatch` ld65 warning in every consumer build that
+    referenced it. The consumer's CPU is restored after the import (a
+    `--cpu 65c02` consumer keeps `stz`). A `.dword` of it still emits
+    `00 00 02 00`, and consumers that never reference it are unaffected.
+
 - **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
   its source `.include`s (`sqtab_base.inc`, `reu_banks.inc`,
   `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout
