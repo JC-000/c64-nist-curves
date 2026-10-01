@@ -49,11 +49,27 @@ contract).
     letters. That rejects `-Otarget`, `-I/path` and `-j4` on GNU make 4.x,
     where MFLAGS is documented as MAKEFLAGS without its variables, with a
     leading dash.
-  - A command-line `MFLAGS=` is believed by make, so it is refused with an
-    error.
+  - MFLAGS is trusted only as make's own definition, i.e. origin
+    `environment` or `environment override`. Any other origin is refused
+    with an error:
+    - a command-line `MFLAGS=`;
+    - `MFLAGS := -n` in a makefile or a MAKEFILES-loaded file;
+    - `override MFLAGS`.
+
+    make believes each of these while obeying different flags, so a real
+    build would be classified as dry and leave a stale archive.
+  - A command-line `MAKEFLAGS=` (e.g. `make lib MAKEFLAGS=t`) is refused.
+    3.81 obeys it but leaves MFLAGS empty, so the build would be treated as
+    real: it would wipe, restamp and then touch, shipping a 0-byte archive.
+    An intermediate revision of this branch did exactly that. Sub-makes,
+    `-C`, an environment MAKEFLAGS and `make -e` never give MAKEFLAGS that
+    origin, and the check pins that they still work.
   - `make -q` on every archive and PRG path answers "stale" when the knobs
     change. The packaging copies (`nistcurves.inc`, the example cfg) do not
     depend on any knob, so they correctly answer "up to date".
+  - Known make behaviour, unchanged and out of scope: `make -t` on an
+    archive that does not exist yet creates it as a 0-byte file, even with
+    unchanged knobs. That is what `-t` means. Run a real build afterwards.
 - **`make clean` removes the variant test PRGs** (`nist-curves-{nocomb,onchip,
   onchip-nocomb}.prg`), their `labels_*` / `labels_*_raw` files and the `.d`
   files. It deliberately keeps the knob stamp, so `make clean all` followed

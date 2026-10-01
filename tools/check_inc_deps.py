@@ -47,6 +47,10 @@ Legs
                    prefixes, getopt clusters) and environment MAKEFLAGS
                    with and without `-e` (issue #180).
 1c. mflags-refuse -- a command-line `MFLAGS=` is refused, for any goal.
+1d. routes      -- legitimate routes (parent `$(MAKE)` sub-makes with and
+                   without -n/-t/-k/--no-print-directory, -C, env MAKEFLAGS,
+                   `make -e`) reach the classifier unrefused and correctly
+                   classified.
 1. precondition -- after a full build, `make -q <every object>` reports
                    up to date.  Without this, leg 3 could pass because
                    objects were stale for some unrelated reason.
@@ -81,6 +85,12 @@ Legs
                    deleted or resized, stamp unchanged; the next real build
                    with the same knobs reassembles all of lib and produces a
                    non-empty archive (issue #180's 0-byte archive).
+5e. cmdline-makeflags -- `make lib MAKEFLAGS=t|-t|--t|kt|n` with changed
+                   knobs: refused or harmless (nothing deleted/resized,
+                   stamp unchanged); the next real build with the same
+                   knobs reassembles into a non-empty archive.
+5f. mflags-file -- `MFLAGS := -n` / `override MFLAGS := -n` loaded via
+                   MAKEFILES is refused, build/ and stamp untouched.
 5d. q-paths     -- `make -q` on all 12 archives and 4 PRGs: 0 with
                    unchanged knobs, 1 with changed knobs.
 6. real-run     -- a real `make lib` with changed knobs still reassembles
@@ -193,7 +203,7 @@ def clean_env() -> dict[str, str]:
     env = dict(os.environ)
     for k in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEFILES",
               "CONTRACT_DEFINES", "CONTRACT_ZP_DEFINES", "CA65FLAGS",
-              "MFLAGS_UNDER_TEST"):
+              "MFLAGS_UNDER_TEST", "GNUMAKEFLAGS"):
         env.pop(k, None)
     return env
 
@@ -399,6 +409,48 @@ def run(work: Path) -> int:
         else:
             print(f"[mflags-refuse] PASS: `make {goal} MFLAGS=-n` refused: "
                   f"{r.stderr.strip().splitlines()[-1][:120]}")
+
+    # ---- leg 1d: the refusals do not fire on legitimate routes ----------
+    # Parent `$(MAKE)` sub-makes (MAKEFLAGS origin `file`, MFLAGS origin
+    # `environment`), `-C dir`, env MAKEFLAGS and `make -e` must all reach
+    # the classifier and be classified by the flags make really obeys.
+    wrapper = work.parent / "wrapper.mk"
+    wrapper.write_text(
+        ".PHONY: sub subnpd\n"
+        f"sub: ; $(MAKE) -C {work} print-dry-classify\n"
+        f"subnpd: ; $(MAKE) --no-print-directory -C {work} print-dry-classify\n")
+    route_rows = [
+        (["make", "-f", str(wrapper), "sub"], {}, False),
+        (["make", "-n", "-f", str(wrapper), "sub"], {}, True),
+        (["make", "-t", "-f", str(wrapper), "sub"], {}, True),
+        (["make", "-k", "-f", str(wrapper), "sub"], {}, False),
+        (["make", "-n", "-f", str(wrapper), "subnpd"], {}, True),
+        (["make", "--no-print-directory", "-n", "-f", str(wrapper), "sub"], {}, True),
+        (["make", "-C", str(work), "print-dry-classify"], {}, False),
+        (["make", "-n", "-C", str(work), "print-dry-classify"], {}, True),
+        (["make", "print-dry-classify"], {"MAKEFLAGS": "k"}, False),
+        (["make", "print-dry-classify"], {"MAKEFLAGS": "n"}, True),
+        (["make", "-e", "print-dry-classify"], {"MAKEFLAGS": "k"}, False),
+        (["make", "-e", "print-dry-classify"], {"MAKEFLAGS": "--t"}, True),
+    ]
+    route_bad = 0
+    for argv, envx, want in route_rows:
+        env = clean_env()
+        env.update(envx)
+        r = subprocess.run(argv, cwd=work, env=env, capture_output=True, text=True)
+        m = DRY_RE.search(r.stdout)
+        what = f"`{' '.join(a if a not in (str(work), str(wrapper)) else '<' + Path(a).name + '>' for a in argv)}` env={envx}"
+        if "may not" in r.stderr or not m:
+            route_bad += 1
+            fail("routes", f"{what}: no classification (exit {r.returncode}): "
+                 f"{r.stderr.strip()[-200:]!r}")
+        elif bool(m.group(1)) != want:
+            route_bad += 1
+            fail("routes", f"{what} classified {'DRY' if m.group(1) else 'REAL'}, "
+                 f"expected {'DRY' if want else 'REAL'}")
+    if not route_bad:
+        print(f"[routes] PASS: {len(route_rows)} legitimate route(s) (sub-make, -C, env, -e) "
+              f"classified correctly, no refusal fired")
 
     # ---- leg 1: precondition --------------------------------------------
     build = make(work, *PUBLIC_TARGETS, *objs)
@@ -675,6 +727,61 @@ def run(work: Path) -> int:
         if not bad:
             print(f"[env-e] PASS: env MAKEFLAGS={envmf!r} `make -e lib` left build/ intact; "
                   f"next real build reassembled {len(rebuilt)}, archive {size} B")
+
+    # ---- leg 5e: a command-line MAKEFLAGS (b9bb55d regression) -----------
+    # 3.81 OBEYS `make lib MAKEFLAGS=t` (origin `command line`) yet leaves
+    # MFLAGS empty, so an MFLAGS classifier calls it REAL: wipe, restamp,
+    # touch -> 0-byte archive that the next real build ships. Each probe:
+    # either refused, or build/ and the stamp untouched; then a real build
+    # with the same knobs must reassemble everything into a non-empty archive.
+    for i, mf in enumerate(["t", "-t", "--t", "kt", "n"]):
+        knob_name = f"LIB_CMDLINE_MF_PROBE_{i}"
+        knob = f"CONTRACT_DEFINES=-D {knob_name}=1"
+        before = snapshot(bdir)
+        s0 = stamp_text()
+        r = make(work, "lib", f"MAKEFLAGS={mf}", knob)
+        after = snapshot(bdir)
+        gone = sorted(set(before) - set(after))
+        resized = sorted(k for k in set(before) & set(after) if before[k][0] != after[k][0])
+        bad = False
+        if gone or resized or stamp_text() != s0:
+            bad = True
+            fail("cmdline-makeflags", f"`make lib MAKEFLAGS={mf}` with changed knobs "
+                 f"(exit {r.returncode}): {len(gone)} deleted (e.g. {gone[:3]}), "
+                 f"{len(resized)} resized (e.g. {resized[:3]}), stamp {s0!r} -> {stamp_text()!r}")
+        r2 = make(work, "lib", knob)
+        rebuilt = set(ca65_objects(r2.stdout))
+        missing = sorted(need_lib - rebuilt)
+        size = archive.stat().st_size if archive.is_file() else -1
+        if r2.returncode != 0 or missing or size <= 0 or knob_name not in (stamp_text() or ""):
+            bad = True
+            fail("cmdline-makeflags", f"after `make lib MAKEFLAGS={mf}`, a real `make lib` "
+                 f"with the same knobs: exit {r2.returncode}, {len(missing)}/{len(need_lib)} "
+                 f"object(s) not reassembled, nistcurves.a {size} B, stamp {stamp_text()!r}")
+        if not bad:
+            how = "refused" if r.returncode != 0 else "accepted"
+            print(f"[cmdline-makeflags] PASS: `make lib MAKEFLAGS={mf}` {how}, build/ intact; "
+                  f"next real build reassembled {len(rebuilt)}, archive {size} B")
+
+    # ---- leg 5f: MFLAGS defined by a makefile is refused ------------------
+    # `MFLAGS := -n` in a MAKEFILES-loaded file (origin `file`) or as
+    # `override MFLAGS := -n` (origin `override`) would steer the classifier
+    # to DRY on a real build. Only make's own environment definition counts.
+    for label, text in (("file", "MFLAGS := -n\n"), ("override", "override MFLAGS := -n\n")):
+        ovr = work.parent / f"mflags_{label}.mk"
+        ovr.write_text(text)
+        before = snapshot(bdir)
+        s0 = stamp_text()
+        r = make(work, "lib", f"CONTRACT_DEFINES=-D LIB_MFLAGS_{label.upper()}_PROBE=1",
+                 env_extra={"MAKEFILES": str(ovr)})
+        if r.returncode == 0 or "MFLAGS" not in r.stderr or snapshot(bdir) != before \
+                or stamp_text() != s0:
+            fail("mflags-file", f"MAKEFILES with `{text.strip()}`: `make lib` exit "
+                 f"{r.returncode}, build/ {'changed' if snapshot(bdir) != before else 'same'}, "
+                 f"stamp {s0!r} -> {stamp_text()!r}; stderr {r.stderr.strip()[-160:]!r}")
+        else:
+            print(f"[mflags-file] PASS: `{text.strip()}` via MAKEFILES refused: "
+                  f"{r.stderr.strip().splitlines()[-1][:110]}")
 
     # ---- leg 5d: -q on every shipped artifact path (issue #180 point 3) --
     # With changed knobs, `make -q <artifact>` must answer "stale" (exit 1)

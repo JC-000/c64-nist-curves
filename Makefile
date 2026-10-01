@@ -149,10 +149,31 @@ STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
 # drop `--long` ones, and accept a word only if it is made ENTIRELY of
 # argument-less flag letters; that rejects `-Otarget`, `-I/path`, `-j4`.
 #
-# A command-line `MFLAGS=` is believed by make (origin `command line`) while
-# the real flags are something else, so it is refused outright.
-ifeq ($(origin MFLAGS),command line)
-$(error MFLAGS may not be set on the command line: this Makefile reads it to tell a dry run (-n/-q/-t) from a real build, and a forged value would skip or force the CONTRACT_DEFINES invalidation (issue #180))
+# MFLAGS is trusted only as make's OWN definition: origin `environment`
+# (or `environment override` under -e). Measured on 3.81, on a plain make,
+# under -n/-t/-k, in `$(MAKE)` sub-makes and with -C. Any other origin is a
+# forgery the classifier would believe while make obeys the real flags:
+# a command-line `MFLAGS=-n` (`command line`), `MFLAGS := -n` in a makefile
+# or a MAKEFILES-loaded file (`file`), `override MFLAGS := -n` (`override`).
+# Each would classify a real build as DRY: no wipe, no restamp, a stale
+# archive. All refused. `undefined` is allowed (nothing to forge).
+#
+# A command-line MAKEFLAGS (`make lib MAKEFLAGS=t`, origin `command line`)
+# is OBEYED by 3.81 but leaves MFLAGS EMPTY. That reads as REAL, so the
+# build would wipe, restamp, then touch, leaving a 0-byte archive that the
+# next real build ships with exit 0 (measured on b9bb55d). Refused too.
+# Legitimate routes never produce that origin: MAKEFLAGS is `file` on a
+# plain make, in sub-makes, with -C and with an env MAKEFLAGS, and
+# `environment override` under -e (all measured on 3.81).
+MFLAGS_ORIGIN := $(origin MFLAGS)
+ifeq ($(MFLAGS_ORIGIN),environment)
+else ifeq ($(MFLAGS_ORIGIN),environment override)
+else ifeq ($(MFLAGS_ORIGIN),undefined)
+else
+$(error MFLAGS has origin '$(MFLAGS_ORIGIN)'; only make's own definition is accepted. This Makefile reads MFLAGS to tell a dry run (-n/-q/-t) from a real build, and a forged value would skip or force the CONTRACT_DEFINES invalidation (issue #180). Do not set MFLAGS on the command line or in a makefile)
+endif
+ifeq ($(origin MAKEFLAGS),command line)
+$(error MAKEFLAGS may not be set on the command line: make obeys it but does not reflect it in MFLAGS, so a dry run (-n/-q/-t) would be treated as a real build and could ship a 0-byte archive (issue #180). Pass the flags directly, e.g. `make -t lib`)
 endif
 #
 # MFLAGS_UNDER_TEST is a test seam for tools/check_inc_deps.py's classifier

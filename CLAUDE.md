@@ -232,7 +232,10 @@ knob-stamp wipe is skipped under `-n` / `-q` / `-t` and for goals that build
 nothing. The dry-run classifier reads `$(MFLAGS)` (make's own decoding),
 never MAKEFLAGS letters: under `make -e` an environment MAKEFLAGS such as
 `--t` reaches parse time raw, and misreading it shipped a 0-byte archive
-(issue #180). A command-line `MFLAGS=` is refused. The classifier is
+(issue #180). MFLAGS is trusted only with origin `environment` /
+`environment override` (make's own definition); a command-line, makefile or
+`override` MFLAGS is refused, and so is a command-line `MAKEFLAGS=` (3.81
+obeys it but leaves MFLAGS empty, which shipped a 0-byte archive). The classifier is
 unit-tested through the command-line-only `MFLAGS_UNDER_TEST` seam on
 `make print-dry-classify`. `make clean` removes
 the variant PRGs, labels and `.d` files but keeps the knob stamp on purpose.
