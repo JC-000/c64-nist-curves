@@ -219,6 +219,36 @@ to a separate .o, linked by ld65 with `src/c64.cfg`. Outputs:
   source-level stepping / breakpoints / span lookup. `.dbg` is a separate
   artifact; the .prg is byte-identical with or without `-g` (verified by
   sha256 round-trip).
+
+**Incremental builds track headers (issue #178).** Every ca65 recipe goes
+through the single `$(ASSEMBLE)` variable, which writes
+`--create-dep build/<obj>.o.d`; the `.d` files are `-include`d, and every
+object also depends on the Makefile. **A new ca65 recipe must use
+`$(ASSEMBLE)`**, not a raw `$(CA65)` line — a raw line silently drops that
+object's header edges (`make check-inc-deps` catches it). Before #178 no
+recipe named its `.include`d headers, so editing one left `make` / `make lib-*`
+saying "Nothing to be done" over a stale artifact. **The `CONTRACT_DEFINES`
+knob stamp is compared at parse time and never written there**: on a
+mismatch, every object, archive and PRG gets the phony prerequisite
+`knobs-changed`, whose recipe wipes the old outputs and then writes the new
+stamp. make therefore decides whether the wipe runs, whatever route its flags
+took: `-n` prints it, `-q` answers stale, `-t` touches but leaves the stamp
+old, and non-build goals never run it. **Do not move the wipe or the stamp
+write back to parse time, and do not try to detect -n/-q/-t from MAKEFLAGS or
+MFLAGS.** Every such classifier was defeated by another route: env MAKEFLAGS
+under `-e`, a command-line `MAKEFLAGS=`, or `MAKEFLAGS += -t` inside a
+makefile. Each one shipped a 0-byte archive (issue #180). The forced set is
+derived from every `*_OBJS` / `*_OBJECTS` variable plus `LIB_ARCHIVES` and the
+four PRGs, in a block at the **end** of the Makefile. **A new object list must
+match that naming and be defined above the block, and a new archive or PRG
+must join the forced list.** The prerequisite must be normal, not order-only;
+otherwise the archive or PRG is not relinked (#144). `force-direct` in
+`make check-inc-deps` fails on any of these. `make clean` removes
+the variant PRGs, labels and `.d` files but keeps the knob stamp on purpose.
+**Hash note:** `od65 --dump-all` prints no segment bytes, so an od65-based
+hash of an archive cannot see a code-byte change; compare raw member bytes
+with the Options/Files sections zeroed (they hold the assembly datetime).
+
 Current PRG size: ~36.9 KB (37743 bytes as of v0.15.0, measured; 37739 at issue #148's comb post-condition guard; 37483 through v0.12.0 — the guard adds ~64 B of code but the page-aligned LIB_NISTCURVES_TABLES segment rounds that up to +256 B of image. Earlier: 37480 at v0.10.0's issue #98 P384_BSS fix, 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801. **Any negative test that perturbs image size trips this guard first** — it has intercepted three such tests aimed at other asserts. Pass `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom, or you are re-testing the guard you already have. **Slack under the §4 `__MAIN_LAST__ <= sqtab_lo` link guard is now 150 bytes** (`$9B6A` vs `$9C00`), down from 406; anything that grows MAIN much further needs the buffers moved first, not a bigger guard.
 
 `src/*.s` (ca65) is the only source set. The legacy ACME `src/*.asm`
@@ -269,6 +299,7 @@ make check-harness-routing           # every device write in tools/ routes throu
                                      #   managed layer (`transport.write_memory`) and never below it —
                                      #   see "Device traffic: the harness is the only route" below
                                      #   (no VICE, no device, no network)
+make check-inc-deps                  # every object reassembles when an .include'd header or the Makefile changes; clean/dry-run side effects; knob invalidation down every flag route (issues #178/#180; no VICE, temp copy, opt-in)
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
                                      #   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
                                      #   C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py

@@ -1,5 +1,22 @@
 CA65 = ca65
 
+# Every ca65 recipe in this file starts with $(ASSEMBLE) -- write new variant
+# rules the same way. Besides the fixed flags it carries `--create-dep`, which
+# makes ca65 write build/<object>.o.d naming the object's source AND every
+# header it `.include`s (issue #178). Those .d files are `-include`d below,
+# so editing src/sqtab_base.inc, src/reu_banks.inc, src/precalc_table.inc,
+# src/reu_dma_done.inc -- or any header added later -- reassembles exactly the
+# objects (every variant) that include it. Before this, no recipe named its
+# headers: a header edit left `make` / `make lib-*` answering "Nothing to be
+# done" over a stale artifact. The .d also lists each header as an empty
+# target, so deleting or renaming one does not wedge make with "No rule to
+# make target". Recipe-level, not a hand-written prerequisite list: a new
+# variant rule inherits it by copy-paste, and a new `.include` needs no
+# Makefile edit. Pinned by `make check-inc-deps` (tools/check_inc_deps.py).
+# `$@.d`, not `$(@:.o=.d)`: tools/check_archives.py expands these recipes to
+# read each arm's -D set and (deliberately) fails hard on any surviving `$(`.
+ASSEMBLE = $(CA65) --cpu 6502 -g --create-dep $@.d
+
 # Consumer-supplied assembler defines, forwarded to EVERY ca65 invocation
 # below (c64-lib-contract #76 item A.1). Empty by default, so the default
 # build is unaffected.
@@ -92,38 +109,70 @@ LIB_DIR = $(BUILD_DIR)/lib
 # would reuse every stale object and exit 0 with an artifact other than the
 # one requested -- the v0.10.5 shape-3 "silent no-op" (measured here during
 # the issue #123 repro: `make lib-p256-verify-onchip CONTRACT_DEFINES=...`
-# answered "Nothing to be done"). The stamp records the flattened knob string
-# at parse time; when it changes, every object and archive is invalidated --
-# the knobs reach every TU, so every object genuinely is stale -- and the
-# requested configuration is built. Unchanged knobs leave the tree alone
-# (same-knob incremental builds stay incremental). Pinned by the
-# defines-staleness leg in tools/check_archives.py.
+# answered "Nothing to be done"). Pinned by the defines-staleness leg in
+# tools/check_archives.py and by tools/check_inc_deps.py.
+#
+# Design (issues #178 / #180). Parse time only COMPARES: a pure read of the
+# stamp, no writes, no deletes. When the knobs differ, every knob-dependent
+# output -- every object, archive and PRG, see the end of this file -- gets
+# the phony prerequisite `knobs-changed`, whose RECIPE deletes the old
+# objects, archives, PRGs, labels and dbg and then records the new knobs.
+# Because the actions live in a recipe, make itself decides whether they
+# run, whatever route its flags arrived by (command line, environment,
+# `make -e`, MAKEFLAGS set inside a makefile, sub-makes, 4.x formats):
+#   -n   prints the wipe and the full rebuild, executes nothing;
+#   -q   answers "stale" (a phony prerequisite is always out of date);
+#   -t   touches the outputs but never runs the recipe, so the stamp keeps
+#        the OLD knobs and the next real build still rebuilds everything;
+#   goals that do not depend on an output (clean, dist, check-release-*,
+#   check-harness-routing, check-inc-deps) never run it.
+# Every object depends on `knobs-changed` directly, so even under -j its
+# rm finishes before any recipe that writes an object.
+# The delete precedes the stamp write, so a build that fails part-way can
+# never leave stamp == new beside an object built with the old knobs.
+# Issue #144: the LINKED artifacts are forced too, not only the objects --
+# GNU make 3.81 compares mtimes at whole-second granularity, so a
+# same-second reassembly could otherwise leave make judging an existing
+# .prg up to date and exit 0 carrying the PREVIOUS knob's artifact.
 CONTRACT_STAMP := $(BUILD_DIR)/.contract-defines.stamp
 CURRENT_KNOBS := $(strip $(CONTRACT_DEFINES) @ $(CONTRACT_ZP_DEFINES))
 STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
 ifneq ($(CURRENT_KNOBS),$(STORED_KNOBS))
-# Issue #144: the LINKED artifacts must be invalidated too, not only the
-# objects. Objects are deleted and reassembled in well under a second, and
-# GNU make 3.81 (macOS system make) compares mtimes at whole-second
-# granularity -- so a same-second reassembly frequently leaves make judging
-# the existing .prg up to date, and ld65 never runs. The build then exits 0
-# carrying the PREVIOUS knob's artifact. Measured: three consecutive knob
-# values, one link, one PRG hash. That is precisely the SPEC v0.11.1 §6.3
-# property this stamp exists to provide ("assert the artifact flipped, not
-# that something rebuilt"), so the PRG, its label files and the dbg file go
-# with the objects.
-$(shell mkdir -p $(BUILD_DIR); rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a \
-        $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg; \
-        printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP))
+KNOB_FORCE := knobs-changed
 endif
 
-.PHONY: all clean bench-u64 dist \
+# Goals that build nothing. Used ONLY to skip the `.d` include below, so that
+# `make clean` still parses (and so recovers) when a .d file is corrupt.
+NON_BUILD_GOALS := clean dist check-harness-routing check-release-notes \
+                   check-release-state check-inc-deps
+NON_BUILD_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS)),,yes))
+
+.PHONY: all clean bench-u64 dist knobs-changed \
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
         lib-app-owned lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
         lib-p384-curve-onchip lib-p256-comb lib-p256-comb-onchip \
         check-archives check-docs
 
 all: $(PRG)
+
+knobs-changed:
+	@mkdir -p $(BUILD_DIR)
+	rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg
+	@printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP)
+
+# Every object also depends on this Makefile: the recipe flags live here, so
+# a flag edit (or a checkout that touches only the Makefile) must reassemble
+# rather than leave objects built with the old flags. Errs toward rebuilding
+# -- a comment-only edit reassembles too, which costs seconds. Objects that do
+# not exist yet are built regardless, so the wildcard needs no completeness.
+$(wildcard $(BUILD_DIR)/*.o): Makefile
+
+# Header dependencies written by ca65 --create-dep (see ASSEMBLE, issue #178).
+# Not read for goals that build nothing: a corrupt .d is a parse error
+# ("missing separator. Stop."), and `make clean` is the recovery for it.
+ifeq ($(NON_BUILD_ONLY),)
+-include $(wildcard $(BUILD_DIR)/*.d)
+endif
 
 # --- ca65 + ld65 multi-object build (default) ---
 # -g on ca65 embeds source-line debug info in each .o; --dbgfile on ld65
@@ -136,16 +185,16 @@ $(PRG): $(OBJECTS) $(CFG) | $(BUILD_DIR)
 
 # Pattern rule: assemble each .s to .o
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 # No-comb ECDSA verify variants (issue #61): same sources, -D ECDSA_NO_COMB.
 # u1*G routes through ec_scalar_mul_var seeded at G, dropping the link
 # dependency on points256_comb.o / points384_comb.o. Consumed by the verify
 # archives and the nocomb test PRG below; the default build never uses them.
 $(BUILD_DIR)/ecdsa256_nocomb.o: $(SRC_DIR)/ecdsa256.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D ECDSA_NO_COMB -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/ecdsa384_nocomb.o: $(SRC_DIR)/ecdsa384.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D ECDSA_NO_COMB -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D ECDSA_NO_COMB -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 # Nocomb test PRG (issue #61): the standalone test PRG with the two nocomb
 # verify objects substituted, so the full oracle test suite can exercise the
@@ -176,11 +225,11 @@ $(PRG_NOCOMB): $(NOCOMB_OBJECTS) $(CFG) | $(BUILD_DIR)
 # Boot init (REU mul-table population, comb precompute) is unchanged; the
 # mul table still populates at boot but fp_mul/fp_sqr never DMA from it.
 $(BUILD_DIR)/fp256_onchip.o: $(SRC_DIR)/fp256.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/fp384_onchip.o: $(SRC_DIR)/fp384.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/mul_8x8_onchip.o: $(SRC_DIR)/mul_8x8.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 PRG_ONCHIP = $(BUILD_DIR)/nist-curves-onchip.prg
 ONCHIP_OBJECTS = $(subst $(BUILD_DIR)/precalc_manifest.o,$(BUILD_DIR)/precalc_manifest_onchip.o,$(subst $(BUILD_DIR)/lib_manifest.o,$(BUILD_DIR)/lib_manifest_onchip.o,$(subst $(BUILD_DIR)/fp256.o,$(BUILD_DIR)/fp256_onchip.o,$(subst $(BUILD_DIR)/fp384.o,$(BUILD_DIR)/fp384_onchip.o,$(subst $(BUILD_DIR)/mul_8x8.o,$(BUILD_DIR)/mul_8x8_onchip.o,$(OBJECTS))))))
@@ -287,9 +336,9 @@ LIB_CORE_OBJS = $(BUILD_DIR)/lib_version.o $(BUILD_DIR)/lib_manifest.o \
 # this archive with a sibling tripped both the §8.0 disjointness assert and
 # the v0.5.0 coverage assert on a perfectly valid link.
 $(BUILD_DIR)/lib_manifest_sha384.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_sha384.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 # zp_config too: sha384.o .importzp's exactly 4 slots (8 B), so the SHA
 # archive exports those and not the other 17. Zero page is the scarcest
 # resource on the machine -- claiming 31 against a real need of 8 can
@@ -297,10 +346,10 @@ $(BUILD_DIR)/precalc_manifest_sha384.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_
 # Default-arm zp_config needs its own rule so CONTRACT_ZP_DEFINES reaches it; the generic
 # %.o pattern rule below would build it without them (c64-lib-contract #76 A.1).
 $(BUILD_DIR)/zp_config.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
+	$(ASSEMBLE) -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/zp_config_sha384.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
 # --- §6.1 bare-alias TU (issue #154) -----------------------------------------
 # src/zp_aliases.s carries the deprecated bare zp_tmp1/zp_tmp2/zp_ptr1/zp_ptr2
@@ -325,15 +374,15 @@ $(BUILD_DIR)/zp_config_sha384.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
 # already passes CONTRACT_DEFINES and not CONTRACT_ZP_DEFINES) -- exactly
 # right here, so it needs no rule of its own.
 $(BUILD_DIR)/zp_aliases_sha384.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_SHA384_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_aliases_p256verify.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_aliases_p384verify.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_aliases_p384curve.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_aliases_p256comb.o: $(SRC_DIR)/zp_aliases.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 LIB_CORE_SHA384_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_sha384.o \
@@ -358,47 +407,47 @@ LIB_CORE_SHA384_OBJS = $(BUILD_DIR)/lib_version.o \
 # on it. Same asymmetry as the un-suffixed zp_config.o already shared
 # between nistcurves.a and nistcurves-onchip.a today.
 $(BUILD_DIR)/zp_config_p256verify.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_config_p384verify.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_config_p384curve.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 $(BUILD_DIR)/zp_config_p256comb.o: $(SRC_DIR)/zp_config.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) $(CONTRACT_ZP_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/lib_manifest_p256verify.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p256verify_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384verify.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384verify_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384curve.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p384curve_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p256comb.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/lib_manifest_p256comb_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_COMB_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 $(BUILD_DIR)/precalc_manifest_p256verify.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p256verify_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384verify.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_VERIFY_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384verify_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_VERIFY_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384curve.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_CURVE_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p384curve_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P384_CURVE_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p256comb.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_COMB_ONLY -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_p256comb_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D LIB_P256_COMB_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D LIB_P256_COMB_ONLY -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 LIB_CORE_P256VERIFY_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_p256verify.o \
@@ -533,9 +582,9 @@ APP_OWNED_DEFINES = -D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT \
                     -D SHARED_REU_MUL_FETCH -D SHARED_CT_MUL_8X8
 
 $(BUILD_DIR)/lib_manifest_appowned.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g $(APP_OWNED_DEFINES) -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) $(APP_OWNED_DEFINES) -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/mul_8x8_appowned.o: $(SRC_DIR)/mul_8x8.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g $(APP_OWNED_DEFINES) -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) $(APP_OWNED_DEFINES) -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 # Explicit member list rather than $(subst ...) over LIB_FULL_OBJS: the
 # check-archives ratchet parses these assignments to learn each archive's real
@@ -579,9 +628,9 @@ LIB_APP_OWNED_OBJS = $(LIB_CORE_APP_OWNED_OBJS) $(LIB_MUL_APP_OWNED_OBJS) \
 # precalc row; the lim_lee_comb_* rows stay -- onchip full/curve archives
 # still use REU bank $02).
 $(BUILD_DIR)/lib_manifest_onchip.o: $(SRC_DIR)/lib_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 $(BUILD_DIR)/precalc_manifest_onchip.o: $(SRC_DIR)/precalc_manifest.s | $(BUILD_DIR)
-	$(CA65) --cpu 6502 -g -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
+	$(ASSEMBLE) -D FP_ONCHIP_MUL -I $(SRC_DIR) $(CONTRACT_DEFINES) -o $@ $<
 
 LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/lib_manifest_onchip.o \
@@ -760,6 +809,15 @@ check-harness-routing:
 # Issue #147: the release notes ship inside the tarball, so any hash they
 # claim about it is self-referential. Kept out by check-release-notes; the
 # real hash comes from the <tarball>.sha256 sidecar `make dist` writes.
+# Issue #178: every object must be reassembled when a header it `.include`s
+# changes, `make clean` must leave no build artefact, and a dry run must not
+# mutate build/. Works in a throwaway copy of the tree (never this build/).
+# Discovers the include set and object set rather than listing them. No VICE,
+# no device, no network. Opt-in; deliberately NOT a prerequisite of `all`.
+.PHONY: check-inc-deps
+check-inc-deps:
+	python3 tools/check_inc_deps.py
+
 .PHONY: check-release-notes
 check-release-notes:
 	python3 tools/check_release_notes.py
@@ -780,8 +838,14 @@ check-release-state:
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
+# Same globs the knob stamp invalidates, so the variant test PRGs
+# (nocomb / onchip / onchip-nocomb) and their labels_* / labels_*_raw files
+# go too -- the old explicit list left them behind (issue #178). The knob
+# stamp is KEPT on purpose: it records the knobs, not an artifact, and
+# deleting it made `make clean all` leave no stamp, so the following `make
+# all` saw a "knob change" and reassembled every TU.
 clean:
-	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/nist-curves.prg $(BUILD_DIR)/labels.txt $(BUILD_DIR)/labels_raw.txt $(BUILD_DIR)/nist-curves.dbg
+	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.d $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg
 	rm -rf $(LIB_DIR)
 
 # --- Reproducible release tarball --------------------------------------------
@@ -802,3 +866,20 @@ dist:
 	  exit 1; \
 	fi
 	@tools/build_release.sh $(VERSION)
+
+# --- knob-dependent outputs (see the knob-staleness guard near the top) ------
+# Must stay at the END of the file: a rule's target list is expanded when it
+# is read, so every *_OBJS / *_OBJECTS list must already be defined. The
+# object set is DERIVED from those lists (every variable whose name ends in
+# _OBJS or _OBJECTS), so a new variant object that ships in any list is
+# covered without editing this block. Empty when the knobs are unchanged.
+KNOB_OBJECTS  := $(sort $(filter $(BUILD_DIR)/%.o,$(foreach v,$(filter %_OBJS %_OBJECTS,$(.VARIABLES)),$($(v)))))
+LIB_ARCHIVES  := $(addprefix $(LIB_DIR)/,nistcurves.a nistcurves-app-owned.a \
+                 nistcurves-p256-comb.a nistcurves-p256-comb-onchip.a \
+                 nistcurves-p256-verify.a nistcurves-p384-verify.a \
+                 nistcurves-p384-sha384.a nistcurves-p384-curve.a \
+                 nistcurves-onchip.a nistcurves-p256-verify-onchip.a \
+                 nistcurves-p384-verify-onchip.a nistcurves-p384-curve-onchip.a)
+ifdef KNOB_FORCE
+$(KNOB_OBJECTS) $(LIB_ARCHIVES) $(PRG) $(PRG_NOCOMB) $(PRG_ONCHIP) $(PRG_ONCHIP_NOCOMB): $(KNOB_FORCE)
+endif

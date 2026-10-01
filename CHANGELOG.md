@@ -12,6 +12,87 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
+  its source `.include`s (`sqtab_base.inc`, `reu_banks.inc`,
+  `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout
+  touching only a header -- left `make` / `make lib-*` reporting "Nothing to
+  be done" over a stale PRG or archive. Measured on the pre-fix Makefile with
+  a one-token edit per header, the incremental build differed from a clean
+  build in 7 to 13 of the 13 artifacts (default PRG plus twelve archives)
+  depending on the header. Every recipe now goes through one `$(ASSEMBLE)`
+  command carrying `ca65 --create-dep $@.d`, and the `.d` files are
+  `-include`d, so all 33 header-to-object edges (every variant object) are
+  tracked and a new `.include` needs no Makefile edit. Every object also
+  depends on the Makefile, so a recipe-flag change reassembles too.
+- **Changed `CONTRACT_DEFINES` no longer destroy or corrupt build/ under
+  `-n` / `-q` / `-t` (issues #178, #180; #180 relayed from c64-x25519
+  #167/#168).** The knob-staleness invalidation ran its wipe and stamp write
+  in a parse-time `$(shell)`. Two consequences:
+  - `make -n` / `-q` deleted the tree.
+  - `make -t` recorded the new knobs and then touched every artifact as a
+    0-byte file. The next real build with the same knobs exited 0 and
+    shipped an empty `nistcurves.a`.
+
+  The flags can reach make by many routes: the command line, an environment
+  MAKEFLAGS under `make -e`, a MAKEFLAGS set inside a makefile, sub-makes,
+  or GNU make 4.x formats. Each of these was measured to defeat any
+  parse-time reading of the flags.
+
+  The Makefile now only compares at parse time: it reads the stamp and
+  writes nothing. When the knobs differ, every object, archive and PRG gets
+  the phony prerequisite `knobs-changed`. Its recipe deletes the old
+  outputs and then writes the new stamp. make itself decides whether that
+  recipe runs:
+  - `-n` prints the wipe and the full rebuild;
+  - `-q` answers "stale";
+  - `-t` touches outputs but leaves the stamp alone, so the next real build
+    still rebuilds everything;
+  - goals that build nothing never run it.
+
+  Under `-j` the wipe finishes before any assembly. A build that fails part
+  way leaves no old-knob object beside the new stamp. The archives and PRGs
+  are forced as well as the objects: 3.81 caches an artifact's mtime before
+  the wipe runs, so without that the archive is not rebuilt (issue #144).
+
+  Known make behaviour, unchanged and out of scope: `make -t` on an artifact
+  that does not exist yet creates it as a 0-byte file, even with unchanged
+  knobs. That is what `-t` means; run a real build afterwards.
+- **`make clean` removes the variant test PRGs** (`nist-curves-{nocomb,onchip,
+  onchip-nocomb}.prg`), their `labels_*` / `labels_*_raw` files and the `.d`
+  files. It deliberately keeps the knob stamp, so `make clean all` followed
+  by `make all` does not reassemble anything. Goals that build nothing do not
+  read the `.d` files, so `make clean` still works over a corrupt one.
+
+### Added
+
+- `make check-inc-deps` (`tools/check_inc_deps.py`): discovers the include
+  set and the object set (never hard-coded), then proves in a throwaway copy
+  of the tree that:
+  - touching each header reassembles every object that includes it;
+  - `make clean` leaves no artefact;
+  - dry runs are side-effect free;
+  - the knob invalidation behaves correctly down every route by which flags
+    reach make.
+
+  The routes it drives with real builds:
+  - an environment MAKEFLAGS under `make -e`;
+  - a command-line MAKEFLAGS;
+  - MAKEFLAGS set in a MAKEFILES file or an include wrapper;
+  - an MFLAGS defined by a makefile;
+  - `$(MAKE) -C` sub-makes;
+  - the `MAKEFLAGS=` clearing idiom;
+  - `-j4`;
+  - c64-https's `make -s -C <dir> lib-p256-verify`.
+
+  It also covers a build that fails part-way, the linked PRG flipping with
+  the knobs, and `make -q` on every artifact path. Opt-in; not a
+  prerequisite of `all`. All four PRGs are sha256-identical before and
+  after this change. All twelve archives have identical member bytes
+  outside the Options/Files header sections, which hold an assembly
+  datetime.
+
 ## [0.15.0] — 2026-09-11
 
 MINOR. `LIB_NISTCURVES_ABI_VERSION` **stays 4** — verified against the frozen
