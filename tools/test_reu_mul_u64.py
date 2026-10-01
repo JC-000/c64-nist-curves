@@ -70,15 +70,17 @@ as `verdict=NOT_RUN` so a later reader can tell 0/5 from not-tested.
 
 WHAT THIS RUN IS NOT ENTITLED TO CLAIM
 ---------------------------------------
-  * that the defect is fixed or gone in fw 3.15 + patch #814 — a
+  * that the defect is fixed or gone in the firmware under test — a
     non-reproduction is an upper bound on a rate at a stated N, nothing more;
   * a stash floor and a fetch floor as one number;
-  * anything about 64 MHz (this device stops at 48) or about the six
+  * anything about a clock the device was not measured at, or about the six
     structural hot fp_mul/fp_sqr sites (no poke reaches them);
   * a bounded-spin / poll-iteration statistic — the settle loop reuses
     `nistcurves_reu_wait_cnt`, so it is destroyed on every call;
-  * a fw "3.15" row: /v1/info cannot distinguish stock from this device's
-    local patch GideonZ/1541ultimate#814;
+  * a firmware it did not observe: the row's fw field is the version the
+    device's own /v1/info reported, optionally annotated by --firmware-note
+    (which must begin with that version, issue #172) — /v1/info cannot
+    distinguish stock from a local patch such as GideonZ/1541ultimate#814;
   * a REU-size effect without the byte-index histogram that discriminates the
     candidate mechanisms;
   * agreement or disagreement with the incidental x25519 handshake pass — a
@@ -131,15 +133,93 @@ DEFAULT_PRG = os.path.join(BUILD_DIR, "nist-curves.prg")
 DEFAULT_LABELS = os.path.join(BUILD_DIR, "labels.txt")
 ITER_BUILD_DIR = os.path.join(BUILD_DIR, "reu-settle")
 
-# /v1/info reports a bare "3.15" and CANNOT distinguish stock firmware from a
-# locally patched build.  This device carries GideonZ/1541ultimate#814
-# (bounded UCI socket table + close-all on C64 reset).  If that patch touches
-# REU/DMA arbitration at all, a pre-fix build that PASSES here means "the
-# patch fixed it", not "the defect is absent on 3.15" — the wrong conclusion
-# this experiment is most at risk of publishing to a fleet-wide issue.  So the
-# note rides on EVERY row, and nobody downstream has to assume a socket patch
-# is irrelevant to DMA timing.
-DEFAULT_FIRMWARE_NOTE = "3.15+patch814(unverified_by_/v1/info)"
+# /v1/info reports a bare version (e.g. "3.15") and CANNOT distinguish stock
+# firmware from a locally patched build.  The U64E this tool was written
+# against carries GideonZ/1541ultimate#814 (bounded UCI socket table +
+# close-all on C64 reset); if that patch touches REU/DMA arbitration at all, a
+# pre-fix build that PASSES there means "the patch fixed it", not "the defect
+# is absent on 3.15".  So the operator may annotate the reported version with
+# --firmware-note (e.g. "3.15+patch814"), and the note rides on EVERY row.
+#
+# Issue #172: that annotation used to be a hardcoded DEFAULT
+# ("3.15+patch814(unverified_by_/v1/info)") applied silently to ANY device,
+# so a C64U reporting fw 1.1.0 would have stamped fw3.15 on every CELL row --
+# a wrong field beside four live ones (product/serial/fpga/core), which
+# inherits credibility it has not earned.  Now the firmware field is always
+# derived from the /v1/info reply of the device actually observed: with no
+# note it IS the reported version (marked unverified for patch level), and an
+# explicit note must begin with the reported version verbatim or the run
+# refuses before touching anything.
+FIRMWARE_UNVERIFIED_SUFFIX = "(patch_level_unverified_by_/v1/info)"
+
+
+def firmware_note_for_row(reported_fw, note):
+    """-> (firmware field recorded on every row, refusal reason or None).
+
+    Pure; the reported string is whatever `/v1/info`'s firmware_version said
+    for the device in hand.  Exactly one of the two results is None.
+    """
+    rep = (str(reported_fw).strip() if reported_fw is not None else "")
+    rep_ok = bool(re.match(r"\d+\.\d+", rep))
+    if note is None:
+        if not rep_ok:
+            return (f"{rep or '?'}(firmware_version_not_reported_by_/v1/info)",
+                    None)
+        return f"{rep}{FIRMWARE_UNVERIFIED_SUFFIX}", None
+    note = str(note).strip()
+    if not rep_ok:
+        return None, (f"--firmware-note {note!r} cannot be checked: /v1/info "
+                      f"reported firmware_version {reported_fw!r}, which is "
+                      f"not a version. Omit --firmware-note to record what "
+                      f"the device reported.")
+    # The note is an annotation ON the reported version, so it must begin with
+    # it verbatim and not continue it (3.15 vs 3.150, 1.1.0 vs 1.1.05).
+    if not (note.lower().startswith(rep.lower())
+            and not re.match(r"[0-9A-Za-z]|\.\d", note[len(rep):])):
+        return None, (f"--firmware-note {note!r} does not begin with the "
+                      f"firmware this device reports ({rep!r} via /v1/info). "
+                      f"Refusing to stamp a firmware this device is not "
+                      f"running onto every row; pass a note that starts with "
+                      f"{rep!r}, or omit it.")
+    return note, None
+
+
+_IDENTITY_FIELDS = ("product", "unique_id", "serial", "firmware_version",
+                    "fpga_version", "core_version")
+
+
+def device_identity_changed(before: dict, after: dict) -> list[str]:
+    """Fields of /v1/info that differ between two observations.
+
+    Every row is stamped with the identity read at startup, so the tool
+    re-reads /v1/info after each reboot and refuses to keep stamping if the
+    box answering is no longer the one the rows name.
+    """
+    return [k for k in _IDENTITY_FIELDS if before.get(k) != after.get(k)]
+
+
+def device_string(info: dict, note: str) -> str:
+    product = info.get("product", "?")
+    serial = info.get("unique_id") or info.get("serial") or "?"
+    fpga = info.get("fpga_version", "?")
+    core = info.get("core_version", "?")
+    return f"{product}/{serial}/fw{note}/fpga{fpga}/core{core}"
+
+
+def acquire_device_lock(lock, wait: bool, lock_timeout: float) -> int:
+    """Take the DeviceLock. -> 0 when held, else the process exit status."""
+    holder = lock.read_info()
+    if holder is not None:
+        print(f"  [lock] currently held: {holder}")
+    acquired = (lock.acquire(timeout=lock_timeout) if wait
+                else lock.acquire(timeout=0.0, progress_window=None))
+    if not acquired:
+        print("FATAL: device lock not acquired"
+              + ("" if wait else " and --wait was not given")
+              + f"; holder {lock.read_info()}")
+        return 2
+    print("  [lock] acquired")
+    return 0
 
 # --------------------------------------------------------------------------- #
 # Memory map (CLAUDE.md "U64 bench architecture")                              #
@@ -1548,6 +1628,99 @@ def self_test() -> int:
     except Exception as e:
         check("trampoline assembles and links", False, f"{type(e).__name__}: {e}")
 
+    # -- issue #172: firmware provenance comes from the device observed ------
+    # /v1/info strings as reported by the two devices this tool has met.
+    u64e = {"product": "Ultimate 64 Elite", "unique_id": "601A96",
+            "firmware_version": "3.15", "fpga_version": "11F",
+            "core_version": "1.4F"}
+    c64u = {"product": "C64 Ultimate", "unique_id": "5D2518",
+            "firmware_version": "1.1.0", "fpga_version": "122",
+            "core_version": "1.49"}
+    for dev_info in (u64e, c64u):
+        rep = dev_info["firmware_version"]
+        note, why = firmware_note_for_row(rep, None)
+        row = device_string(dev_info, note) if note else ""
+        m_ = re.search(r"/fw([0-9.]+)", row)
+        check(f"no --firmware-note: the row's fw is the reported {rep}, not a "
+              f"constant", why is None and m_ is not None
+              and m_.group(1) == rep, f"row {row!r} refusal {why!r}")
+    note, why = firmware_note_for_row("1.1.0", "3.15+patch814")
+    check("an explicit note naming fw 3.15 on a device reporting 1.1.0 is "
+          "REFUSED", note is None and bool(why), f"recorded {note!r}")
+    note, why = firmware_note_for_row("1.1.0", "1.15+x")
+    check("major matches but minor does not (1.15 vs 1.1.0) -> REFUSED",
+          note is None and bool(why), f"recorded {note!r}")
+    note, why = firmware_note_for_row("1.1.0", "1.1.5")
+    check("a note claiming a different patch release (1.1.5 vs 1.1.0) -> "
+          "REFUSED", note is None and bool(why), f"recorded {note!r}")
+    note, why = firmware_note_for_row("3.15", "3.150")
+    check("a note that CONTINUES the reported version (3.150) -> REFUSED",
+          note is None and bool(why), f"recorded {note!r}")
+    check("identity unchanged across a reboot -> no fields",
+          device_identity_changed(u64e, dict(u64e)) == [])
+    check("a different box answering after reboot is detected",
+          device_identity_changed(u64e, c64u) != [])
+    note, why = firmware_note_for_row("3.15", "3.15+patch814")
+    check("an explicit note agreeing with /v1/info is recorded verbatim",
+          note == "3.15+patch814" and why is None, f"{note!r} {why!r}")
+    note, why = firmware_note_for_row("3.14d", "3.14d")
+    check("a lettered build (3.14d) agrees with its own note",
+          note == "3.14d" and why is None, f"{note!r} {why!r}")
+    note, why = firmware_note_for_row("?", "3.15+patch814")
+    check("an explicit note cannot be verified against a missing "
+          "firmware_version -> REFUSED", note is None and bool(why),
+          f"recorded {note!r}")
+    note, why = firmware_note_for_row("3.15", "patched")
+    check("a note that does not lead with a version -> REFUSED",
+          note is None and bool(why), f"recorded {note!r}")
+
+    # The verdict PROSE is a firmware attribution too, emitted beside rows.
+    clean = CellResult("arb", 64, 4, "512 KB", "cpu", "arbiter"); clean.n = 100
+    prose_ = " ".join(arbiter_verdict(clean, fw_label="1.1.0")
+                      + anchoring_verdict(40, 12, 64, 16, 12,
+                                          fw_label="1.1.0"))
+    check("verdict prose names the OBSERVED firmware, never a hardcoded 3.15",
+          "3.15" not in prose_ and "#814" not in prose_ and "1.1.0" in prose_,
+          prose_[:0] + str([s_ for s_ in ("3.15", "#814") if s_ in prose_]))
+
+    # -- issue #172 defect 2: a refused or unavailable lock never exits 0 ----
+    class _Lock:
+        def __init__(self, result):
+            self.result, self.calls = result, []
+
+        def read_info(self):
+            return {"pid": 72223}
+
+        def acquire(self, timeout=None, progress_window=60.0):
+            self.calls.append((timeout, progress_window))
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return self.result
+    _out = sys.stdout
+    try:
+        sys.stdout = open(os.devnull, "w")
+        rc_refused = acquire_device_lock(_Lock(False), False, 1800.0)
+        rc_waited = acquire_device_lock(_Lock(False), True, 5.0)
+        rc_held = acquire_device_lock(_Lock(True), False, 1800.0)
+        try:
+            rc_broken = acquire_device_lock(_Lock(OSError("EACCES")),
+                                            False, 1800.0)
+        except Exception as e:
+            rc_broken = f"raised {type(e).__name__}"
+    finally:
+        sys.stdout.close()
+        sys.stdout = _out
+    check("refused lock (no --wait) -> non-zero exit", rc_refused != 0,
+          f"rc={rc_refused}")
+    check("lock --wait timed out -> non-zero exit", rc_waited != 0,
+          f"rc={rc_waited}")
+    # An exception escaping main() is exit status 1 from the interpreter, so
+    # propagating is an acceptable non-zero outcome; returning 0 is not.
+    check("unavailable lock (acquire raises) -> non-zero exit",
+          rc_broken != 0, f"rc={rc_broken}")
+    check("acquired lock -> 0 (the run proceeds)", rc_held == 0,
+          f"rc={rc_held}")
+
     if os.path.exists(DEFAULT_PRG) and os.path.exists(DEFAULT_LABELS):
         from c64_test_harness.labels import Labels
         labels = Labels.from_file(DEFAULT_LABELS)
@@ -1674,7 +1847,7 @@ def parse_ladder(spec: str) -> list[tuple[str, int]]:
     return out
 
 
-def arbiter_verdict(cell: CellResult) -> list[str]:
+def arbiter_verdict(cell: CellResult, fw_label: str | None = None) -> list[str]:
     """Pre-declared, written before the run — not chosen after it."""
     L = []
     if cell.error or cell.n == 0:
@@ -1699,14 +1872,15 @@ def arbiter_verdict(cell: CellResult) -> list[str]:
         L.append("  STOP TUNING. No library-side adjustment can be justified "
                  "after this result, and any subsequent reproduction is a "
                  "DEVIATION that must be logged as such, not a result.")
-        L.append("  This is NOT 'the fix was unnecessary', and NOT 'the "
-                 "defect is fixed in fw 3.15 + patch #814'. It is an upper "
-                 "bound on a rate at a stated N, on one device, on one day.")
+        L.append(f"  This is NOT 'the fix was unnecessary', and NOT 'the "
+                 f"defect is fixed in fw {fw_label or '<unrecorded>'}'. It is "
+                 f"an upper bound on a rate at a stated N, on one device, on "
+                 f"one day.")
     return L
 
 
 def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy,
-                      settle_was_varied=True):
+                      settle_was_varied=True, fw_label: str | None = None):
     """Emit an anchoring verdict ONLY if a settle was actually varied.
 
     HARD PRECONDITION ON THE CONCLUSION (2026-08-30). On an unmitigated
@@ -1770,8 +1944,9 @@ def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy,
         L.append("  Between the wall-clock (~3x) and cycle (~1x) predictions; "
                  "the ladder is too coarse to separate them. Report as "
                  "neither.")
-    L.append("  Scope: ONE device generation, ONE firmware (3.15 + local "
-             "patch #814), and a floor for the FETCH path only — the stash "
+    L.append(f"  Scope: ONE device generation, ONE firmware (fw "
+             f"{fw_label or '<unrecorded>'}, as observed via /v1/info), and "
+             "a floor for the FETCH path only — the stash "
              "path's floor is a separate number and must not be merged with "
              "it. Fleet experience (c64-lib-contract §13.6) is that the C64 "
              "Ultimate needed materially more settle than the U64 Elite and "
@@ -1860,7 +2035,15 @@ def describe_plan(opts, rows) -> None:
           f"obligation (a) on a later build by history")
     print(f"dma_timeout flag  : sticky by design and not reset by re-init, so "
           f"the host clears it per cell and reports it per cell")
-    print(f"Firmware note     : fw {opts.firmware_note} — on EVERY row")
+    print("Firmware field    : "
+          + (f"fw {opts.firmware_note!r} — on EVERY row, but ONLY if it "
+             f"begins with the version /v1/info reports at startup; "
+             f"otherwise the run refuses (exit 2) before any reboot or write "
+             f"(issue #172)" if opts.firmware_note is not None else
+             f"fw <the version /v1/info reports at startup>"
+             f"{FIRMWARE_UNVERIFIED_SUFFIX} — on EVERY row; never a "
+             f"constant (issue #172). Pass --firmware-note to annotate a "
+             f"locally patched build"))
     print(f"Restore config    : "
           + ("NO (--no-restore)" if opts.no_restore else
              "yes, in a finally block, to the values OBSERVED AT STARTUP (the "
@@ -1942,7 +2125,12 @@ def parse_args(argv):
     p.add_argument("--wait", action="store_true")
     p.add_argument("--lock-timeout", type=float, default=1800.0)
     p.add_argument("--no-restore", action="store_true")
-    p.add_argument("--firmware-note", default=DEFAULT_FIRMWARE_NOTE)
+    p.add_argument("--firmware-note", default=None,
+                   help="annotation recorded as the row's fw field, e.g. "
+                        "'3.15+patch814'. MUST begin with the version "
+                        "/v1/info reports or the run refuses (issue #172). "
+                        "Default: the reported version, marked unverified "
+                        "for patch level")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--verify-builds", action="store_true")
@@ -2011,17 +2199,9 @@ def main(argv=None):
     except Exception as e:
         print(f"  [lock] cleanup_stale: WARN {type(e).__name__}: {e}")
     lock = DeviceLock(host)
-    holder = lock.read_info()
-    if holder is not None:
-        print(f"  [lock] currently held: {holder}")
-    acquired = (lock.acquire(timeout=opts.lock_timeout) if opts.wait
-                else lock.acquire(timeout=0.0, progress_window=None))
-    if not acquired:
-        print("FATAL: device lock not acquired"
-              + ("" if opts.wait else " and --wait was not given")
-              + f"; holder {lock.read_info()}")
-        return 2
-    print("  [lock] acquired")
+    lock_rc = acquire_device_lock(lock, opts.wait, opts.lock_timeout)
+    if lock_rc:
+        return lock_rc
 
     transport = client = snapshot = dev = None
     lines: list[str] = []
@@ -2049,13 +2229,19 @@ def main(argv=None):
         fw = info.get("firmware_version", "?")
         fpga = info.get("fpga_version", "?")
         core = info.get("core_version", "?")
-        devstr = (f"{product}/{serial}/fw{opts.firmware_note}/fpga{fpga}"
-                  f"/core{core}")
+        fw_note, refusal = firmware_note_for_row(fw, opts.firmware_note)
         print(f"\nDevice: {product} serial {serial}")
+        if refusal:
+            # Nothing has been written, rebooted or snapshotted yet.
+            print(f"FATAL: {refusal}")
+            rc = 2
+            return rc
+        devstr = device_string(info, fw_note)
         print(f"        fw {fw} (reported) -> recorded as "
-              f"{opts.firmware_note}; fpga {fpga}, core {core}")
-        print("        /v1/info cannot distinguish stock 3.15 from this "
-              "device's local patch, so the row says so explicitly.")
+              f"{fw_note}; fpga {fpga}, core {core}")
+        print("        /v1/info cannot distinguish a stock build from a "
+              "locally patched one, so the row says what was observed and "
+              "who asserted the rest.")
 
         snapshot = snapshot_state(client)
         print("\nPre-run config OBSERVED AT STARTUP (the restore target — "
@@ -2117,6 +2303,17 @@ def main(argv=None):
               f"Anything else that moves during this run prints a DEVIATION "
               f"line.")
 
+        def boot_and_reconfirm(size_):
+            # Rows carry the identity observed at startup (issue #172); after
+            # every reboot, confirm the box answering is still that one.
+            dev.boot(prg, labels, opts.boot_mhz, reu_size=size_)
+            changed = device_identity_changed(info, client.get_info())
+            if changed:
+                raise SystemExit(
+                    f"ABORT: /v1/info after reboot differs from startup in "
+                    f"{changed}; the rows' device field would no longer name "
+                    f"the device that produced them.")
+
         def emit(line):
             lines.append(line)
             print(line, flush=True)
@@ -2124,7 +2321,7 @@ def main(argv=None):
         for size in opts.reu_sizes:
             print(f"\n{'=' * 78}\n=== REU size {size} ===")
             t_size = time.monotonic()
-            dev.boot(prg, labels, opts.boot_mhz, reu_size=size)
+            boot_and_reconfirm(size)
 
             # ---- LEG 1b: REU presence ---------------------------------
             print("\n  [leg 1] REU presence probe @ 1 MHz")
@@ -2152,7 +2349,7 @@ def main(argv=None):
                 print_cell_detail(arb)
                 emit(arb.line(devstr, m, prg_sha))
                 ran.add(("arbiter", mhz, 4, size))
-                for ln in arbiter_verdict(arb):
+                for ln in arbiter_verdict(arb, fw_label=fw_note):
                     print(ln); prose.append(ln)
                 stage_times.append((f"arbiter/{size}", time.monotonic() - t0))
 
@@ -2266,7 +2463,7 @@ def main(argv=None):
                         ("most_likely_fail", usable[0], short),
                         ("after_clock_change", usable[-1], short),
                         ("clean", usable[0], ("orig", 0))):
-                    dev.boot(prg, labels, opts.boot_mhz, reu_size=size)
+                    boot_and_reconfirm(size)
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
                     c = fetch_cell(dev, mhz, size, rows, opts.n, settle,
                                    f"crosscheck_{tag}_{mhz}MHz",
@@ -2291,7 +2488,8 @@ def main(argv=None):
                                             thresholds.get(usable[-1]),
                                             usable[0], usable[-1],
                                             ladder_min_cy,
-                                            settle_was_varied=dev.mitigated):
+                                            settle_was_varied=dev.mitigated,
+                                            fw_label=fw_note):
                     print(ln); prose.append(f"[{size}] {ln}")
 
         # cells declared but never run, so a reader can tell 0/N from untested
