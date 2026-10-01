@@ -20,15 +20,27 @@ allowlist below:
       entry that is now satisfied within the set also fails (the gap closed --
       update the docs and shrink the allowlist).
 
-  (b) ld65 dummy-link smoke tests. A small table of supported / documented-
-      broken entry points per archive is assembled with ca65 and linked
-      against the built archive. An entry point documented as linkable must
-      link clean; one documented as broken must fail with unresolved symbols
-      that are a subset of the allowlist (never a fresh symbol, never zero).
+  (b) ld65 dummy-link smoke tests. A small table of supported entry points
+      per archive is assembled with ca65 and linked against the built
+      archive; each must link clean. (There used to be a "documented-broken,
+      must fail inside the allowlist" row kind as well. Issues #61/#63 closed
+      the last such gap, every row became expect-clean, and the failure-side
+      branches sat unreachable until issue #167 removed them. A deliberately
+      ABSENT entry point -- e.g. reu_mul_init in the onchip archives -- is
+      pinned by MUST_NOT_EXPORT and by the gated-link leg's `ar65 t` member
+      reconciliation, not here.)
 
-Both directions are violations, which is what makes it a ratchet rather than a
-one-way smoke test: reality drifting looser OR tighter than the documented
-contract exits non-zero, forcing the docs and this table to move together.
+The closure sweep is two-directional, which is what makes it a ratchet rather
+than a one-way smoke test: reality drifting looser OR tighter than the
+documented contract exits non-zero, forcing the docs and this table to move
+together. With every allowlist empty the tighter direction (an allowlisted gap
+closing) has nothing to examine; the leg says so on every run rather than
+printing an OK that reads the same as "checked and fine" (issue #167).
+
+Every leg runs under a crash guard (``run_leg``): an exception in one leg is
+recorded as that leg's failure and the run continues, and the run ends with a
+count of legs that ran against legs that exist. A leg that raises used to
+abort the process and take every later leg with it (issue #167).
 
 Object lists are derived by parsing the Makefile ``ar65 a`` recipe lines
 (the single source of truth for archive composition) rather than hardcoded.
@@ -472,93 +484,100 @@ for _a in MUST_EXPORT:
 MUST_NOT_EXPORT["nistcurves-app-owned.a"] = (
     MUST_NOT_EXPORT["nistcurves-app-owned.a"] | CT_MUL_PROVIDER_SYMS)
 
-# --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
-# expect_link True  -> documented as linkable, must link clean.
-# expect_link False -> documented as broken, must fail with unresolved symbols
-#                      that are a subset of that archive's KNOWN_EXTERNAL set.
+# --- Dummy-link smoke tests: (label, [import symbols]) -----------------------
+# Every row is documented as linkable and must link clean against the archive
+# alone. Rows used to carry an expect_link flag whose False side meant
+# "documented broken, must fail inside KNOWN_EXTERNAL"; after #61/#63 all 36
+# rows were True and the three False-side failure branches were unreachable,
+# which overstated coverage (issue #167). No documented-broken entry point
+# exists to give them a row: the one API.md names -- reu_mul_init being
+# "deliberately unlinkable" from the onchip archives -- is pinned by
+# MUST_NOT_EXPORT, and an archive that grew the member anyway is caught by
+# gated_link_check's `ar65 t` reconciliation before any smoke row could see
+# it. Do not re-add the flag without a row that only it can catch.
 SMOKE = {
     "nistcurves.a": [
-        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
-        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
-        ("packaged ecdsa_verify_with_message_384", ["ecdsa_verify_with_message_384"], True),
+        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"]),
+        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"]),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
+        ("packaged ecdsa_verify_with_message_384", ["ecdsa_verify_with_message_384"]),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
     ],
     "nistcurves-p256-verify.a": [
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
-        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"], True),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
+        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"]),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
     ],
     "nistcurves-p384-verify.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"], True),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+          "fp_mod_inv_384", "fp_mod_mul_384"]),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
     ],
     "nistcurves-p384-sha384.a": [
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
     ],
     "nistcurves-p384-curve.a": [
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"], True),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+          "fp_mod_inv_384", "fp_mod_mul_384"]),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
         ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
-         ["ecdsa_verify_with_message_384"], True),
+         ["ecdsa_verify_with_message_384"]),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
     ],
     "nistcurves-onchip.a": [
-        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
-        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"]),
+        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"]),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
         ("packaged ecdsa_verify_with_message_384",
-         ["ecdsa_verify_with_message_384"], True),
+         ["ecdsa_verify_with_message_384"]),
     ],
     "nistcurves-p256-verify-onchip.a": [
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
-        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"], True),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
+        ("packaged ecdsa_verify_256 (nocomb variant)", ["ecdsa_verify_256"]),
     ],
     "nistcurves-p384-verify-onchip.a": [
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"], True),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+          "fp_mod_inv_384", "fp_mod_mul_384"]),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
     ],
     "nistcurves-p384-curve-onchip.a": [
-        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"]),
         ("variable-base building blocks",
          ["ec_scalar_mul_var_384", "ec_jacobian_to_affine_384",
-          "fp_mod_inv_384", "fp_mod_mul_384"], True),
-        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"], True),
+          "fp_mod_inv_384", "fp_mod_mul_384"]),
+        ("packaged ecdsa_verify_384 (nocomb variant)", ["ecdsa_verify_384"]),
         ("packaged ecdsa_verify_with_message_384 (nocomb variant)",
-         ["ecdsa_verify_with_message_384"], True),
+         ["ecdsa_verify_with_message_384"]),
     ],
     # P-256 comb archives (issue #117): the comb-fast packaged verifier and
     # the fixed-base machinery it needs must both link -- this is the whole
     # point of the target. The DMA arm also carries the §8.2 boot provider.
     "nistcurves-p256-comb.a": [
-        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"], True),
+        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"]),
         ("fixed-base comb machinery",
-         ["ec_scalar_mul", "ec_precompute_256"], True),
+         ["ec_scalar_mul", "ec_precompute_256"]),
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
         ("boot init sequence incl. SPEC 8.2 provider (issue #81)",
-         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"], True),
+         ["sqtab_init", "reu_mul_init", "reu_mul_tables_init"]),
     ],
     "nistcurves-p256-comb-onchip.a": [
-        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"], True),
+        ("packaged ecdsa_verify_256 (comb-fast variant)", ["ecdsa_verify_256"]),
         ("fixed-base comb machinery",
-         ["ec_scalar_mul", "ec_precompute_256"], True),
+         ["ec_scalar_mul", "ec_precompute_256"]),
         ("variable-base building blocks",
-         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
+         ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"]),
     ],
 }
 
@@ -1148,6 +1167,27 @@ ZP_ALIAS_ARMS = {
 }
 
 
+def _zp_arm_ragged(failures, leg, arm):
+    """True (and a recorded, NAMED failure) when `arm` -- taken from
+    ZP_ARM_OBJECTS -- is missing from one of the other two ZP rosters.
+
+    The legs that walk ZP_ARM_OBJECTS index the other two by the same key.
+    A ragged roster used to raise KeyError there, which aborted the whole run
+    ~15 legs before zp_roster_reconciliation_check could name the defect and
+    swallowed every leg after it (issue #167). The arm is now reported as
+    unaudited by this leg and skipped, the run continues, and the
+    reconciliation leg still reports the raggedness in its own words."""
+    absent = [r for r, d in (("ZP_ALIAS_ARMS", ZP_ALIAS_ARMS),
+                             ("ZP_ARM_DEFINES", ZP_ARM_DEFINES)) if arm not in d]
+    if not absent:
+        return False
+    failures.append(f"{leg} {arm}: arm missing from {absent} -- ragged ZP "
+                    "roster, this arm is unaudited by this leg")
+    print(f"  ROSTER FAIL {arm}: not in {', '.join(absent)}; "
+          "arm skipped by this leg (see ZP roster reconciliation)")
+    return True
+
+
 def od65_zp_exports(obj):
     """name -> address for zeropage-sized exports of one object.
     Sentinel: od65 exits 0 on non-objects, so an unreadable input must fail
@@ -1245,6 +1285,8 @@ def zp_alias_audit(failures):
     print("\n=== R2 ZP audit: exported union vs equate + alias accounting ===")
     alias_seen = set()
     for arm, archives in ZP_ARM_OBJECTS.items():
+        if _zp_arm_ragged(failures, "zp-audit", arm):
+            continue
         alias_obj, want_bare = ZP_ALIAS_ARMS[arm]
         exports = od65_zp_exports(BUILD / (arm + ".o"))
         if exports is None:
@@ -1451,6 +1493,8 @@ def zp_alias_link_identity(failures):
     import tempfile
     print("\n=== §6.1 bare-alias link identity (issue #154) ===")
     for arm, archives in ZP_ARM_OBJECTS.items():
+        if _zp_arm_ragged(failures, "zp-alias link", arm):
+            continue
         _, want_bare = ZP_ALIAS_ARMS[arm]
         for name in archives:
             archive = LIBDIR / name
@@ -2566,8 +2610,10 @@ def zp_roster_reconciliation_check(failures):
     ZP_ARM_OBJECTS, ZP_ARM_DEFINES and ZP_ALIAS_ARMS are each iterated over
     themselves, and nothing cross-checks them against the archives that
     actually exist. Adding a variant to the Makefile and to none of them leaves
-    every ZP leg quietly not covering it: the half-updated case raises
-    KeyError, the not-updated-at-all case says nothing.
+    every ZP leg quietly not covering it: the half-updated case used to raise
+    KeyError in zp_alias_audit and abort the run before reaching this leg (it
+    is now a named per-leg failure, issue #167, and this leg still runs), the
+    not-updated-at-all case says nothing.
 
     Same mechanism as BARE_GATED, which listed none of the 18 bare
     LIB_PRECALC_* names the §8.4 macro emits and so reported "0 bare names" for
@@ -3434,11 +3480,169 @@ def _zp_override_probe(failures, arm, alias_obj):
               f"both link at ${want:02x}")
 
 
-def main():
-    archives = parse_makefile_archives()
-    failures = []
+def run_leg(failures, label, fn, *args):
+    """Run one leg. An exception is that leg's FAILURE, not the run's end.
 
-    # (c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting.
+    Returns True when the leg ran to completion (whatever it concluded),
+    False when it raised. Only Exception is caught: KeyboardInterrupt and
+    SystemExit still stop the run, as an operator would expect."""
+    try:
+        fn(*args)
+        return True
+    except Exception as exc:          # noqa: BLE001 -- that is the point
+        import traceback
+        failures.append(f"leg '{label}' CRASHED ({type(exc).__name__}: {exc}) "
+                        "-- it reported nothing; later legs still ran")
+        print(f"  LEG CRASH [{label}]: {type(exc).__name__}: {exc}")
+        for ln in traceback.format_exc().rstrip().splitlines():
+            print(f"    {ln}")
+        return False
+
+
+def archive_contract_check(failures, archives, name):
+    """Per-archive legs: (a) closure, (a2) provider pins, (a3) manifest
+    values, (a4) footprint measurement, (b) dummy-link smoke rows."""
+    allow = KNOWN_EXTERNAL[name]
+    archive_path = LIBDIR / name
+    print(f"=== {name} ===")
+    if name not in archives:
+        failures.append(f"{name}: not found in Makefile ar65 recipes")
+        print("  MAKEFILE: no ar65 recipe parsed for this archive")
+        return
+    if not archive_path.exists():
+        failures.append(f"{name}: archive not built ({archive_path})")
+        print(f"  MISSING: {archive_path} -- run `make {name.replace('.a','').replace('nistcurves','lib').replace('lib-','lib-')}` first")
+        return
+
+    # (a) closure sweep over the object set.
+    mods = archives[name]
+    imports, exports = set(), set()
+    for mod in mods:
+        o = BUILD / (mod + ".o")
+        imports |= od65_names(o, "--dump-imports")
+        exports |= od65_names(o, "--dump-exports")
+    unresolved = imports - exports
+    unexpected = sorted(unresolved - allow)
+    stale = sorted(allow - unresolved)
+    if unexpected:
+        failures.append(f"{name}: unexpected unresolved externals {unexpected}")
+        print(f"  CLOSURE FAIL: new unresolved (not on allowlist): {unexpected}")
+    if stale:
+        failures.append(f"{name}: allowlisted externals now resolved {stale} -- shrink allowlist + update docs")
+        print(f"  CLOSURE FAIL: allowlist entries now resolved: {stale}")
+    if not unexpected and not stale:
+        if allow:
+            print(f"  closure OK: documented gaps = {sorted(allow)} "
+                  "(both directions examined)")
+        else:
+            # Issue #167: with an empty allowlist `stale` is empty by
+            # construction, so the shrink direction examined nothing. Say so,
+            # rather than print an OK that reads like "checked and fine". The
+            # direction is live the moment an entry exists: allowlisting a
+            # resolved name (e.g. fp_mul on nistcurves.a) prints
+            # "CLOSURE FAIL: allowlist entries now resolved: ['fp_mul']".
+            print(f"  closure OK: 0 unexpected of {len(unresolved)} unresolved; "
+                  "allowlist empty (shrink-direction dormant)")
+
+    # (a2) SPEC §8.2 provider presence/absence pins (issue #81).
+    missing = sorted(MUST_EXPORT.get(name, set()) - exports)
+    leaked = sorted(MUST_NOT_EXPORT.get(name, set()) & exports)
+    if missing:
+        failures.append(f"{name}: required exports missing {missing}")
+        print(f"  EXPORT FAIL: required symbols not exported: {missing}")
+    if leaked:
+        failures.append(f"{name}: forbidden exports present {leaked}")
+        print(f"  EXPORT FAIL: symbols must not ship in this archive: {leaked}")
+    if not missing and not leaked:
+        print("  provider pins OK (reu_mul_init presence/absence matches contract)")
+
+    # (a3) manifest VALUE pins. Symbol presence alone cannot catch a
+    # regression that ships the right equate carrying the wrong number --
+    # exactly how issue #88 slipped in, where the sha384 archive exported
+    # a well-formed manifest describing a different library.
+    obj_paths = [BUILD / (m + ".o") for m in mods]
+    for sym, want in sorted(MANIFEST_VALUES.get(name, {}).items()):
+        got = od65_value(obj_paths, sym)
+        if got is None:
+            failures.append(f"{name}: manifest equate {sym} not found")
+            print(f"  VALUE FAIL: {sym} not exported")
+        elif got != want:
+            failures.append(f"{name}: {sym} = {got}, contract says {want}")
+            print(f"  VALUE FAIL: {sym} = {got}, expected {want}")
+    if MANIFEST_VALUES.get(name):
+        print("  manifest value pins OK (§5 equates match the pinned table)")
+
+    # (a4) §5 footprint MEASUREMENT (issue #142). The pins above compare
+    # the manifest against MANIFEST_VALUES -- a hard-coded copy of the same
+    # numbers in this file. Both sides are the table, so the leg reports
+    # agreement while checking nothing about the archive, and a figure that
+    # has drifted from the bytes it describes passes. That is the shape
+    # that left 43 of 45 §5 values wrong before issue #90, sitting inside
+    # the gate that exists to prevent a recurrence.
+    #
+    # This measures instead, and checks the one property §5 states
+    # normatively: "Footprint equates MUST be safe-direction: round up,
+    # never down", with RESIDENT and COLD a pair a consumer budgets
+    # together. So the invariant is
+    #
+    #     RESIDENT_BYTES + COLD_BYTES  >=  measured code+rodata
+    #
+    # An understating figure makes a consumer's §5 fit check pass while the
+    # library overruns their region, which is the direction that corrupts.
+    measured, unknown = measured_code_rodata(mods)
+    if unknown:
+        # A new segment must not silently escape the accounting: whoever
+        # adds one decides whether it is footprint, here, on purpose.
+        failures.append(f"{name}: unclassified segment(s) {sorted(unknown)} "
+                        f"-- add them to FOOTPRINT_SEGMENTS or the exclusions")
+        print(f"  FOOTPRINT FAIL: unclassified segment(s) {sorted(unknown)}")
+    else:
+        declared = 0
+        have_both = True
+        for sym in ("LIB_NISTCURVES_RESIDENT_BYTES", "LIB_NISTCURVES_COLD_BYTES"):
+            v = od65_value(obj_paths, sym)
+            if v is None:
+                have_both = False
+            else:
+                declared += v
+        if not have_both:
+            failures.append(f"{name}: §5 footprint equates missing")
+            print("  FOOTPRINT FAIL: RESIDENT/COLD not both exported")
+        resident = od65_value(obj_paths, "LIB_NISTCURVES_RESIDENT_BYTES")
+        cold = od65_value(obj_paths, "LIB_NISTCURVES_COLD_BYTES")
+        if resident is not None and cold is not None and resident < measured - cold:
+            # RESIDENT alone is what a consumer sizing a resident-only
+            # region binds to; pinning only the sum leaves it unchecked.
+            failures.append(
+                f"{name}: §5 RESIDENT_BYTES understates -- {resident} declared, "
+                f"but measured {measured} minus COLD {cold} needs {measured - cold}")
+            print(f"  FOOTPRINT FAIL: RESIDENT {resident} < measured-minus-COLD {measured - cold}")
+        elif declared < measured:
+            failures.append(
+                f"{name}: §5 footprint understates -- RESIDENT+COLD = {declared} "
+                f"but the archive's code+rodata measures {measured} "
+                f"(short by {measured - declared}; §5 requires safe-direction)")
+            print(f"  FOOTPRINT FAIL: declared {declared} < measured {measured}")
+        else:
+            slack = declared - measured
+            pct = (slack / measured * 100) if measured else 0.0
+            print(f"  footprint OK (RESIDENT+COLD {declared} >= measured "
+                  f"{measured}, +{slack} B / {pct:.1f}%)")
+
+    # (b) dummy-link smoke tests -- every row must link clean (issue #167
+    # removed the unreachable documented-broken branches; see SMOKE).
+    for label, imps in SMOKE.get(name, []):
+        ok, unres, raw = link_test(archive_path, imps)
+        if ok:
+            print(f"  link OK   [{label}]")
+        else:
+            failures.append(f"{name}: '{label}' should link but failed: {sorted(unres)}")
+            print(f"  LINK FAIL [{label}] expected clean, got unresolved {sorted(unres)}")
+    print()
+
+
+def cfg_placement_check(failures):
+    """(c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting."""
     m, offenders = cfg_bss_before_emitting()
     print("\n=== src/c64.cfg placement ===")
     if m is None:
@@ -3452,167 +3656,52 @@ def main():
     else:
         print("  placement OK (no bss segment precedes a file-emitting one)")
 
-    version_identity_check(failures)
-    zp_alias_audit(failures)
-    zp_alias_link_identity(failures)
-    gated_surface_check(failures, archives)
-    app_owned_reachability_check(failures)
-    packaging_check(failures, archives)
-    gated_link_check(failures, archives)
 
-    for name in sorted(KNOWN_EXTERNAL):
-        allow = KNOWN_EXTERNAL[name]
-        archive_path = LIBDIR / name
-        print(f"=== {name} ===")
-        if name not in archives:
-            failures.append(f"{name}: not found in Makefile ar65 recipes")
-            print("  MAKEFILE: no ar65 recipe parsed for this archive")
-            continue
-        if not archive_path.exists():
-            failures.append(f"{name}: archive not built ({archive_path})")
-            print(f"  MISSING: {archive_path} -- run `make {name.replace('.a','').replace('nistcurves','lib').replace('lib-','lib-')}` first")
-            continue
+def main():
+    archives = parse_makefile_archives()
+    failures = []
 
-        # (a) closure sweep over the object set.
-        mods = archives[name]
-        imports, exports = set(), set()
-        for mod in mods:
-            o = BUILD / (mod + ".o")
-            imports |= od65_names(o, "--dump-imports")
-            exports |= od65_names(o, "--dump-exports")
-        unresolved = imports - exports
-        unexpected = sorted(unresolved - allow)
-        stale = sorted(allow - unresolved)
-        if unexpected:
-            failures.append(f"{name}: unexpected unresolved externals {unexpected}")
-            print(f"  CLOSURE FAIL: new unresolved (not on allowlist): {unexpected}")
-        if stale:
-            failures.append(f"{name}: allowlisted externals now resolved {stale} -- shrink allowlist + update docs")
-            print(f"  CLOSURE FAIL: allowlist entries now resolved: {stale}")
-        if not unexpected and not stale:
-            gap = sorted(allow) if allow else "(none)"
-            print(f"  closure OK: documented gaps = {gap}")
-
-        # (a2) SPEC §8.2 provider presence/absence pins (issue #81).
-        missing = sorted(MUST_EXPORT.get(name, set()) - exports)
-        leaked = sorted(MUST_NOT_EXPORT.get(name, set()) & exports)
-        if missing:
-            failures.append(f"{name}: required exports missing {missing}")
-            print(f"  EXPORT FAIL: required symbols not exported: {missing}")
-        if leaked:
-            failures.append(f"{name}: forbidden exports present {leaked}")
-            print(f"  EXPORT FAIL: symbols must not ship in this archive: {leaked}")
-        if not missing and not leaked:
-            print("  provider pins OK (reu_mul_init presence/absence matches contract)")
-
-        # (a3) manifest VALUE pins. Symbol presence alone cannot catch a
-        # regression that ships the right equate carrying the wrong number --
-        # exactly how issue #88 slipped in, where the sha384 archive exported
-        # a well-formed manifest describing a different library.
-        obj_paths = [BUILD / (m + ".o") for m in mods]
-        for sym, want in sorted(MANIFEST_VALUES.get(name, {}).items()):
-            got = od65_value(obj_paths, sym)
-            if got is None:
-                failures.append(f"{name}: manifest equate {sym} not found")
-                print(f"  VALUE FAIL: {sym} not exported")
-            elif got != want:
-                failures.append(f"{name}: {sym} = {got}, contract says {want}")
-                print(f"  VALUE FAIL: {sym} = {got}, expected {want}")
-        if MANIFEST_VALUES.get(name):
-            print("  manifest value pins OK (§5 equates match the pinned table)")
-
-        # (a4) §5 footprint MEASUREMENT (issue #142). The pins above compare
-        # the manifest against MANIFEST_VALUES -- a hard-coded copy of the same
-        # numbers in this file. Both sides are the table, so the leg reports
-        # agreement while checking nothing about the archive, and a figure that
-        # has drifted from the bytes it describes passes. That is the shape
-        # that left 43 of 45 §5 values wrong before issue #90, sitting inside
-        # the gate that exists to prevent a recurrence.
-        #
-        # This measures instead, and checks the one property §5 states
-        # normatively: "Footprint equates MUST be safe-direction: round up,
-        # never down", with RESIDENT and COLD a pair a consumer budgets
-        # together. So the invariant is
-        #
-        #     RESIDENT_BYTES + COLD_BYTES  >=  measured code+rodata
-        #
-        # An understating figure makes a consumer's §5 fit check pass while the
-        # library overruns their region, which is the direction that corrupts.
-        measured, unknown = measured_code_rodata(mods)
-        if unknown:
-            # A new segment must not silently escape the accounting: whoever
-            # adds one decides whether it is footprint, here, on purpose.
-            failures.append(f"{name}: unclassified segment(s) {sorted(unknown)} "
-                            f"-- add them to FOOTPRINT_SEGMENTS or the exclusions")
-            print(f"  FOOTPRINT FAIL: unclassified segment(s) {sorted(unknown)}")
+    # Every leg runs under run_leg(): a leg that raises is recorded as that
+    # leg's failure and the run moves on (issue #167 -- a KeyError in
+    # zp_alias_audit used to abort the process ~15 legs early, so the operator
+    # saw a traceback instead of the named defect and nothing after it ran).
+    legs = [
+        ("c64.cfg placement", cfg_placement_check, (failures,)),
+        ("§1 version identity", version_identity_check, (failures,)),
+        ("R2 ZP audit", zp_alias_audit, (failures,)),
+        ("§6.1 bare-alias link identity", zp_alias_link_identity, (failures,)),
+        ("gated surface", gated_surface_check, (failures, archives)),
+        ("APP_OWNED reachability", app_owned_reachability_check, (failures,)),
+        ("§6.1 packaging + §3 header", packaging_check, (failures, archives)),
+        ("§6.5 gated link", gated_link_check, (failures, archives)),
+    ]
+    legs += [(f"archive contract [{name}]", archive_contract_check,
+              (failures, archives, name)) for name in sorted(KNOWN_EXTERNAL)]
+    legs += [
+        ("GATE_TUS derivation", gate_tus_derivation_check, (failures,)),
+        ("ZP roster reconciliation", zp_roster_reconciliation_check, (failures,)),
+        ("§5 footprint basis", footprint_basis_check, (failures,)),
+        ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
+        ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
+        ("od65 extraction canary", od65_extraction_canary, (failures,)),
+        ("APP_OWNED buffer ownership", app_owned_buffer_ownership_check, (failures,)),
+        # Runs last by design: its knob-change legs wipe build/*.o via the
+        # Makefile stamp, and the final default-build leg restores only the
+        # object it exercises.
+        ("knob staleness + §6.2 ZP override", defines_staleness_check, (failures,)),
+    ]
+    ran, crashed = 0, []
+    for label, fn, args in legs:
+        if run_leg(failures, label, fn, *args):
+            ran += 1
         else:
-            declared = 0
-            have_both = True
-            for sym in ("LIB_NISTCURVES_RESIDENT_BYTES", "LIB_NISTCURVES_COLD_BYTES"):
-                v = od65_value(obj_paths, sym)
-                if v is None:
-                    have_both = False
-                else:
-                    declared += v
-            if not have_both:
-                failures.append(f"{name}: §5 footprint equates missing")
-                print("  FOOTPRINT FAIL: RESIDENT/COLD not both exported")
-            resident = od65_value(obj_paths, "LIB_NISTCURVES_RESIDENT_BYTES")
-            cold = od65_value(obj_paths, "LIB_NISTCURVES_COLD_BYTES")
-            if resident is not None and cold is not None and resident < measured - cold:
-                # RESIDENT alone is what a consumer sizing a resident-only
-                # region binds to; pinning only the sum leaves it unchecked.
-                failures.append(
-                    f"{name}: §5 RESIDENT_BYTES understates -- {resident} declared, "
-                    f"but measured {measured} minus COLD {cold} needs {measured - cold}")
-                print(f"  FOOTPRINT FAIL: RESIDENT {resident} < measured-minus-COLD {measured - cold}")
-            elif declared < measured:
-                failures.append(
-                    f"{name}: §5 footprint understates -- RESIDENT+COLD = {declared} "
-                    f"but the archive's code+rodata measures {measured} "
-                    f"(short by {measured - declared}; §5 requires safe-direction)")
-                print(f"  FOOTPRINT FAIL: declared {declared} < measured {measured}")
-            else:
-                slack = declared - measured
-                pct = (slack / measured * 100) if measured else 0.0
-                print(f"  footprint OK (RESIDENT+COLD {declared} >= measured "
-                      f"{measured}, +{slack} B / {pct:.1f}%)")
-
-        # (b) dummy-link smoke tests.
-        for label, imps, expect_link in SMOKE.get(name, []):
-            ok, unres, raw = link_test(archive_path, imps)
-            if expect_link:
-                if ok:
-                    print(f"  link OK   [{label}]")
-                else:
-                    failures.append(f"{name}: '{label}' should link but failed: {sorted(unres)}")
-                    print(f"  LINK FAIL [{label}] expected clean, got unresolved {sorted(unres)}")
-            else:
-                if ok:
-                    failures.append(f"{name}: '{label}' should FAIL to link (documented gap) but linked clean -- update docs")
-                    print(f"  LINK FAIL [{label}] expected documented-broken, but it linked")
-                elif not unres:
-                    failures.append(f"{name}: '{label}' failed for a non-symbol reason:\n{raw}")
-                    print(f"  LINK FAIL [{label}] failed but not on unresolved symbols")
-                elif not unres <= allow:
-                    extra = sorted(unres - allow)
-                    failures.append(f"{name}: '{label}' unresolved beyond allowlist: {extra}")
-                    print(f"  LINK FAIL [{label}] unresolved beyond allowlist: {extra}")
-                else:
-                    print(f"  link gap OK [{label}] unresolved (documented): {sorted(unres)}")
-        print()
-
-    # Runs last by design: its knob-change legs wipe build/*.o via the
-    # Makefile stamp, and the final default-build leg restores only the
-    # object it exercises.
-    gate_tus_derivation_check(failures)
-    zp_roster_reconciliation_check(failures)
-    footprint_basis_check(failures)
-    sibling_bare_collision_check(failures)
-    sibling_sqtab_collision_check(failures)
-    od65_extraction_canary(failures)
-    app_owned_buffer_ownership_check(failures)
-    defines_staleness_check(failures)
+            crashed.append(label)
+    print(f"\nlegs: {ran} of {len(legs)} ran to completion"
+          + (f"; CRASHED: {crashed}" if crashed else "")
+          + f" ({len(KNOWN_EXTERNAL)} of them per-archive)")
+    if ran != len(legs):
+        failures.append(f"only {ran} of {len(legs)} guarded legs ran to "
+                        f"completion; crashed: {crashed}")
 
     if failures:
         print("ARCHIVE CONTRACT RATCHET: FAIL")
