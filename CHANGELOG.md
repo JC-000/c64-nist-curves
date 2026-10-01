@@ -253,6 +253,24 @@ update it (see Removed below).
 
 ### Added
 
+- **`LIB_NISTCURVES_SHARED_SQTAB_BASE`, a prefixed §8.1 output, plus a
+  header pin against it.** It is exported from `src/mul_8x8.s` in every arm
+  that carries code reading the quarter-square table: `sqtab_init`, the §8.3
+  body, or the onchip row generator. That is every field archive except the
+  fully-deferring `nistcurves-app-owned.a`. It replaces the one thing the
+  removed bare `sqtab_lo` gave a consumer: a way to learn where the archive's
+  code reads the table. Without it, a consumer deriving `sqtab_lo` from
+  `-D LIB_SHARED_SQTAB_BASE=0xA000` linked clean against a `$9C00` archive,
+  so its table and the library's reads sat on different pages (review
+  finding, demonstrated). `src/nistcurves.inc` now asserts the consumer's
+  `LIB_SHARED_SQTAB_BASE`, when it is defined before the header is read,
+  against the export with `lderror`:
+  `LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive`.
+  The new name carries the prefix and §8.1 forbids only the unprefixed
+  names, so this follows the §8.2 `LIB_NISTCURVES_SHARED_REU_MUL_*` precedent
+  (SPEC.md:389). **Additive, so `LIB_NISTCURVES_ABI_VERSION` does not move
+  again**; it is 5 for the removal above. An equate adds no segment bytes:
+  every PRG and every measured §5 footprint is unchanged.
 - **`make lib*` now ships `build/lib/sqtab_base.inc`** beside
   `nistcurves.inc`. It is the library's single `.ifndef`-guarded default for
   `LIB_SHARED_SQTAB_BASE`, byte-identical to `src/sqtab_base.inc`. With the

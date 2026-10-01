@@ -269,6 +269,14 @@ REU_OUTPUT_SYMS = {
     "LIB_NISTCURVES_SHARED_REU_MUL_BANKS_USED",
 }
 
+# §8.1 prefixed OUTPUT (v0.16.0): the sqtab base the archive's code reads.
+# §8.1 forbids exporting LIB_SHARED_SQTAB_BASE and sqtab_lo/_hi; the prefixed
+# counterpart is how a consumer verifies its own derivation agrees (the §8.2
+# LIB_NISTCURVES_SHARED_REU_MUL_* precedent, SPEC.md:389). Exported wherever
+# mul_8x8.s carries code that reads the table -- every field archive but the
+# fully-deferring app-owned one -- and nowhere else.
+SQTAB_OUTPUT_SYMS = {"LIB_NISTCURVES_SHARED_SQTAB_BASE"}
+
 REU_PLACEMENT_SYMS = {
     "LIB_SHARED_REU_MUL_BANK",
     "LIB_SHARED_REU_MUL_OFFSET",
@@ -532,6 +540,16 @@ for _a in MUST_EXPORT:
         MUST_EXPORT[_a] = MUST_EXPORT[_a] | CT_MUL_PROVIDER_SYMS
 MUST_NOT_EXPORT["nistcurves-app-owned.a"] = (
     MUST_NOT_EXPORT["nistcurves-app-owned.a"] | CT_MUL_PROVIDER_SYMS)
+
+# §8.1 sqtab-base output: both directions, same split as the §8.3 surface --
+# the sha384 archive has no mul_8x8 member, and the app-owned arm's mul_8x8
+# reads no table (every reader is deferred), so publishing a base there would
+# be a number no code in the archive reads.
+for _a in MUST_EXPORT:
+    if _a in ("nistcurves-p384-sha384.a", "nistcurves-app-owned.a"):
+        MUST_NOT_EXPORT[_a] = MUST_NOT_EXPORT[_a] | SQTAB_OUTPUT_SYMS
+    else:
+        MUST_EXPORT[_a] = MUST_EXPORT[_a] | SQTAB_OUTPUT_SYMS
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
 # expect_link True  -> documented as linkable, must link clean.
@@ -2059,6 +2077,7 @@ HEADER_ARCHIVE_SWITCHES = {
 HEADER_BARE_SYMS = [
     "LIB_NISTCURVES_ABI_VERSION",                # src/lib_version.s:71
     "LIB_NISTCURVES_SHARED_REU_MUL_BANK",        # src/reu_config.s:205
+    "LIB_NISTCURVES_SHARED_SQTAB_BASE",          # src/mul_8x8.s (v0.16.0)
     "LIB_NISTCURVES_PRECALC_sqtab_SIZE",         # src/precalc_table.inc:86
     "LIB_NISTCURVES_SHA384_UPDATE_MAX",          # src/lib_manifest.s (a fact,
                                                  # not a knob -- see there)
@@ -2549,6 +2568,54 @@ def packaging_check(failures, archives):
                 print(f"  GUARD FAIL [{sym}]: link failed for some other reason:\n{lout.strip()}")
                 continue
             print(f"  guard OK [{sym}] = {real}: matching -D links, {wrong} trips the .else assert")
+
+        # (4b) §8.1 consumer-base pin (v0.16.0). A consumer derives
+        # sqtab_lo/_hi itself from LIB_SHARED_SQTAB_BASE (§8.1 forbids the
+        # library exporting either), so the one silent failure left is a
+        # consumer whose base disagrees with the archive's: its table and the
+        # library's reads land on different pages, and the link is clean. The
+        # header must turn that into an lderror against the archive's
+        # LIB_NISTCURVES_SHARED_SQTAB_BASE. Driven with -D, which is how both
+        # a CONTRACT_DEFINES-style build and an earlier
+        # `.include "sqtab_base.inc"` present it to the header. The matching
+        # value is the default parsed from src/sqtab_base.inc, which the
+        # default-built archive under test was assembled with; it is NOT read
+        # back from the archive, so a missing export cannot make the row pass.
+        if mdef:
+            real = int(mdef.group(1), 16)
+            wrong = real ^ 0x0100          # still page-aligned, so §8.1-valid
+            arc, aout, lrc, lout, perr = _header_link(
+                td, LIBDIR, src_cfg, archive,
+                ["-D", f"LIB_SHARED_SQTAB_BASE={real}"])
+            note_examined(1, "sqtab base pin row")
+            if perr or arc != 0 or lrc != 0:
+                failures.append(f"header: a consumer at the archive's own sqtab "
+                                f"base ${real:04X} does not link: "
+                                f"{(perr or aout or lout).strip()[:300]}")
+                print(f"  SQTAB PIN FAIL: matching base ${real:04X} rejected")
+            else:
+                arc, aout, lrc, lout, perr = _header_link(
+                    td, LIBDIR, src_cfg, archive,
+                    ["-D", f"LIB_SHARED_SQTAB_BASE={wrong}"])
+                note_examined(1, "sqtab base pin row")
+                if perr or arc != 0:
+                    failures.append(f"header: sqtab base ${wrong:04X} consumer "
+                                    f"does not assemble: {(perr or aout).strip()[:300]}")
+                    print(f"  SQTAB PIN FAIL: wrong-base row did not assemble")
+                elif lrc == 0:
+                    failures.append(
+                        f"header: a consumer deriving sqtab at ${wrong:04X} "
+                        f"links clean against an archive built at ${real:04X} "
+                        "-- its table and the library's reads are on different "
+                        "pages and nothing says so (§8.1 base pin missing)")
+                    print(f"  SQTAB PIN FAIL: ${wrong:04X} vs ${real:04X} linked clean")
+                elif "sqtab base disagrees" not in lout:
+                    failures.append(f"header: sqtab base ${wrong:04X} failed to "
+                                    f"link, but not on the base pin: {lout.strip()[:300]}")
+                    print(f"  SQTAB PIN FAIL: link failed for another reason")
+                else:
+                    print(f"  sqtab pin OK: consumer base ${real:04X} links, "
+                          f"${wrong:04X} trips the lderror")
 
         # (5) Bare-import symbols: their defining TU assigns unconditionally,
         # so §3 says the -D must collide loudly rather than be absorbed.

@@ -74,6 +74,26 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 ; make check-archives (forbidden_export_check) fails any archive member or
 ; source arm, gated or not, that exports either name.
 ; Do not add an .export of either name, here or anywhere.
+;
+; What IS exported (v0.16.0) is the prefixed OUTPUT counterpart: the base this
+; TU's code actually reads. That replaces the one thing the bare export gave a
+; consumer, which was a way to learn where the archive put the table. Without
+; it, a consumer deriving its own sqtab_lo from a different
+; LIB_SHARED_SQTAB_BASE linked clean while its table and the library's reads
+; were on different pages. src/nistcurves.inc asserts the consumer's base
+; against it. Prefixed, so it collides with nothing. It is the §8.2 precedent
+; (LIB_NISTCURVES_SHARED_REU_MUL_*, SPEC.md:389); §8.1 forbids only the
+; unprefixed names. Exported exactly where code here reads the table:
+;   - the sqtab_init body       (.ifndef SHARED_SQTAB_INIT)
+;   - the ct_mul_8x8 body       (.ifndef SHARED_CT_MUL_8X8)
+;   - og_common                 (.ifdef FP_ONCHIP_MUL)
+; The fully-deferring app-owned arm has none of the three, so it publishes no
+; base, rather than a number nothing in the archive reads. An equate adds no
+; segment bytes, so no image or §5 figure moves.
+.if (.not .defined(SHARED_SQTAB_INIT)) .or (.not .defined(SHARED_CT_MUL_8X8)) .or .defined(FP_ONCHIP_MUL)
+LIB_NISTCURVES_SHARED_SQTAB_BASE = LIB_SHARED_SQTAB_BASE
+.export LIB_NISTCURVES_SHARED_SQTAB_BASE: abs
+.endif
 
 ; =============================================================================
 ; sqtab_init - Build quarter-square lookup table at sqtab_lo / sqtab_hi

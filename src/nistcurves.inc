@@ -85,12 +85,16 @@
 ;   importable at all: §8.1 says they MUST NOT be exported, and no archive
 ;   does. Derive them in your own TU from the shipped default, which `make
 ;   lib` copies beside this header as build/lib/sqtab_base.inc:
-;       .include "sqtab_base.inc"       ; LIB_SHARED_SQTAB_BASE, .ifndef-guarded
+;       .include "sqtab_base.inc"       ; FIRST: LIB_SHARED_SQTAB_BASE, .ifndef-guarded
+;       .include "nistcurves.inc"       ; then this header, which pins the base
 ;       sqtab_lo = LIB_SHARED_SQTAB_BASE
 ;       sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200
 ;   If you relocate the table, pass the SAME `-D LIB_SHARED_SQTAB_BASE=0x..`
-;   to your own ca65 as to the library's CONTRACT_DEFINES: nothing at link
-;   time compares the two, because the library exports no sqtab address.
+;   to your own ca65 as to the library's CONTRACT_DEFINES. This header then
+;   asserts your base against the archive's prefixed output
+;   LIB_NISTCURVES_SHARED_SQTAB_BASE at link (see §8.1 below), but only if
+;   LIB_SHARED_SQTAB_BASE is defined BEFORE this header is read: `-D`, or
+;   include sqtab_base.inc first, as above.
 ; * The `LIB_SHARED_*` placement knobs (§8.1 / §8.2). Those are consumer
 ;   input, deliberately unexported by every adopter — two exporters of an
 ;   unprefixed name collide in a composed link. What you read back instead
@@ -521,6 +525,27 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .ifndef SHARED_SQTAB_INIT
 .import mul_tables_init          ; §8.1 canonical entry
 .import sqtab_init               ; historical nist-curves alias, same address
+.endif
+
+; §8.1 prefixed OUTPUT: the sqtab base this archive's code reads (v0.16.0).
+; BARE import: src/mul_8x8.s assigns it unconditionally from
+; LIB_SHARED_SQTAB_BASE, so it is derived, not a knob, and a `-D` of it must
+; collide. Gated exactly as mul_8x8.s gates the export, i.e. present wherever
+; the archive carries a table reader (sqtab_init, the §8.3 body, or the onchip
+; row generator); absent only in the fully-deferring app-owned archive.
+.if (.not .defined(SHARED_SQTAB_INIT)) .or (.not .defined(SHARED_CT_MUL_8X8)) .or .defined(FP_ONCHIP_MUL)
+.import LIB_NISTCURVES_SHARED_SQTAB_BASE
+; Base pin. LIB_SHARED_SQTAB_BASE is consumer INPUT that §8.1 forbids the
+; library to export, so there is nothing to `.ifndef`-guard; what can be
+; checked is agreement, the same shape as the §8.2 knob cross-checks below. If
+; your TU derives sqtab_lo/_hi from a base the archive was not built with,
+; your table and the library's reads land on different pages and the link is
+; otherwise clean. Active only if LIB_SHARED_SQTAB_BASE is already defined when
+; this header is read: pass it with -D, or `.include "sqtab_base.inc"` BEFORE
+; this header.
+.ifdef LIB_SHARED_SQTAB_BASE
+.assert LIB_SHARED_SQTAB_BASE = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive: pass the same -D to CONTRACT_DEFINES and your own build"
+.endif
 .endif
 
 ; --- §8.2 REU multiply table -------------------------------------------------

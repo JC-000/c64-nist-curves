@@ -1310,6 +1310,22 @@ ca65 -D LIB_SHARED_SQTAB_BASE=0x8800   # any page-aligned address; 0x9c00 is the
 Page-aligned + `sqtab_hi = sqtab_lo + $0200` are
 enforced by `.assert` in `src/mul_8x8.s`.
 
+The library exports neither `sqtab_lo` nor `sqtab_hi` (SPEC §8.1 forbids it;
+removed at v0.16.0). Derive them in your own TU from
+`build/lib/sqtab_base.inc`, which `make lib` ships. To check that your base
+matches the archive's, import the prefixed output
+`LIB_NISTCURVES_SHARED_SQTAB_BASE`, the base the archive's code reads,
+exported by every field archive except `nistcurves-app-owned.a`.
+`nistcurves.inc` does this for you if `LIB_SHARED_SQTAB_BASE` is defined
+before the header is read:
+
+```asm
+.include "sqtab_base.inc"     ; first
+.include "nistcurves.inc"     ; asserts LIB_SHARED_SQTAB_BASE = LIB_NISTCURVES_SHARED_SQTAB_BASE
+sqtab_lo = LIB_SHARED_SQTAB_BASE
+sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200
+```
+
 **§8.2 shared `reu_mul` placement** (contract v0.8.5 export discipline). The
 consumer-*input* equates `LIB_SHARED_REU_MUL_BANK` / `_OFFSET` /
 `_BANKS_USED` are **not exported** — they are unprefixed names every §8.2
