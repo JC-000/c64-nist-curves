@@ -93,7 +93,9 @@ Three later releases matter here:
   - it fails while the baseline's tag is older than the newest `vX.Y.Z` tag,
     and the message names the command to run;
   - it fails closed on a baseline that is missing, unreadable, or records no
-    tag, no commit, or a commit its tag no longer resolves to;
+    tag, no commit, or a commit its tag no longer resolves to, and on rows
+    that no longer match the `rows_sha256` digest the generator stores
+    (check-archives verifies the same digest);
   - in the pre-tag state (VERSION bumped, tag not cut) it passes and prints
     which tag the baseline reflects, because the previous release's baseline
     is the right comparand until the new tag exists.

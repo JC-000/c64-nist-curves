@@ -620,6 +620,21 @@ def main() -> int:
         base = base_tag = base_commit = None
         failures.append(f"[baseline] {ABI_BASELINE.relative_to(REPO)} is "
                         f"unreadable ({exc!r})")
+    if base is not None:
+        sys.path.insert(0, str(TOOLS))
+        from gen_abi_baseline import rows_digest
+        try:
+            digest_ok = base.get("rows_sha256") == rows_digest(
+                base.get("abi"), base.get("archives") or {})
+        except (TypeError, ValueError, AttributeError):
+            digest_ok = False
+        if not digest_ok:
+            failures.append(
+                f"[baseline] {ABI_BASELINE.relative_to(REPO)} content does not "
+                f"match its rows_sha256 -- a row or the ABI value was edited "
+                f"after generation; regenerate with "
+                f"`python3 tools/gen_abi_baseline.py <tag>`")
+            base = None
     if base is not None and not git_ok:
         print("  abi baseline   : tag comparison SKIPPED (no git)")
     elif base is not None:

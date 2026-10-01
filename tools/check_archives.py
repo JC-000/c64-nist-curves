@@ -3631,6 +3631,16 @@ def abi_surface_check(failures):
         failures.append(f"abi surface: baseline unreadable ({e!r})")
         print(f"  ABI FAIL: baseline unreadable: {e!r}")
         return
+    sys.path.insert(0, str(REPO / "tools"))
+    from gen_abi_baseline import rows_digest
+    if not isinstance(rows, dict) or base.get("rows_sha256") != rows_digest(base_abi, rows):
+        failures.append(
+            f"abi surface: baseline content does not match its rows_sha256 "
+            f"(recorded {str(base.get('rows_sha256'))[:12]}) -- a row or the ABI "
+            "value was edited after generation, or the file predates the "
+            "digest; regenerate with tools/gen_abi_baseline.py <tag>")
+        print("  ABI FAIL: baseline content digest mismatch")
+        return
     empty = sorted(a for a, v in rows.items() if not v) if isinstance(rows, dict) else ["?"]
     if not isinstance(rows, dict) or not rows or empty:
         failures.append(f"abi surface: baseline has no archives, or empty rows "

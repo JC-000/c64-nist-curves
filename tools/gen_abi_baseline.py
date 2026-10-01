@@ -27,6 +27,7 @@ no CONTRACT_DEFINES: the bare §6.5-window names are included, as shipped.
 
 No VICE, no device, no network.
 """
+import hashlib
 import json
 import re
 import shutil
@@ -37,6 +38,20 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "tools" / "abi_baseline.json"
+
+
+def rows_digest(abi, archives):
+    """sha256 over the baseline's CONTENT: the ABI value and every archive's
+    export rows, canonically serialised. Stored as "rows_sha256" at generation
+    time and re-derived by both readers (check_archives.abi_surface_check and
+    check_release_state leg 5), so a hand-edited row fails even with "tag" and
+    "commit" intact. tag/commit are outside the digest on purpose: each is
+    checked against git directly. The ONE canonicalisation, imported by both
+    readers rather than restated."""
+    canon = json.dumps({"abi": int(abi),
+                        "archives": {k: sorted(v) for k, v in archives.items()}},
+                       sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode()).hexdigest()
 
 
 def run(cmd, **kw):
@@ -107,6 +122,7 @@ def main():
             "abi": abis.pop(),
             "archives": archives,
         }
+        doc["rows_sha256"] = rows_digest(doc["abi"], archives)
         OUT.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
         print(f"wrote {OUT.relative_to(REPO)}: {tag} ({sha[:12]}), ABI "
               f"{doc['abi']}, {len(archives)} archives, "

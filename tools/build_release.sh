@@ -118,7 +118,8 @@ git archive \
   src/data_p384.s src/data_p384_limlee.s \
   src/data_sha.s src/data_test.s \
   Makefile tools/build_release.sh \
-  tools/check_archives.py tools/abi_baseline.json tools/check_doc_snippets.py \
+  tools/check_archives.py tools/abi_baseline.json tools/gen_abi_baseline.py \
+  tools/check_doc_snippets.py \
   tools/check_release_notes.py tools/check_harness_routing.py \
   tools/check_release_state.py tools/check_inc_deps.py \
   tools/bench_reu_mult.py \
