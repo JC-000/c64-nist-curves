@@ -47,7 +47,13 @@ def rows_digest(abi, archives):
     check_release_state leg 5), so a hand-edited row fails even with "tag" and
     "commit" intact. tag/commit are outside the digest on purpose: each is
     checked against git directly. The ONE canonicalisation, imported by both
-    readers rather than restated."""
+    readers rather than restated.
+
+    ACCEPTED LIMIT (review tT2): the digest is self-certifying. It catches an
+    edited row, not a deliberate edit that also recomputes rows_sha256 (and
+    keeps tag/commit). Re-deriving the rows from the tag, as gen_abi_baseline
+    does, is the independent check; the digest makes an accidental or
+    one-site edit loud."""
     canon = json.dumps({"abi": int(abi),
                         "archives": {k: sorted(v) for k, v in archives.items()}},
                        sort_keys=True, separators=(",", ":"))

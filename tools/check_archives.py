@@ -3439,13 +3439,53 @@ KNOB_OBSERVED_AS = {
 KNOB_UNOBSERVABLE = {
     "REU_SETTLE_FLOOR_CYCLES_48MHZ": "assert-only (src/reu_dma_done.inc): a "
                                      "measured floor, never exported",
-    "LIB_SHARED_PRIMITIVES_SQTAB": "§8.0 bit constant: MUST NOT be exported "
-                                   "(SPEC.md:271), so nothing can carry it",
-    "LIB_SHARED_PRIMITIVES_REU_MUL": "§8.0 bit constant: MUST NOT be exported",
-    "LIB_SHARED_PRIMITIVES_CT_MUL_8X8": "§8.0 bit constant: MUST NOT be exported",
+    # The three §8.0 bit constants are not exported (SPEC.md:271 forbids it),
+    # and their only consumer in the archive, the LIB_NISTCURVES_SHARED_*
+    # mask derivation in src/lib_manifest.s, is itself overridden in pass HI
+    # (KNOB_PASS_HI sets both masks), so no exported value depends on them
+    # in the one pass that moves them.
+    "LIB_SHARED_PRIMITIVES_SQTAB": "§8.0 bit constant: not exported (SPEC.md:271); "
+                                   "its only reader, the mask derivation, is "
+                                   "overridden in the same pass",
+    "LIB_SHARED_PRIMITIVES_REU_MUL": "§8.0 bit constant: not exported; its mask "
+                                     "reader is overridden in the same pass",
+    "LIB_SHARED_PRIMITIVES_CT_MUL_8X8": "§8.0 bit constant: not exported; its mask "
+                                        "reader is overridden in the same pass",
 }
 KNOB_SCAN_EXCLUDE_SUFFIX = "_INCLUDED"      # header include guards, not knobs
-_KNOB_GUARD_RE = re.compile(r"^\s*\.(ifndef|ifdef)\s+([A-Za-z_]\w*)\s*(?:;.*)?$")
+# ca65 directives are case-insensitive, and a guard has three spellings:
+#   .ifndef X  /  .if .not .defined(X)      -> "ifndef"
+#   .ifdef X   /  .if .defined(X)           -> "ifdef"
+# Review mutants k1 (`.if .not .defined(NC_K1)`) and k3 (`.IFNDEF NC_K3`) each
+# introduced a knob the old, lower-case, `.ifndef`/`.ifdef`-only scan missed.
+_KNOB_GUARD_RE = re.compile(
+    r"^\s*(?:\.(?P<kw>ifndef|ifdef)\s+(?P<x1>[A-Za-z_]\w*)"
+    r"|\.if\s+(?P<neg>\.not\s+)?\.defined\s*\(\s*(?P<x2>[A-Za-z_]\w*)\s*\))"
+    r"\s*(?:;.*)?$", re.I)
+_INCLUDE_RE = re.compile(r'^\s*\.include\s+"([^"]+)"', re.M | re.I)
+
+
+def _guard_kind(m):
+    """("ifndef"|"ifdef", name) for a _KNOB_GUARD_RE match."""
+    if m.group("kw"):
+        return m.group("kw").lower(), m.group("x1")
+    return ("ifndef" if m.group("neg") else "ifdef"), m.group("x2")
+
+
+def archived_source_files(archives):
+    """Every source a shipped arm is assembled from, plus every file those
+    `.include`, transitively (Makefile-derived; .include matched case-
+    insensitively, as ca65 does)."""
+    srcs = {src for src, _d, _u in shipped_object_arms(archives).values()}
+    todo = [REPO / "src" / f"{x}.s" for x in sorted(srcs)]
+    files = []
+    while todo:
+        f = todo.pop()
+        if f in files or not f.exists():
+            continue
+        files.append(f)
+        todo += [REPO / "src" / inc for inc in _INCLUDE_RE.findall(f.read_text())]
+    return sorted(files)
 
 
 def derive_knobs(archives):
@@ -3459,43 +3499,101 @@ def derive_knobs(archives):
     `... = X`). A pure presence switch (`.ifdef FP_ONCHIP_MUL`), an import
     guard (`.ifndef X` / `.import X`) and a `*_INCLUDED` header guard are not
     knobs."""
-    srcs = {src for src, _d, _u in shipped_object_arms(archives).values()}
-    todo = [REPO / "src" / f"{x}.s" for x in sorted(srcs)]
-    files = []
-    while todo:
-        f = todo.pop()
-        if f in files or not f.exists():
-            continue
-        files.append(f)
-        for inc in re.findall(r'^\s*\.include\s+"([^"]+)"', f.read_text(), re.M):
-            todo.append(REPO / "src" / inc)
+    files = archived_source_files(archives)
     knobs, zp = {}, set()
-    for f in sorted(files):
+    for f in files:
         lines = f.read_text().splitlines()
         for i, ln in enumerate(lines):
             m = _KNOB_GUARD_RE.match(ln)
-            if not m or m.group(2).endswith(KNOB_SCAN_EXCLUDE_SUFFIX):
+            if not m:
                 continue
-            kind, x = m.groups()
+            kind, x = _guard_kind(m)
+            if x.endswith(KNOB_SCAN_EXCLUDE_SUFFIX):
+                continue
             depth, body = 0, []
             for nxt in lines[i + 1:]:
-                if re.match(r"^\s*\.if", nxt):
+                if re.match(r"^\s*\.if", nxt, re.I):
                     depth += 1
-                elif re.match(r"^\s*\.endif", nxt):
+                elif re.match(r"^\s*\.endif", nxt, re.I):
                     if depth == 0:
                         break
                     depth -= 1
-                elif re.match(r"^\s*\.else", nxt) and depth == 0:
+                elif re.match(r"^\s*\.else", nxt, re.I) and depth == 0:
                     break
                 body.append(nxt.split(";", 1)[0])
             text = "\n".join(body)
-            assigns = re.search(rf"^\s*{x}\s*:?=", text, re.M)
+            assigns = re.search(rf"^\s*{x}\s*:?=", text, re.M)   # symbols are case-sensitive
             reads = re.search(rf"^\s*[A-Za-z_]\w*\s*:?=[^\n\"]*\b{x}\b", text, re.M)
             if (kind == "ifndef" and assigns) or (kind == "ifdef" and reads):
                 knobs.setdefault(x, f"{f.name}:{i + 1}")
                 if f.name == "zp_config.s":
                     zp.add(x)
     return knobs, zp
+
+
+# --- Pass (4): presence switches -------------------------------------------
+# Review mutant k5 keyed a forbidden export on
+#   .if .defined(SHARED_SQTAB_INIT) .and (.not .defined(SHARED_CT_MUL_8X8))
+# -- the shape of a consumer's deferral build, c64-https's among them -- and
+# passed: passes (1)-(3) only ever build each arm with the switches the
+# Makefile gives it. Every presence switch the archived sources test is now
+# DERIVED (derive_switches) and must be classified here, ratcheted both ways:
+#   CONSUMER_SWITCHES -- switches a consumer sets through CONTRACT_DEFINES on
+#     EVERY TU. Swept below, alone and in the documented combinations.
+#   VARIANT_SWITCHES -- arm selectors the Makefile sets per object rule; each
+#     shipped arm is already swept with its own set by passes (1)-(3). The
+#     claim is checked: each must appear in a Makefile object rule.
+CONSUMER_SWITCHES = {
+    "LIB_NO_BARE_EXPORTS": "§6.5 build-wide gate for deprecated bare names",
+    "SHARED_SQTAB_INIT": "§8.1 deferral",
+    "SHARED_CT_MUL_8X8": "§8.3 deferral",
+    "SHARED_REU_MUL_INIT": "§8.2 deferral (moves with _FETCH)",
+    "SHARED_REU_MUL_FETCH": "§8.2 deferral (moves with _INIT)",
+}
+VARIANT_SWITCHES = {
+    "ECDSA_NO_COMB", "FP_ONCHIP_MUL", "LIB_P256_COMB_ONLY",
+    "LIB_P256_VERIFY_ONLY", "LIB_P384_CURVE_ONLY", "LIB_P384_VERIFY_ONLY",
+    "LIB_SHA384_ONLY",
+}
+# Switches that may only be set together: lib_manifest.s errors out on
+# SHARED_REU_MUL_INIT without SHARED_REU_MUL_FETCH (§8.2 both-or-neither), so
+# a "single-switch" arm for either is the pair.
+SWITCH_UNITS = [
+    ("LIB_NO_BARE_EXPORTS",),
+    ("SHARED_SQTAB_INIT",),
+    ("SHARED_CT_MUL_8X8",),
+    ("SHARED_REU_MUL_INIT", "SHARED_REU_MUL_FETCH"),
+]
+# Documented consumer combinations, each swept as its own full build. The
+# first is c64-https's P-256 CONTRACT_DEFINES verbatim
+# (tools/integration/build_nistcurves_p256.sh:371 in that repo), base
+# included; the second is the minimal deferral pair the review named; the
+# third is full §8.1-§8.3 deferral without the bare-name gate.
+SWITCH_COMBOS = {
+    "c64-https P-256": "-D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT "
+                       "-D SHARED_REU_MUL_FETCH -D SHARED_CT_MUL_8X8 "
+                       "-D LIB_NO_BARE_EXPORTS=1 -D LIB_SHARED_SQTAB_BASE=0xBC00",
+    "bare-gate + sqtab deferral": "-D LIB_NO_BARE_EXPORTS=1 -D SHARED_SQTAB_INIT",
+    "full §8.1-§8.3 deferral": "-D SHARED_SQTAB_INIT -D SHARED_CT_MUL_8X8 "
+                               "-D SHARED_REU_MUL_INIT -D SHARED_REU_MUL_FETCH",
+}
+_SWITCH_NAME_RE = re.compile(
+    r"\.(?:ifn?def)\s+([A-Za-z_]\w*)|\.defined\s*\(\s*([A-Za-z_]\w*)\s*\)", re.I)
+
+
+def derive_switches(archives, knobs):
+    """{switch: [files]}: every name the archived sources test for presence
+    (`.ifdef`, `.ifndef`, `.defined()`, any case) that is not a knob and not a
+    `*_INCLUDED` guard."""
+    found = {}
+    for f in archived_source_files(archives):
+        for ln in f.read_text().splitlines():
+            for m in _SWITCH_NAME_RE.finditer(ln.split(";", 1)[0]):
+                x = m.group(1) or m.group(2)
+                if x in knobs or x.endswith(KNOB_SCAN_EXCLUDE_SUFFIX):
+                    continue
+                found.setdefault(x, set()).add(f.name)
+    return {k: sorted(v) for k, v in found.items()}
 
 
 def knob_pass_values(knobs, zp):
@@ -3540,7 +3638,17 @@ def forbidden_export_check(failures, archives):
         sees CONTRACT_ZP_DEFINES). Each perturbed knob must be SEEN in the
         artifact, or carry a recorded reason it cannot be
         (KNOB_UNOBSERVABLE) -- a pass whose knobs silently missed the build
-        would re-test the defaults.
+        would re-test the defaults;
+    (4) every presence switch the archived sources test (derive_switches),
+        each consumer switch alone (SWITCH_UNITS) and in the documented
+        combinations (SWITCH_COMBOS, incl. c64-https's exact P-256 set), one
+        real `make -k` build each in a throwaway BUILD_DIR, scanning the
+        OBJECTS produced. Review mutant k5 keyed a forbidden export on
+        `.defined(SHARED_SQTAB_INIT) .and .not .defined(SHARED_CT_MUL_8X8)`;
+        (1)-(3) never build an arm with a switch its Makefile rule lacks. An
+        object may be missing only when its own rule already sets one of the
+        configuration's switches (ca65 `'X' is already defined` -- the
+        app-owned arm, swept as itself by (1)); any other gap fails.
     Every dump must be readable (od65_export_names is None/COUNT_MISMATCH on
     an untrustworthy dump), and an empty population fails: an absence
     assertion over nothing is the empty-population shape."""
@@ -3688,6 +3796,81 @@ def forbidden_export_check(failures, archives):
                         "(KNOB_UNOBSERVABLE)")
             if not unseen:
                 passes_ok.append(f"{pname}: {len(vals)} knobs")
+        # (4) presence switches: single-unit arms + documented combinations.
+        switches = derive_switches(archives, knobs)
+        note_examined(len(switches), "derived switch")
+        arms = shipped_object_arms(archives)
+        mk_switches = {d.split("=")[0] for _s, ds, _u in arms.values() for d in ds}
+        roster = set(CONSUMER_SWITCHES) | VARIANT_SWITCHES
+        unrostered = sorted(set(switches) - roster)
+        stale_sw = sorted(roster - set(switches))
+        fake_variant = sorted(VARIANT_SWITCHES - mk_switches)
+        unit_names = {x for u in SWITCH_UNITS for x in u}
+        if not switches:
+            failures.append("forbidden exports: derived no presence switches")
+        if unrostered:
+            failures.append(f"forbidden exports: presence switches {unrostered} "
+                            f"({[switches[x] for x in unrostered]}) are in neither "
+                            "CONSUMER_SWITCHES nor VARIANT_SWITCHES -- classify "
+                            "them so pass (4) sweeps or justifies them")
+            print(f"  FORBID FAIL: unclassified switches {unrostered}")
+        if stale_sw:
+            failures.append(f"forbidden exports: switch roster names {stale_sw}, "
+                            "which no archived source tests -- stale roster")
+        if fake_variant:
+            failures.append(f"forbidden exports: VARIANT_SWITCHES {fake_variant} "
+                            "are set by no Makefile object rule, so no arm "
+                            "sweeps them -- they are consumer switches")
+        if set(CONSUMER_SWITCHES) != unit_names:
+            failures.append(f"forbidden exports: SWITCH_UNITS covers "
+                            f"{sorted(unit_names)}, CONSUMER_SWITCHES is "
+                            f"{sorted(CONSUMER_SWITCHES)} -- every consumer switch "
+                            "needs a single-unit arm")
+        configs = [(f"switch {'+'.join(u)}",
+                    " ".join(f"-D {x}" + ("=1" if x == "LIB_NO_BARE_EXPORTS" else "")
+                             for x in u)) for u in SWITCH_UNITS]
+        configs += [(f"combo {n}", d) for n, d in SWITCH_COMBOS.items()]
+        nswitch, sw_ok = 0, []
+        for label, cdef in configs:
+            set_here = set(re.findall(r"-D\s+([A-Za-z_]\w*)", cdef))
+            kb = td / ("sw_" + re.sub(r"\W+", "_", label))
+            kb.mkdir()
+            targets = [str(kb / "lib" / a) for a in sorted(archives)]
+            # -k: an arm whose own Makefile rule already sets one of these
+            # switches cannot take it twice (`'X' is already defined`) --
+            # the app-owned arm -- and must not stop the rest of the build.
+            # The scan is over the OBJECTS make produced, not a link.
+            _rc, out = sh(["make", "-k", "-C", str(REPO), f"BUILD_DIR={kb}",
+                           f"CONTRACT_DEFINES={cdef}", *targets])
+            scanned, missing = 0, []
+            for obj, (src, defines, _using) in sorted(arms.items()):
+                o = kb / f"{obj}.o"
+                if not o.exists():
+                    dup = set_here & {d.split("=")[0] for d in defines}
+                    if dup and any(f"'{d}' is already defined" in out for d in dup):
+                        continue        # the arm already carries the switch
+                    missing.append(obj)
+                    continue
+                ex = od65_export_names(o)
+                if ex is None or ex is COUNT_MISMATCH:
+                    unreadable.append(f"{obj}.o ({label})")
+                    continue
+                scanned += 1
+                nswitch += 1
+                note_examined(1, "switch-pass object")
+                bad = forbidden(ex)
+                if bad:
+                    hits.append(f"{obj}.o [{label}] exports {sorted(bad)}")
+            if missing:
+                failures.append(f"forbidden exports: [{label}] objects {missing} "
+                                "were not built for a reason other than an arm "
+                                "already carrying the switch -- unscanned: "
+                                + out.strip()[-300:])
+                print(f"  FORBID FAIL: [{label}] unbuilt objects {missing}")
+            elif scanned == 0:
+                failures.append(f"forbidden exports: [{label}] scanned nothing")
+            else:
+                sw_ok.append(f"{label}: {scanned}")
         stale_unobs = sorted(set(KNOB_UNOBSERVABLE) - set(knobs))
         if stale_unobs:
             failures.append(f"forbidden exports: KNOB_UNOBSERVABLE names {stale_unobs},"
@@ -3695,7 +3878,8 @@ def forbidden_export_check(failures, archives):
         knob_summary = (f"{len(knobs)} derived knobs ({len(zp)} ZP), "
                         f"{len(KNOB_UNPERTURBABLE)} unperturbable, "
                         f"{len(KNOB_UNOBSERVABLE)} perturbed-but-unobservable; "
-                        f"passes {passes_ok}")
+                        f"passes {passes_ok}; {len(switches)} derived switches, "
+                        f"{len(configs)} switch builds, {nswitch} objects {sw_ok}")
     if unreadable:
         failures.append(f"forbidden exports: unreadable {unreadable} -- an "
                         "unread dump is not a clean one")
@@ -3757,7 +3941,11 @@ def abi_step_reason(text, k):
 
     The reason is the rest of the `; k -> k+1` line. It must name an issue or
     a release and say at least ABI_REASON_MIN_WORDS words; otherwise the step
-    is unexplained."""
+    is unexplained.
+
+    ACCEPTED LIMIT (review tV2): this is a floor against the accidental bare
+    arrow, not a judge of content. Determined filler ("#1 a b c d") satisfies
+    it. Reviewing that the reason is true is the PR review's job."""
     for m in re.finditer(rf"^;\s*{k}\s*->\s*{k + 1}\b(.*)$", text, re.M):
         rest = m.group(1)
         words = re.findall(r"[A-Za-z][A-Za-z'-]+", _ABI_REASON_REF_RE.sub(" ", rest))
