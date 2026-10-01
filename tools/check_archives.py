@@ -3805,9 +3805,15 @@ def run_leg(failures, label, fn, *args):
 def archive_contract_check(failures, archives, name):
     """Per-archive legs: (a) closure, (a2) provider pins, (a3) manifest
     values, (a4) footprint measurement, (b) dummy-link smoke rows."""
-    allow = KNOWN_EXTERNAL[name]
     archive_path = LIBDIR / name
     print(f"=== {name} ===")
+    allow = KNOWN_EXTERNAL.get(name)
+    if allow is None:
+        # Reported (and reconciled) by archive_population_check; still run
+        # every other sub-leg for this archive rather than skipping it.
+        print("  CLOSURE FAIL: no KNOWN_EXTERNAL entry; closure checked "
+              "against an empty allowlist")
+        allow = set()
     if name not in archives:
         failures.append(f"{name}: not found in Makefile ar65 recipes")
         print("  MAKEFILE: no ar65 recipe parsed for this archive")
@@ -3972,6 +3978,90 @@ def archive_contract_check(failures, archives, name):
     print()
 
 
+def archive_population_check(failures, archives):
+    """The per-archive legs iterate the archives the MAKEFILE builds. Every
+    per-archive table must cover exactly that population (CONSUMER_GAPS: a
+    subset of it, since most archives have no gap).
+
+    Issue #167 review F2: the per-archive legs used to iterate KNOWN_EXTERNAL's
+    keys, and the "every archive has SMOKE rows" rule iterated the same table
+    -- so deleting one KNOWN_EXTERNAL entry dropped that archive's closure,
+    pins, manifest, footprint and SMOKE legs and still reported
+    "legs: 27 of 27", PASS."""
+    print("\n=== per-archive population (Makefile vs every per-archive table) ===")
+    built = set(archives)
+    if not built:
+        failures.append("archive population: no archive parsed from the Makefile")
+        print("  POPULATION FAIL: no archives parsed")
+        return
+    bad = False
+    for tname, table, subset in (
+            ("KNOWN_EXTERNAL", KNOWN_EXTERNAL, False), ("SMOKE", SMOKE, False),
+            ("MUST_EXPORT", MUST_EXPORT, False),
+            ("MUST_NOT_EXPORT", MUST_NOT_EXPORT, False),
+            ("MANIFEST_VALUES", MANIFEST_VALUES, False),
+            ("HEADER_ARCHIVE_SWITCHES", HEADER_ARCHIVE_SWITCHES, False),
+            ("CONSUMER_GAPS", CONSUMER_GAPS, True)):
+        keys = set(table)
+        missing = sorted(built - keys) if not subset else []
+        phantom = sorted(keys - built)
+        if missing:
+            failures.append(f"archive population: {tname} has no entry for "
+                            f"built archive(s) {missing}")
+            print(f"  POPULATION FAIL: {tname} missing {missing}")
+            bad = True
+        if phantom:
+            failures.append(f"archive population: {tname} names {phantom}, "
+                            "which no ar65 recipe builds")
+            print(f"  POPULATION FAIL: {tname} phantom {phantom}")
+            bad = True
+    if not bad:
+        print(f"  population OK ({len(built)} archives from the Makefile; all "
+              "per-archive tables cover exactly them, CONSUMER_GAPS a subset)")
+
+
+# Module-level functions that take `failures` first but are NOT legs.
+LEG_REGISTRY_EXEMPT = {"run_leg"}
+
+
+def leg_registry_check(failures, registered):
+    """Every leg function must be registered in _run_all_legs.
+
+    Issue #167 review F1: "legs: N of N" counted the registration list against
+    itself, so deleting a registration (e.g. the §6.5 gated link) printed
+    "27 of 27", PASS. A leg is discovered by shape -- a public module-level
+    function whose first parameter is `failures` -- not by the list under
+    test; LEG_REGISTRY_EXEMPT names the helpers that share the shape."""
+    import inspect
+    print("\n=== leg registry (discovered leg functions vs registered) ===")
+    discovered = set()
+    for n, f in globals().items():
+        if (inspect.isfunction(f) and f.__module__ == __name__
+                and not n.startswith("_")):
+            params = list(inspect.signature(f).parameters)
+            if params[:1] == ["failures"]:
+                discovered.add(n)
+    stale_exempt = sorted(LEG_REGISTRY_EXEMPT - discovered)
+    discovered -= LEG_REGISTRY_EXEMPT
+    unregistered = sorted(discovered - registered)
+    unknown = sorted(registered - discovered)
+    if unregistered:
+        failures.append(f"leg registry: {unregistered} look like legs but are "
+                        "not registered -- they never run")
+        print(f"  REGISTRY FAIL: unregistered legs {unregistered}")
+    if unknown:
+        failures.append(f"leg registry: registered {unknown} are not "
+                        "discoverable legs")
+        print(f"  REGISTRY FAIL: registered but not discovered {unknown}")
+    if stale_exempt:
+        failures.append(f"leg registry: LEG_REGISTRY_EXEMPT names {stale_exempt}, "
+                        "which no longer exist")
+        print(f"  REGISTRY FAIL: stale exemptions {stale_exempt}")
+    if not (unregistered or unknown or stale_exempt):
+        print(f"  registry OK ({len(discovered)} leg functions discovered, "
+              "all registered)")
+
+
 def cfg_placement_check(failures):
     """(c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting."""
     m, offenders = cfg_bss_before_emitting()
@@ -4025,6 +4115,7 @@ def _run_all_legs():
     # zp_alias_audit used to abort the process ~15 legs early, so the operator
     # saw a traceback instead of the named defect and nothing after it ran).
     legs = [
+        ("per-archive population", archive_population_check, (failures, archives)),
         ("c64.cfg placement", cfg_placement_check, (failures,)),
         ("§1 version identity", version_identity_check, (failures,)),
         ("R2 ZP audit", zp_alias_audit, (failures,)),
@@ -4034,8 +4125,10 @@ def _run_all_legs():
         ("§6.1 packaging + §3 header", packaging_check, (failures, archives)),
         ("§6.5 gated link", gated_link_check, (failures, archives)),
     ]
+    # Population: the archives the Makefile builds, never a table under test
+    # (issue #167 review F2).
     legs += [(f"archive contract [{name}]", archive_contract_check,
-              (failures, archives, name)) for name in sorted(KNOWN_EXTERNAL)]
+              (failures, archives, name)) for name in sorted(archives)]
     legs += [
         ("GATE_TUS derivation", gate_tus_derivation_check, (failures,)),
         ("ZP roster reconciliation", zp_roster_reconciliation_check, (failures,)),
@@ -4049,6 +4142,8 @@ def _run_all_legs():
         # object it exercises.
         ("knob staleness + §6.2 ZP override", defines_staleness_check, (failures,)),
     ]
+    registered = {fn.__name__ for _, fn, _ in legs} | {"leg_registry_check"}
+    legs.insert(0, ("leg registry", leg_registry_check, (failures, registered)))
     ran, crashed = 0, []
     for label, fn, args in legs:
         if run_leg(failures, label, fn, *args):
@@ -4057,7 +4152,7 @@ def _run_all_legs():
             crashed.append(label)
     print(f"\nlegs: {ran} of {len(legs)} ran to completion"
           + (f"; CRASHED: {crashed}" if crashed else "")
-          + f" ({len(KNOWN_EXTERNAL)} of them per-archive)")
+          + f" ({len(archives)} of them per-archive, from the Makefile)")
     if ran != len(legs):
         failures.append(f"only {ran} of {len(legs)} guarded legs ran to "
                         f"completion; crashed: {crashed}")
