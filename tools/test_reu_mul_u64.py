@@ -109,6 +109,7 @@ import random
 import pathlib
 import re
 import shutil
+import tempfile
 import subprocess
 import sys
 import time
@@ -131,7 +132,6 @@ os.environ.setdefault("U64_REQUIRE_DEVICE_LOCK", "1")
 BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
 DEFAULT_PRG = os.path.join(BUILD_DIR, "nist-curves.prg")
 DEFAULT_LABELS = os.path.join(BUILD_DIR, "labels.txt")
-ITER_BUILD_DIR = os.path.join(BUILD_DIR, "reu-settle")
 
 # /v1/info reports a bare version (e.g. "3.15") and CANNOT distinguish stock
 # firmware from a locally patched build.  The U64E this tool was written
@@ -485,7 +485,7 @@ def patch_settle_immediate(prg: bytes, offset: int, iters: int) -> bytes:
 # Building (device-free integrity check; NOT on the measurement path)          #
 # --------------------------------------------------------------------------- #
 
-def run_make(defines: str = "") -> None:
+def run_make(defines: str = "", build_dir: str | None = None) -> None:
     """`make` with CONTRACT_DEFINES.
 
     The Makefile's knob stamp invalidates every OBJECT when the flattened knob
@@ -505,12 +505,17 @@ def run_make(defines: str = "") -> None:
     """
     env = dict(os.environ)
     env.pop("CA65FLAGS", None)
-    for stale in (DEFAULT_PRG, DEFAULT_LABELS):
+    bdir = build_dir or BUILD_DIR
+    for stale in (os.path.join(bdir, "nist-curves.prg"),
+                  os.path.join(bdir, "labels.txt")):
         try:
             os.remove(stale)
         except FileNotFoundError:
             pass
-    cmd = ["make"] + ([f"CONTRACT_DEFINES={defines}"] if defines else [])
+    # `BUILD_DIR` is a plain `=` in the Makefile, so a command-line value
+    # overrides it everywhere -- objects, stamp, knob wipe and all.
+    cmd = (["make"] + ([f"BUILD_DIR={build_dir}"] if build_dir else [])
+           + ([f"CONTRACT_DEFINES={defines}"] if defines else []))
     r = subprocess.run(cmd, capture_output=True, text=True,
                        cwd=PROJECT_ROOT, env=env)
     if r.returncode != 0:
@@ -542,15 +547,19 @@ def sha256_of(path: str) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def build_variant(tag: str, defines: str,
+def build_variant(tag: str, defines: str, build_dir: str,
                   expect_iter: int | None = None) -> tuple[str, str, str]:
+    """Build one knob variant in `build_dir` (never the user's build/: a
+    knob change makes the Makefile wipe every object, archive and PRG in its
+    BUILD_DIR) and keep a copy under build_dir/reu-settle/."""
     from c64_test_harness.labels import Labels
-    os.makedirs(ITER_BUILD_DIR, exist_ok=True)
-    run_make(defines)
-    prg = os.path.join(ITER_BUILD_DIR, f"{tag}.prg")
-    labels = os.path.join(ITER_BUILD_DIR, f"{tag}.labels.txt")
-    shutil.copyfile(DEFAULT_PRG, prg)
-    shutil.copyfile(DEFAULT_LABELS, labels)
+    keep = os.path.join(build_dir, "reu-settle")
+    os.makedirs(keep, exist_ok=True)
+    run_make(defines, build_dir=build_dir)
+    prg = os.path.join(keep, f"{tag}.prg")
+    labels = os.path.join(keep, f"{tag}.labels.txt")
+    shutil.copyfile(os.path.join(build_dir, "nist-curves.prg"), prg)
+    shutil.copyfile(os.path.join(build_dir, "labels.txt"), labels)
     if expect_iter is not None:
         lb = Labels.from_file(labels)
         with open(prg, "rb") as f:
@@ -2064,12 +2073,56 @@ def self_test() -> int:
 # Build verification (no device; not on the measurement path)                  #
 # --------------------------------------------------------------------------- #
 
+def snapshot_tree(root: str) -> dict[str, tuple[int, int]]:
+    """{relpath: (size, mtime_ns)} for every file under root ({} if absent)."""
+    snap = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            p = os.path.join(dirpath, fn)
+            st = os.stat(p)
+            snap[os.path.relpath(p, root)] = (st.st_size, st.st_mtime_ns)
+    return snap
+
+
+def tree_changes(before: dict, after: dict) -> list[str]:
+    out = [f"deleted {k}" for k in sorted(before.keys() - after.keys())]
+    out += [f"created {k}" for k in sorted(after.keys() - before.keys())]
+    out += [f"changed {k}" for k in sorted(before.keys() & after.keys())
+            if before[k] != after[k]]
+    return out
+
+
 def verify_builds(iters: list[int]) -> int:
+    # The user's build/ is not this mode's to touch: snapshot it and assert
+    # it is byte-for-byte (names, sizes, mtimes) where it was afterwards.
+    user_build_before = snapshot_tree(BUILD_DIR)
+    tmp = tempfile.mkdtemp(prefix="nistcurves-verify-builds-")
+    rc = 1
+    try:
+        rc = _verify_builds(iters, tmp)
+    finally:
+        changes = tree_changes(user_build_before, snapshot_tree(BUILD_DIR))
+        if rc == 0:
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            print(f"  variant builds kept for inspection in {tmp}")
+    if changes:
+        print(f"\nverify-builds: FAILED — the user's {BUILD_DIR} was modified "
+              f"({len(changes)} entries): " + "; ".join(changes[:8])
+              + (" ..." if len(changes) > 8 else ""))
+        return 1
+    print(f"  user's build/ untouched: {len(user_build_before)} files, same "
+          f"names, sizes and mtimes")
+    return rc
+
+
+def _verify_builds(iters: list[int], bdir: str) -> int:
     from c64_test_harness.labels import Labels
-    print("Building variants (each `make CONTRACT_DEFINES=...`)\n")
+    print(f"Building variants (each `make BUILD_DIR={bdir} "
+          f"CONTRACT_DEFINES=...`; the user's build/ is never touched)\n")
     rows = []
     print("  default (no CONTRACT_DEFINES)...", flush=True)
-    dflt_prg, dflt_labels, dflt_sha = build_variant("default", "")
+    dflt_prg, dflt_labels, dflt_sha = build_variant("default", "", bdir)
     labels = Labels.from_file(dflt_labels)
     with open(dflt_prg, "rb") as f:
         base_image = f.read()
@@ -2081,7 +2134,7 @@ def verify_builds(iters: list[int]) -> int:
     for n in iters:
         d = f"-D LIB_NISTCURVES_REU_SETTLE_ITER={n}"
         print(f"  ITER={n}...", flush=True)
-        p, _l, sha = build_variant(f"iter{n}", d, expect_iter=n)
+        p, _l, sha = build_variant(f"iter{n}", d, bdir, expect_iter=n)
         with open(p, "rb") as f:
             img = f.read()
         note = []
@@ -2090,16 +2143,14 @@ def verify_builds(iters: list[int]) -> int:
             fails.append(f"iter{n}: poke-equivalence")
         rows.append((f"iter{n}", d, sha, len(img), img[off], " ".join(note)))
     print("  bank $03...", flush=True)
-    bp, _bl, bsha = build_variant("bank03", "-D LIB_SHARED_REU_MUL_BANK=0x03")
+    bp, _bl, bsha = build_variant("bank03", "-D LIB_SHARED_REU_MUL_BANK=0x03",
+                                  bdir)
     with open(bp, "rb") as f:
         bimg = f.read()
     rows.append(("bank03", "-D LIB_SHARED_REU_MUL_BANK=0x03", bsha, len(bimg),
                  bimg[off], "" if bsha != dflt_sha else "SAME AS DEFAULT"))
     if bsha == dflt_sha:
         fails.append("bank03: identical to default")
-    print("\n  restoring the default build...", flush=True)
-    run_make("")
-
     print(f"\nSettle immediate lives at PRG file offset {off} "
           f"(${int.from_bytes(base_image[:2], 'little') + off - 2:04X})\n")
     print(f"  {'variant':9} {'CONTRACT_DEFINES':44} {'bytes':>6} {'ITER':>4}  sha256")
