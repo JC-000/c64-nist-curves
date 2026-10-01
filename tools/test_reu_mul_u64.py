@@ -1671,6 +1671,12 @@ def not_run_line(surface: str, mhz: int, cy: int, size: str, poked: bool,
     """CELL row for a declared cell that never ran.  `poked`: its settle
     would have come from the settle poke (false for the bare-metal arbiter,
     whose +4 cy read distance is its own code)."""
+    if mhz is None:                 # crosscheck: clock picked after leg 4
+        settle = cy if mitigated else "native(unmitigated)"
+        return (f"CELL {surface} surface=fetch clock=n/a "
+                f"settle_cy={settle} reu={size.replace(' ', '')} N=0 k=0 "
+                f"verdict=NOT_RUN device={devstr} "
+                f"prg=sha256:{prg_sha[:16]}")
     if poked:
         name = cell_name(surface, mhz, cy, mitigated)
         settle = cy if mitigated else "native(unmitigated)"
@@ -2380,6 +2386,77 @@ def self_test() -> int:
           "keep it; the arbiter keeps its own +4 cy",
           not lbl_bad, "; ".join(lbl_bad[:4]))
 
+    # -- declared cells follow --only; the exit status follows declared ------
+    def _run(argv_, ran_if, extra_emitted=0):
+        """A synthetic run: every declared cell for which ran_if(d) holds
+        PASSes, plus `extra_emitted` undeclared PASS rows (e.g. a stage whose
+        cells are not declared); the rest get main()'s NOT_RUN rows."""
+        o_ = parse_args(argv_ + ["--seed", "1"])
+        dec_ = declared_cells(o_)
+
+        def _main_runs(d_):
+            # What main() actually executes: a stage's cells run only when
+            # the stage is selected (crosscheck also needs fetch).  Without
+            # this the fixture would "run" deselected stages and hide the
+            # defect it is here to catch.
+            s_ = d_[0].split("_")[0]
+            if s_ == "crosscheck":
+                return "crosscheck" in o_.only and "fetch" in o_.only
+            return s_ in o_.only
+        ran_ = {d_ for d_ in dec_ if _main_runs(d_) and ran_if(d_)}
+        lines_ = []
+        for i_, d_ in enumerate(sorted(ran_, key=str)):
+            c_ = CellResult(f"{d_[0]}_{i_}", 48, 12, "512 KB", "cpu", "fetch")
+            c_.n = 10
+            lines_.append(c_.line("d", 48.0, "0" * 64))
+        for i_ in range(extra_emitted):
+            c_ = CellResult(f"extra_{i_}", 48, 12, "512 KB", "cpu", "fetch")
+            c_.n = 10
+            lines_.append(c_.line("d", 48.0, "0" * 64))
+        lines_ += not_run_lines(dec_, ran_, True, "d", "0" * 64)
+        buf_ = io.StringIO()
+        with contextlib.redirect_stdout(buf_):
+            rc_ = run_exit_status(lines_, 0, mitigated=True,
+                                  declared_n=len(dec_))
+        return rc_, dec_, buf_.getvalue()
+    import io
+    import contextlib
+    dc_bad = []
+    rc_, dec_, _o = _run(["--only", "fetch"], lambda d: True)
+    if rc_ != 0:
+        dc_bad.append(f"--only fetch, all ran -> {rc_} (declared surfaces "
+                      f"{sorted({d[0] for d in dec_})})")
+    rc_, dec_, _o = _run(["--only", "arbiter,fetch"], lambda d: True)
+    if rc_ != 0:
+        dc_bad.append(f"--only arbiter,fetch, all ran -> {rc_} (declared "
+                      f"{sorted({d[0] for d in dec_})})")
+    rc_, dec_, _o = _run(["--only", "fetch", "--speeds", "64,16"],
+                         lambda d: not (d[0] == "fetch" and d[1] == 64))
+    if rc_ != 4:
+        dc_bad.append(f"--only fetch, 64 MHz discarded -> {rc_}, want 4")
+    rc_, dec_, _o = _run([], lambda d: d[0] != "stash")
+    if rc_ != 4:
+        dc_bad.append(f"default stages, stash never ran -> {rc_}, want 4")
+    rc_, dec_, _o = _run(["--only", "fetch,crosscheck"], lambda d: True)
+    if rc_ != 0 or not any(d[0].startswith("crosscheck") for d in dec_):
+        dc_bad.append(f"--only fetch,crosscheck all ran -> {rc_}; "
+                      f"crosscheck declared: "
+                      f"{any(d[0].startswith('crosscheck') for d in dec_)}")
+    rc_, dec_, _o = _run(["--only", "fetch,crosscheck"],
+                         lambda d: not d[0].startswith("crosscheck"))
+    if rc_ != 4:
+        dc_bad.append(f"--only fetch,crosscheck, crosscheck never ran -> "
+                      f"{rc_}, want 4")
+    check("declared cells follow --only (narrowed complete run -> 0; a "
+          "selected clock discarded -> 4; crosscheck declared when selected)",
+          not dc_bad, "; ".join(dc_bad))
+    rc_, dec_, out_ = _run(["--only", "fetch"], lambda d: True,
+                           extra_emitted=3)
+    check("RUN COMPLETENESS prints the true declared count, not the number "
+          "of CELL lines", f"declared {len(dec_)} cell(s)" in out_,
+          f"declared={len(dec_)}; printed: "
+          f"{out_.strip().splitlines()[0] if out_.strip() else ''!r}")
+
     # -- leg 5 prose: a control build cannot report a settle floor ----------
     l5_bad = []
     for th_ in (12, 44, ORIG_CYCLES, None):
@@ -2937,8 +3014,56 @@ def parse_args(argv):
 # Main                                                                         #
 # --------------------------------------------------------------------------- #
 
+CROSSCHECK_TAGS = ("most_likely_fail", "after_clock_change", "clean")
+
+
+def crosscheck_key(tag: str, settle: tuple[str, int], size: str) -> tuple:
+    """Crosscheck cells' clock is chosen from the clocks leg 4 kept, so it
+    is not known when the run is declared: key on tag + settle instead."""
+    return (f"crosscheck_{tag}", None, stub_cycles(*settle), size)
+
+
+def declared_cells(opts) -> list[tuple]:
+    """Every cell the run intends to produce, for the SELECTED stages only:
+    (surface, mhz, cy, size).  A deselected stage is not a cell that failed
+    to run, so it must not become a NOT_RUN row (that made every narrowed
+    run exit 4 and taught wrappers to ignore 4)."""
+    ladder = parse_ladder(opts.ladder)
+    only = set(opts.only)
+    declared: list[tuple] = []
+    for size in opts.reu_sizes:
+        if "arbiter" in only:
+            declared.append(("arbiter", opts.speeds[0], 4, size))
+        for mhz in opts.speeds:
+            for f, k in ladder:
+                if "fetch" in only:
+                    declared.append(("fetch", mhz, stub_cycles(f, k), size))
+                if "stash" in only:
+                    declared.append(("stash", mhz, stub_cycles(f, k), size))
+        if "crosscheck" in only:
+            # Declared even without fetch (which crosscheck needs): the
+            # operator asked for it, and it cannot run -- NOT_RUN, honestly.
+            for tag in CROSSCHECK_TAGS:
+                settle = ("orig", 0) if tag == "clean" else ladder[0]
+                declared.append(crosscheck_key(tag, settle, size))
+    return declared
+
+
+def not_run_lines(declared, ran, mitigated: bool, devstr: str,
+                  prg_sha: str) -> list[str]:
+    """NOT_RUN rows for every declared cell that never ran."""
+    out = []
+    for d in declared:
+        if d not in ran:
+            surf, mhz, cy, size = d
+            out.append(not_run_line(surf, mhz, cy, size, surf != "arbiter",
+                                    mitigated, devstr, prg_sha))
+    return out
+
+
 def run_exit_status(cell_lines: list[str], rc: int,
-                    mitigated: bool = True) -> int:
+                    mitigated: bool = True,
+                    declared_n: int | None = None) -> int:
     """Process exit status from the CELL lines the run actually emitted
     (every declared cell has one, run or NOT_RUN).  See EXIT STATUS in the
     module docstring.  Precedence: an rc already decided (130) > 3 (no real
@@ -2962,7 +3087,9 @@ def run_exit_status(cell_lines: list[str], rc: int,
     verdicts = [v for v, _ in cells]
     real = [v for v in verdicts if v in ("PASS", "FAIL")]
     counts = {v: verdicts.count(v) for v in sorted(set(verdicts))}
-    print(f"\nRUN COMPLETENESS: declared {len(cells)} cell(s), ran "
+    n_decl = declared_n if declared_n is not None else len(cells)
+    print(f"\nRUN COMPLETENESS: declared {n_decl} cell(s), emitted "
+          f"{len(cells)} CELL row(s), ran "
           f"{len(cells) - counts.get('NOT_RUN', 0)}, real verdicts "
           f"{len(real)}; verdict counts {counts or '{}'}")
     if not real:
@@ -3029,13 +3156,7 @@ def main(argv=None):
     mitigated_build = True      # set from the labels once the build is known
     ladder = parse_ladder(opts.ladder)
     ladder_min_cy = min(stub_cycles(f, k) for f, k in ladder)
-    declared: list[tuple] = []      # every cell we intend to run
-    for size in opts.reu_sizes:
-        declared.append(("arbiter", opts.speeds[0], 4, size))
-        for mhz in opts.speeds:
-            for f, k in ladder:
-                declared.append(("fetch", mhz, stub_cycles(f, k), size))
-                declared.append(("stash", mhz, stub_cycles(f, k), size))
+    declared = declared_cells(opts)     # every cell we intend to run
     ran: set[tuple] = set()
 
     try:
@@ -3292,6 +3413,7 @@ def main(argv=None):
                                    f"crosscheck_{tag}_{mhz}MHz",
                                    host_read=opts.host_read)
                     emit(c.line(devstr, measured.get(mhz), prg_sha))
+                    ran.add(crosscheck_key(tag, settle, size))
                 stage_times.append((f"crosscheck/{size}",
                                     time.monotonic() - t0))
 
@@ -3316,12 +3438,8 @@ def main(argv=None):
                     print(ln); prose.append(f"[{size}] {ln}")
 
         # cells declared but never run, so a reader can tell 0/N from untested
-        for d in declared:
-            if d not in ran:
-                surf, mhz, cy, size = d
-                lines.append(not_run_line(surf, mhz, cy, size,
-                                          surf != "arbiter", mitigated_build,
-                                          devstr, prg_sha))
+        lines.extend(not_run_lines(declared, ran, mitigated_build, devstr,
+                                   prg_sha))
 
         try:
             set_turbo_mhz(client, 1)
@@ -3376,7 +3494,8 @@ def main(argv=None):
         print("\nElapsed per stage:")
         for name, secs in stage_times:
             print(f"  {name:22} {secs:7.0f} s")
-    return run_exit_status(lines, rc, mitigated=mitigated_build)
+    return run_exit_status(lines, rc, mitigated=mitigated_build,
+                           declared_n=len(declared))
 
 
 if __name__ == "__main__":
