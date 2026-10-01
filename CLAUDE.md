@@ -269,6 +269,7 @@ make check-harness-routing           # every device write in tools/ routes throu
                                      #   managed layer (`transport.write_memory`) and never below it —
                                      #   see "Device traffic: the harness is the only route" below
                                      #   (no VICE, no device, no network)
+make check-inc-deps                  # every object reassembles when an .include'd header or the Makefile changes; clean/dry-run side effects (issue #178; no VICE, temp copy, opt-in)
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
                                      #   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
                                      #   C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py

@@ -120,7 +120,7 @@ git archive \
   Makefile tools/build_release.sh \
   tools/check_archives.py tools/check_doc_snippets.py \
   tools/check_release_notes.py tools/check_harness_routing.py \
-  tools/check_release_state.py \
+  tools/check_release_state.py tools/check_inc_deps.py \
   tools/bench_reu_mult.py \
   README.md API.md CHANGELOG.md CLAUDE.md VERSION \
   "$NOTES" \

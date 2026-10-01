@@ -12,6 +12,41 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
+  its source `.include`s (`sqtab_base.inc`, `reu_banks.inc`,
+  `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout
+  touching only a header -- left `make` / `make lib-*` reporting "Nothing to
+  be done" over a stale PRG or archive. Measured on the pre-fix Makefile with
+  a one-token edit per header, the incremental build differed from a clean
+  build in 7 to 13 of the 13 artifacts (default PRG plus twelve archives)
+  depending on the header. Every recipe now goes through one `$(ASSEMBLE)`
+  command carrying `ca65 --create-dep $@.d`, and the `.d` files are
+  `-include`d, so all 33 header-to-object edges (every variant object) are
+  tracked and a new `.include` needs no Makefile edit. Every object also
+  depends on the Makefile, so a recipe-flag change reassembles too.
+- **`make -n` / `-q` / `-t` with changed `CONTRACT_DEFINES` no longer delete
+  build/.** The knob-staleness invalidation ran in a parse-time `$(shell)`
+  and fired on dry runs too, deleting every object and archive and rewriting
+  the stamp. A dry run now leaves build/ untouched while still reporting the
+  rebuild (`-n` prints it, `-q` answers "stale"); goals that build nothing
+  (`clean`, `dist`, `check-release-*`, `check-harness-routing`,
+  `check-inc-deps`) leave it alone as well. A real build with changed knobs
+  invalidates exactly as before (check-archives' staleness leg passes).
+- **`make clean` removes the variant test PRGs** (`nist-curves-{nocomb,onchip,
+  onchip-nocomb}.prg`), their `labels_*` / `labels_*_raw` files, the `.d`
+  files and the knob stamp.
+
+### Added
+
+- `make check-inc-deps` (`tools/check_inc_deps.py`): discovers the include
+  set and the object set (never hard-coded), then proves in a throwaway copy
+  of the tree that touching each header reassembles every object including
+  it, that `make clean` leaves no artefact, and that dry runs are side-effect
+  free. Opt-in; not a prerequisite of `all`. Default PRG and all twelve
+  archives are byte-identical before and after this change.
+
 ## [0.15.0] — 2026-09-11
 
 MINOR. `LIB_NISTCURVES_ABI_VERSION` **stays 4** — verified against the frozen
