@@ -1682,6 +1682,25 @@ def not_run_line(surface: str, mhz: int, cy: int, size: str, poked: bool,
             f"prg=sha256:{prg_sha[:16]}")
 
 
+def leg5_summary(mhz: int, th: int | None, mitigated: bool) -> str:
+    """Leg 5's per-clock summary line.
+
+    On an unmitigated control every ladder point ran at the same native
+    settle (the poke is a no-op), so `th` is just the nominal label of the
+    first clean cell and names no settle that was applied.  Say what was
+    measured instead: whether the native settle was clean.
+    """
+    if not mitigated:
+        return (f"    {mhz} MHz: native settle (unmitigated control; the "
+                f"ladder collapsed to one point) — "
+                + ("a clean cell followed the last failing one" if th
+                   else "no clean cell after the last failing one; see the "
+                        "CELL rows for N and k"))
+    return (f"    {mhz} MHz: "
+            + (f"smallest clean settle {th} cy" if th
+               else "no ladder point was clean"))
+
+
 def stash_cell(dev, mhz, reu_size, rows, n_fetches, settle, name) -> CellResult:
     """STASH-path cell: poison every row -> poke the settle -> OP_INIT ->
     verify with a LONG settle on the fetch.
@@ -2360,6 +2379,21 @@ def self_test() -> int:
           "settle_cy; stash_cell driven, NOT_RUN rows too); mitigated rows "
           "keep it; the arbiter keeps its own +4 cy",
           not lbl_bad, "; ".join(lbl_bad[:4]))
+
+    # -- leg 5 prose: a control build cannot report a settle floor ----------
+    l5_bad = []
+    for th_ in (12, 44, ORIG_CYCLES, None):
+        s_ = leg5_summary(48, th_, mitigated=False)
+        if re.search(r"\d+\s*cy\b", s_) or "native" not in s_:
+            l5_bad.append(f"UNMITIGATED th={th_}: {s_.strip()!r}")
+        s_ = leg5_summary(48, th_, mitigated=True)
+        want_ = (f"smallest clean settle {th_} cy" if th_
+                 else "no ladder point was clean")
+        if want_ not in s_:
+            l5_bad.append(f"mitigated th={th_}: {s_.strip()!r}")
+    check("leg 5 summary: a control build names its native settle, never a "
+          "'smallest clean settle N cy'; a mitigated build keeps it",
+          not l5_bad, "; ".join(l5_bad))
 
     # -- verify-builds: the build/ guard reports even when a build raises ---
     import io
@@ -3214,9 +3248,7 @@ def main(argv=None):
                         if c.verdict == "FAIL":
                             th = None
                     thresholds[mhz] = th
-                    print(f"    {mhz} MHz: "
-                          + (f"smallest clean settle {th} cy" if th
-                             else "no ladder point was clean"))
+                    print(leg5_summary(mhz, th, dev.mitigated))
                 stage_times.append((f"fetch/{size}", time.monotonic() - t0))
 
             # ---- LEG 6: STASH path ------------------------------------
