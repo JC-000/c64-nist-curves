@@ -42,6 +42,73 @@ contract).
     `--cpu 65c02` consumer keeps `stz`). A `.dword` of it still emits
     `00 00 02 00`, and consumers that never reference it are unaffected.
 
+- **`tools/test_reu_mul_u64.py`: provenance, clock and exit status are
+  measured from the device in hand (issues #172, #173).** Tool-only; the
+  PRG and archives are unchanged.
+  - **Firmware field.** The CELL row's fw field was a hardcoded
+    `3.15+patch814` on every device. It is now the version `/v1/info`
+    reports, with a leading `V` accepted. An explicit `--firmware-note`
+    must begin with that version and may hold only `[A-Za-z0-9._+()~-]`.
+  - **Device field.** It is now a single row token. Before, the product
+    name's spaces split it across three tokens.
+  - **CELL row format change.** Rows recorded before this release keep the
+    old spelling and are not rewritten. Nothing in this repo parses CELL
+    rows; external readers should accept both forms. In new rows:
+    - whitespace, `=` and `/` inside a device sub-field become `_`, e.g.
+      `device=Ultimate_64_Elite/601A96/fw3.15(patch_level_unverified_by_v1_info)/fpga11F/core1.4F`
+      (was `device=Ultimate 64 Elite/...`);
+    - the generated fw suffix says `_by_v1_info`, not `_by_/v1/info`;
+    - `clock_measured=` is followed by `clock_pm=`, `vic_den=` ($D011
+      bit 4) and `sprites=` ($D015, hex). OP_CLOCK captures both
+      registers on the C64 side; they are the display conditions the clock
+      was measured under;
+    - on an unmitigated control build, fetch, stash and NOT_RUN rows read
+      `settle_cy=native(unmitigated)` and are named
+      `<surface>_<mhz>MHz_native_unpoked-req<cy>`. Before, stash and
+      NOT_RUN rows claimed the requested settle, which a control build
+      cannot apply.
+  - **Identity re-check.** `/v1/info` is re-read after every reboot.
+  - **Cycle model.** The clock check modelled its loop as 1279 cycles per
+    pass, which is the inner loop only. The pass was really 1305 cycles
+    (2.0% low at every clock). The pass counter is now 24-bit, and the
+    model is 1309 cycles per pass plus 12 / 5 on mid / high borrows.
+  - **Two-point fit.** The clock is now the slope of a 0.5 s window and a
+    ~10 s extension. Any fixed overhead is the intercept, reported as
+    measured. Each row carries the jiffy-quantisation bound as `clock_pm=`.
+  - **What the clock reading is.** `clock_measured` is the effective CPU
+    rate with the display on, the same conditions the fetch and stash
+    cells run in. It is not a delivered clock. It includes:
+    - badlines: ~5.85% of PHI2 cycles on NTSC, ~5.09% on PAL;
+    - GideonZ/1541ultimate#874: one PHI2 multiple short at the top two
+      speed indices (U64E 40 -> 38.99, 48 -> 47.00);
+    - the small KERNAL jiffy-IRQ cost.
+
+    U64E fw 3.15 / fpga 125 / core 1.50 (NTSC) hardware measured 48 -> 45.00 +-0.15
+    with intercept 0.0 +-18.4 ms, and 16 -> 15.30 +-0.05 with intercept
+    -6.0 +-18.4 ms. So there is no fixed overhead, and badlines plus #874
+    predict 45.25 / 15.41. A delivered-clock reading would need
+    $D011=$0B, $D015=0, SEI and a free-running CIA timer, which the tool
+    does not set up. The measurement is unchanged; only its labelling and
+    recorded conditions are new.
+  - **Exit status.** It now has a documented contract (module docstring
+    and `--help`):
+    - 0: complete run
+    - 1: abort
+    - 2: refused
+    - 3: no real verdict
+    - 4: partial
+    - 5: a FAIL at the shipped 106-cycle settle
+    - 130: interrupted
+
+    Before, a run with no or partial verdicts exited 0. Only the selected
+    `--only` stages are declared, so a narrowed run that completes exits 0.
+    The unimplemented `sqr` stage (the fp_sqr diagonal site) is now refused
+    as a usage error (exit 2), alone or combined. Before, `--only sqr`
+    exited 3 and `--only fetch,sqr` silently ignored it. `crosscheck`
+    without `fetch`, which can never run, is refused the same way.
+  - **`--verify-builds`.** It builds in a temporary `BUILD_DIR` and no
+    longer wipes the user's `build/`.
+
 - **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
   its source `.include`s (`sqtab_base.inc`, `reu_banks.inc`,
   `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout

@@ -70,20 +70,54 @@ as `verdict=NOT_RUN` so a later reader can tell 0/5 from not-tested.
 
 WHAT THIS RUN IS NOT ENTITLED TO CLAIM
 ---------------------------------------
-  * that the defect is fixed or gone in fw 3.15 + patch #814 — a
+  * that the defect is fixed or gone in the firmware under test — a
     non-reproduction is an upper bound on a rate at a stated N, nothing more;
   * a stash floor and a fetch floor as one number;
-  * anything about 64 MHz (this device stops at 48) or about the six
+  * anything about a clock the device was not measured at, or about the six
     structural hot fp_mul/fp_sqr sites (no poke reaches them);
   * a bounded-spin / poll-iteration statistic — the settle loop reuses
     `nistcurves_reu_wait_cnt`, so it is destroyed on every call;
-  * a fw "3.15" row: /v1/info cannot distinguish stock from this device's
-    local patch GideonZ/1541ultimate#814;
+  * a firmware it did not observe: the row's fw field is the version the
+    device's own /v1/info reported, optionally annotated by --firmware-note
+    (which must begin with that version, issue #172) — /v1/info cannot
+    distinguish stock from a local patch such as GideonZ/1541ultimate#814;
   * a REU-size effect without the byte-index histogram that discriminates the
     candidate mechanisms;
   * agreement or disagreement with the incidental x25519 handshake pass — a
     handshake cannot separate "tables correct" from "tables wrong but the
     protocol survived", so it is not commensurable with a row check.
+
+WHAT clock_measured IS
+----------------------
+The effective CPU rate with the display on, as the cells themselves run:
+leg 4 times a loop with DEN=1 and the KERNAL IRQ live, so the reading
+includes badlines (~5.85% of PHI2 cycles on NTSC, ~5.09% on PAL), the
+one-PHI2-multiple shortfall at the top two speed indices that
+GideonZ/1541ultimate#874 documents, and the small KERNAL jiffy-IRQ cost.
+It is not a delivered clock. That would need $D011=$0B, $D015=0, SEI and a
+free-running CIA timer, which this tool does not set up. OP_CLOCK reads
+$D011 and $D015 on the C64 side, and every row records them as `vic_den=`
+and `sprites=`.
+
+EXIT STATUS
+-----------
+A wrapper that reads only the exit status must never mistake a run that did
+not happen, or did not finish, for a measurement.
+  0    complete run: every declared cell reached PASS or FAIL, and no FAIL
+       at the shipped settle (sub-floor FAILs are expected bracket data)
+  1    aborted (ABORT / missing build / exception), or --self-test /
+       --verify-builds failed, or U64_HOST unset / device unreachable
+  2    refused to start: device lock not acquired (no --wait, or --wait
+       timed out), or --firmware-note rejected against /v1/info; also
+       argparse's own status for a command-line usage error, including an
+       unimplemented --only stage (sqr) or crosscheck without fetch
+  3    no real verdict: every cell NOT_RUN / ERROR / CONTAMINATED, or none
+  4    partial: some declared cells NOT_RUN / ERROR / CONTAMINATED (e.g.
+       a clock leg 4 discarded), the rest PASS / FAIL
+  5    a FAIL at the shipped settle (106 cy body) on a mitigated build:
+       the library as shipped returned wrong rows -- a regression signal
+  130  interrupted (^C); device config restored before exit
+Precedence when several apply: 130 > 3 > 5 > 4 > 0.
 
 This tool never prints a recommendation for LIB_NISTCURVES_REU_SETTLE_ITER.
 A threshold measured on one device generation is not a fleet margin
@@ -101,12 +135,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import os
 import random
 import pathlib
 import re
 import shutil
+import tempfile
 import subprocess
 import sys
 import time
@@ -126,20 +163,131 @@ os.environ.setdefault("U64_REQUIRE_DEVICE_LOCK", "1")
 # Forcing `U64_AUTO_TEMP_GC=1` would override that decision from the call
 # site; see CLAUDE.md "Device traffic: the harness is the only route".
 
+# Exit status contract -- see EXIT STATUS in the module docstring.
+EXIT_OK = 0             # complete run: every declared cell PASS or FAIL
+EXIT_ABORT = 1          # aborted / self-test or verify-builds failed
+EXIT_REFUSED = 2        # refused to start: lock not acquired, bad fw note
+EXIT_NO_VERDICT = 3     # no cell reached PASS or FAIL
+EXIT_PARTIAL = 4        # some declared cells NOT_RUN / ERROR / CONTAMINATED
+EXIT_ORIG_FAIL = 5      # a FAIL at the shipped settle on a mitigated build
+EXIT_INTERRUPTED = 130  # ^C (device state restored first)
+
 BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
 DEFAULT_PRG = os.path.join(BUILD_DIR, "nist-curves.prg")
 DEFAULT_LABELS = os.path.join(BUILD_DIR, "labels.txt")
-ITER_BUILD_DIR = os.path.join(BUILD_DIR, "reu-settle")
 
-# /v1/info reports a bare "3.15" and CANNOT distinguish stock firmware from a
-# locally patched build.  This device carries GideonZ/1541ultimate#814
-# (bounded UCI socket table + close-all on C64 reset).  If that patch touches
-# REU/DMA arbitration at all, a pre-fix build that PASSES here means "the
-# patch fixed it", not "the defect is absent on 3.15" — the wrong conclusion
-# this experiment is most at risk of publishing to a fleet-wide issue.  So the
-# note rides on EVERY row, and nobody downstream has to assume a socket patch
-# is irrelevant to DMA timing.
-DEFAULT_FIRMWARE_NOTE = "3.15+patch814(unverified_by_/v1/info)"
+# /v1/info reports a bare version (e.g. "3.15") and CANNOT distinguish stock
+# firmware from a locally patched build.  The U64E this tool was written
+# against carries GideonZ/1541ultimate#814 (bounded UCI socket table +
+# close-all on C64 reset); if that patch touches REU/DMA arbitration at all, a
+# pre-fix build that PASSES there means "the patch fixed it", not "the defect
+# is absent on 3.15".  So the operator may annotate the reported version with
+# --firmware-note (e.g. "3.15+patch814"), and the note rides on EVERY row.
+#
+# Issue #172: that annotation used to be a hardcoded DEFAULT
+# ("3.15+patch814(unverified_by_/v1/info)") applied silently to ANY device,
+# so a C64U reporting fw 1.1.0 would have stamped fw3.15 on every CELL row --
+# a wrong field beside four live ones (product/serial/fpga/core), which
+# inherits credibility it has not earned.  Now the firmware field is always
+# derived from the /v1/info reply of the device actually observed: with no
+# note it IS the reported version (marked unverified for patch level), and an
+# explicit note must begin with the reported version verbatim or the run
+# refuses before touching anything.
+FIRMWARE_UNVERIFIED_SUFFIX = "(patch_level_unverified_by_v1_info)"
+
+
+def firmware_note_for_row(reported_fw, note):
+    """-> (firmware field recorded on every row, refusal reason or None).
+
+    Pure; the reported string is whatever `/v1/info`'s firmware_version said
+    for the device in hand.  Exactly one of the two results is None.
+    """
+    rep = (str(reported_fw).strip() if reported_fw is not None else "")
+    # A leading V/v is part of how /v1/info spells versions ("V3.14d"); the
+    # harness's u64_capabilities strips it the same way.  It is ignored for
+    # the version check and the prefix compare, never for what is recorded.
+    rep_core = rep.lstrip("Vv")
+    rep_ok = bool(re.match(r"\d+\.\d+", rep_core))
+    if note is None:
+        if not rep_ok:
+            return (f"{rep or '?'}(firmware_version_not_reported_by_v1_info)",
+                    None)
+        return f"{rep}{FIRMWARE_UNVERIFIED_SUFFIX}", None
+    note = str(note)
+    # The note is embedded in space-delimited key=value CELL rows, inside the
+    # '/'-delimited device field: whitespace, '=' or '/' would let it forge
+    # or split fields ("1.1.0 verdict=PASS" adds a second verdict).  A strict
+    # charset rather than a blacklist.
+    if not re.fullmatch(r"[A-Za-z0-9._+()~-]+", note):
+        return None, (f"--firmware-note {note!r} may contain only letters, "
+                      f"digits and . _ + ( ) ~ - (no whitespace, '=' or "
+                      f"'/'): it is written into space-delimited key=value "
+                      f"CELL rows and the '/'-delimited device field.")
+    if not rep_ok:
+        return None, (f"--firmware-note {note!r} cannot be checked: /v1/info "
+                      f"reported firmware_version {reported_fw!r}, which is "
+                      f"not a version. Omit --firmware-note to record what "
+                      f"the device reported.")
+    # The note is an annotation ON the reported version, so it must begin with
+    # it verbatim and not continue it (3.15 vs 3.150, 1.1.0 vs 1.1.05).
+    note_core = note.lstrip("Vv")
+    if not (note_core.lower().startswith(rep_core.lower())
+            and not re.match(r"[0-9A-Za-z]|\.\d",
+                             note_core[len(rep_core):])):
+        return None, (f"--firmware-note {note!r} does not begin with the "
+                      f"firmware this device reports ({rep!r} via /v1/info). "
+                      f"Refusing to stamp a firmware this device is not "
+                      f"running onto every row; pass a note that starts with "
+                      f"{rep!r}, or omit it.")
+    return note, None
+
+
+_IDENTITY_FIELDS = ("product", "unique_id", "serial", "firmware_version",
+                    "fpga_version", "core_version")
+
+
+def device_identity_changed(before: dict, after: dict) -> list[str]:
+    """Fields of /v1/info that differ between two observations.
+
+    Every row is stamped with the identity read at startup, so the tool
+    re-reads /v1/info after each reboot and refuses to keep stamping if the
+    box answering is no longer the one the rows name.
+    """
+    return [k for k in _IDENTITY_FIELDS if before.get(k) != after.get(k)]
+
+
+def _row_token(value) -> str:
+    """One CELL-row token: no whitespace (the row is space-delimited), no
+    '=' (key=value) and no '/' (the device field's own separator).  The
+    product name is "Ultimate 64 Elite" / "C64 Ultimate", which used to
+    split `device=` into three row tokens."""
+    return re.sub(r"[\s=/]+", "_", str(value)) or "?"
+
+
+def device_string(info: dict, note: str) -> str:
+    product = info.get("product", "?")
+    serial = info.get("unique_id") or info.get("serial") or "?"
+    fpga = info.get("fpga_version", "?")
+    core = info.get("core_version", "?")
+    return "/".join(_row_token(x) for x in
+                    (product, serial, f"fw{note}", f"fpga{fpga}",
+                     f"core{core}"))
+
+
+def acquire_device_lock(lock, wait: bool, lock_timeout: float) -> int:
+    """Take the DeviceLock. -> 0 when held, else the process exit status."""
+    holder = lock.read_info()
+    if holder is not None:
+        print(f"  [lock] currently held: {holder}")
+    acquired = (lock.acquire(timeout=lock_timeout) if wait
+                else lock.acquire(timeout=0.0, progress_window=None))
+    if not acquired:
+        print("FATAL: device lock not acquired"
+              + ("" if wait else " and --wait was not given")
+              + f"; holder {lock.read_info()}")
+        return EXIT_REFUSED
+    print("  [lock] acquired")
+    return 0
 
 # --------------------------------------------------------------------------- #
 # Memory map (CLAUDE.md "U64 bench architecture")                              #
@@ -151,6 +299,7 @@ TRAMPOLINE_ADDR = 0xC000
 TRAMPOLINE_LIMIT = 0xC400
 SNAP_LO, SNAP_HI = 0xC400, 0xC500  # 6502-side copy of a fetched row
 ARG_ADDR = 0xC600                 # 8 argument bytes
+VIC_CTRL1, VIC_SPRITE_EN = 0xD011, 0xD015
 OP_ADDR = 0xC60F
 SHIM_ADDR = 0x0800                # dead BASIC-stub bytes; JMP $C000 lives here
 INIT_SENTINEL_ADDR = 0x02A7
@@ -405,7 +554,7 @@ def patch_settle_immediate(prg: bytes, offset: int, iters: int) -> bytes:
 # Building (device-free integrity check; NOT on the measurement path)          #
 # --------------------------------------------------------------------------- #
 
-def run_make(defines: str = "") -> None:
+def run_make(defines: str = "", build_dir: str | None = None) -> None:
     """`make` with CONTRACT_DEFINES.
 
     The Makefile's knob stamp invalidates every OBJECT when the flattened knob
@@ -425,12 +574,17 @@ def run_make(defines: str = "") -> None:
     """
     env = dict(os.environ)
     env.pop("CA65FLAGS", None)
-    for stale in (DEFAULT_PRG, DEFAULT_LABELS):
+    bdir = build_dir or BUILD_DIR
+    for stale in (os.path.join(bdir, "nist-curves.prg"),
+                  os.path.join(bdir, "labels.txt")):
         try:
             os.remove(stale)
         except FileNotFoundError:
             pass
-    cmd = ["make"] + ([f"CONTRACT_DEFINES={defines}"] if defines else [])
+    # `BUILD_DIR` is a plain `=` in the Makefile, so a command-line value
+    # overrides it everywhere -- objects, stamp, knob wipe and all.
+    cmd = (["make"] + ([f"BUILD_DIR={build_dir}"] if build_dir else [])
+           + ([f"CONTRACT_DEFINES={defines}"] if defines else []))
     r = subprocess.run(cmd, capture_output=True, text=True,
                        cwd=PROJECT_ROOT, env=env)
     if r.returncode != 0:
@@ -462,15 +616,19 @@ def sha256_of(path: str) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def build_variant(tag: str, defines: str,
+def build_variant(tag: str, defines: str, build_dir: str,
                   expect_iter: int | None = None) -> tuple[str, str, str]:
+    """Build one knob variant in `build_dir` (never the user's build/: a
+    knob change makes the Makefile wipe every object, archive and PRG in its
+    BUILD_DIR) and keep a copy under build_dir/reu-settle/."""
     from c64_test_harness.labels import Labels
-    os.makedirs(ITER_BUILD_DIR, exist_ok=True)
-    run_make(defines)
-    prg = os.path.join(ITER_BUILD_DIR, f"{tag}.prg")
-    labels = os.path.join(ITER_BUILD_DIR, f"{tag}.labels.txt")
-    shutil.copyfile(DEFAULT_PRG, prg)
-    shutil.copyfile(DEFAULT_LABELS, labels)
+    keep = os.path.join(build_dir, "reu-settle")
+    os.makedirs(keep, exist_ok=True)
+    run_make(defines, build_dir=build_dir)
+    prg = os.path.join(keep, f"{tag}.prg")
+    labels = os.path.join(keep, f"{tag}.labels.txt")
+    shutil.copyfile(os.path.join(build_dir, "nist-curves.prg"), prg)
+    shutil.copyfile(os.path.join(build_dir, "labels.txt"), labels)
     if expect_iter is not None:
         lb = Labels.from_file(labels)
         with open(prg, "rb") as f:
@@ -565,7 +723,7 @@ BNE, BEQ, JMP, JSR = 0xD0, 0xF0, 0x4C, 0x20
 CMP_IMM, ORA_ABS, EOR_ABSY, DEC_ABS, INC_ABS = 0xC9, 0x0D, 0x59, 0xCE, 0xEE
 
 
-def build_trampoline(labels) -> bytes:
+def build_trampoline(labels, symbols: bool = False):
     """Op dispatcher at $C000.  See the ops' comments for what each proves."""
     main_loop = labels["main_loop"]
     if (main_loop >> 8) != (SHIM_ADDR >> 8):
@@ -663,17 +821,33 @@ def build_trampoline(labels) -> bytes:
     a.absl(JSR, "_bench_start")
     a.abs(LDA_ABS, ARG_ADDR);     a.abs(STA_ABS, ARG_ADDR + 4)
     a.abs(LDA_ABS, ARG_ADDR + 1); a.abs(STA_ABS, ARG_ADDR + 5)
+    # 24-bit pass counter (issue #173): a 16-bit one caps the window at
+    # 65535 passes = 1.3 s at 64 MHz, too short to quantise below ~1%.
+    a.abs(LDA_ABS, ARG_ADDR + 2); a.abs(STA_ABS, ARG_ADDR + 6)
     a.label("couter")
     a.imm(LDX_IMM, 0)
     a.label("cinner")
     a.b(DEX); a.rel(BNE, "cinner")
-    a.abs(LDA_ABS, ARG_ADDR + 4); a.rel(BNE, "cskip")
+    a.abs(LDA_ABS, ARG_ADDR + 4); a.rel(BNE, "cskip0")
+    a.abs(LDA_ABS, ARG_ADDR + 5); a.rel(BNE, "cskip1")
+    a.abs(DEC_ABS, ARG_ADDR + 6)
+    a.label("cskip1")
     a.abs(DEC_ABS, ARG_ADDR + 5)
-    a.label("cskip")
+    a.label("cskip0")
     a.abs(DEC_ABS, ARG_ADDR + 4)
     a.abs(LDA_ABS, ARG_ADDR + 4); a.abs(ORA_ABS, ARG_ADDR + 5)
+    a.abs(ORA_ABS, ARG_ADDR + 6)
     a.rel(BNE, "couter")
+    a.label("cdone")
     a.absl(JSR, "_bench_stop")
+    # Display state the window ran under, captured on the C64 side (outside
+    # the timed window): $D011 (DEN = bit 4 -> badlines) to ARG+3, $D015
+    # (sprite enable -> sprite DMA) to ARG+7.  clock_measured is the
+    # effective CPU rate UNDER these conditions, so they ride on every row.
+    a.label("cvic")
+    a.abs(LDA_ABS, VIC_CTRL1); a.abs(STA_ABS, ARG_ADDR + 3)
+    a.abs(LDA_ABS, VIC_SPRITE_EN); a.abs(STA_ABS, ARG_ADDR + 7)
+    a.label("cvicend")
     a.absl(JMP, "done")
 
     # -- OP_DMA: one arbitrary transfer from the 8 argument bytes (REU
@@ -816,14 +990,230 @@ def build_trampoline(labels) -> bytes:
     if len(code) > TRAMPOLINE_LIMIT - TRAMPOLINE_ADDR:
         raise SystemExit(f"trampoline {len(code)} B overruns "
                          f"${TRAMPOLINE_LIMIT:04X}")
+    if symbols:
+        return code, {k: TRAMPOLINE_ADDR + v for k, v in a.labels.items()}
     return code
+
+
+def simulate_6502(code: bytes, org: int, pc: int, stop: set[int],
+                  mem: dict[int, int], max_steps: int = 5_000_000):
+    """Cycle-count the trampoline's clock loop from its ASSEMBLED BYTES.
+
+    Implements only the opcodes the OP_CLOCK loop uses, with NMOS 6502
+    timings (branch: 2, +1 taken, +1 more if the target is on another page).
+    Anything else raises, so a loop edit cannot be silently mis-timed.
+    -> (cycles, pc at stop).  `mem` holds the counter bytes and is updated.
+    """
+    x = 0
+    a = 0
+    z = False
+    cyc = 0
+    for step in range(max_steps):
+        if step and pc in stop:     # never stops before the first opcode
+            return cyc, pc
+        i = pc - org
+        op = code[i]
+        if op == LDX_IMM:
+            x = code[i + 1]; z = x == 0; pc += 2; cyc += 2
+        elif op == DEX:
+            x = (x - 1) & 0xFF; z = x == 0; pc += 1; cyc += 2
+        elif op in (LDA_ABS, STA_ABS, ORA_ABS, DEC_ABS):
+            ad = code[i + 1] | (code[i + 2] << 8)
+            if op == LDA_ABS:
+                a = mem.get(ad, 0); z = a == 0; cyc += 4
+            elif op == STA_ABS:
+                mem[ad] = a; cyc += 4
+            elif op == ORA_ABS:
+                a |= mem.get(ad, 0); z = a == 0; cyc += 4
+            else:
+                v = (mem.get(ad, 0) - 1) & 0xFF
+                mem[ad] = v; z = v == 0; cyc += 6
+            pc += 3
+        elif op == BNE:
+            d = code[i + 1]
+            nxt = pc + 2
+            if not z:
+                tgt = (nxt + (d - 256 if d & 0x80 else d)) & 0xFFFF
+                cyc += 3 + (1 if (tgt >> 8) != (nxt >> 8) else 0)
+                pc = tgt
+            else:
+                cyc += 2; pc = nxt
+        else:
+            raise ValueError(f"simulate_6502: opcode ${op:02X} at "
+                             f"${pc:04X} is not modelled")
+    raise RuntimeError("simulate_6502: step limit hit")
+
+
+def clock_loop_cycles_simulated(code: bytes, syms: dict, n: int) -> int:
+    """Cycles from `couter` to `cdone` for an outer count of n."""
+    mem = {ARG_ADDR + 4 + k: (n >> (8 * k)) & 0xFF
+           for k in range(CLOCK_COUNTER_BYTES)}
+    cyc, _ = simulate_6502(code, TRAMPOLINE_ADDR, syms["couter"],
+                           {syms["cdone"]}, mem)
+    return cyc
 
 
 # --------------------------------------------------------------------------- #
 # Device driver                                                                #
 # --------------------------------------------------------------------------- #
 
-CLOCK_INNER_CYCLES = 1279          # ldx #0 / dex / bne, 256 iterations
+# OP_CLOCK's loop, per outer pass (NMOS timings; no branch crosses a page,
+# which the self-test proves by simulating the assembled bytes):
+#   ldx #0 2 | dex/bne x256: 255*5 + 4 = 1279 | lda lo 4 | bne 3 (taken)
+#   | dec lo 6 | lda 4 | ora 4 | ora 4 | bne 3                  = 1309
+# A pass entered with the low byte 0 takes the borrow path (bne 2, lda mid 4,
+# bne 3, dec mid 6) = +12; with the mid byte 0 too (bne 2, dec hi 6) = +5
+# more; the last pass falls out of `bne couter` = -1.  (Before issue #173's
+# 24-bit counter the pass was 1305; before that it was modelled as 1279 --
+# the inner loop alone, 2.0% short.)
+CLOCK_INNER_CYCLES = 1279          # dex / bne, 256 iterations
+CLOCK_PASS_CYCLES = 1309
+CLOCK_BORROW_MID = 12
+CLOCK_BORROW_HI = 5
+CLOCK_COUNTER_BYTES = 3
+CLOCK_MAX_PASSES = (1 << (8 * CLOCK_COUNTER_BYTES)) - 1
+
+# Issue #173.  The old check ran ONE window sized to ~0.5 s at the expected
+# clock and divided by its jiffy count.  Two properties of that shape made it
+# unfit as evidence, whatever the device was doing:
+#   * IF any fixed overhead O sat inside the window, it would read as a clock
+#     deficit of 0.5/(0.5+O) -- the same percentage at every setting, because
+#     the window was rescaled to 0.5 s each time;
+#   * a ~30-jiffy window quantises at +-3.3%.
+# Whether such an overhead exists is NOT established: bench_start /
+# bench_stop zero and read the jiffy clock on the C64 itself, around the
+# loop, so no host latency enters the window, and the real overhead may be
+# ~0.  The reported constant 0.9375 also contained the 2.0% cycle-model
+# shortfall fixed separately; what remains is not attributed here.  So the
+# clock is now the SLOPE of two windows,
+# f = (cycles2 - cycles1) / (jiffies2 - jiffies1) * 60: any fixed overhead is
+# the intercept and cancels, and the intercept is printed as MEASURED, with
+# its bound, rather than assumed in either direction.
+# The long window (~10 s, sized from the short one's crude reading so a clock
+# far from the expected one cannot run into the call timeout) puts ~570
+# jiffies between the two; each count is off by under one jiffy at its own
+# start phase, so the difference is within +-2 and the estimate within
+# ~+-0.35% (wider if a large overhead shortened the long window), and that
+# bound is carried on every row as clock_pm.
+#
+# NOT removed, and not removable by any fit: the KERNAL jiffy IRQ runs inside
+# the window and takes H cycles per tick, so the loop sees f - 60*H cycles
+# per second.  That is time-proportional, ~60H/f of the reading -- material
+# at 1 MHz (a few hundred cycles per tick is a ~1-2% low reading),
+# negligible at turbo.  Sizing it needs hardware.
+#
+# WHAT IS MEASURED (hardware run at 1e17794, U64E fw 3.15 / core 1.4F, NTSC:
+# 48 set -> 45.00 +-0.15, intercept 0.0 +-18.4 ms; 16 set -> 15.30 +-0.05,
+# intercept -6.0 +-18.4 ms).  clock_measured is the EFFECTIVE CPU rate under
+# the conditions OP_CLOCK runs in -- display on, KERNAL IRQ on -- which are
+# also the conditions every fetch/stash cell runs in, so the measurement is
+# deliberately left as is and labelled instead.  Its known biases:
+#   * badlines: with DEN=1 the VIC steals 40 cycles on each of 25 badlines
+#     per frame: 1000/(263*65) = 5.85% of PHI2 cycles on NTSC,
+#     1000/(312*63) = 5.09% on PAL;
+#   * GideonZ/1541ultimate#874: with the VIC blanked, speed indices 0-13
+#     deliver exactly label x PHI2, but the top two indices are one PHI2
+#     multiple short (U64E 40 -> 38.99, 48 -> 47.00), because the VIC always
+#     keeps one slot;
+#   * the KERNAL jiffy IRQ (small; see below).
+# Prediction 47 x 1.0227 x 0.9415 = 45.25 (measured 45.00) and
+# 16 x 1.0227 x 0.9415 = 15.41 (15.30); the remaining ~1% is loop alignment
+# against badline rows.  A DELIVERED-clock reading needs $D011=$0B (display
+# off), $D015=0 (no sprites), SEI and a free-running CIA timer; this tool
+# does none of that.  $D011/$D015 are read by OP_CLOCK on the C64 side and
+# carried on every row (vic_den=, sprites=).
+BADLINE_STEAL_NTSC = 25 * 40 / (263 * 65)
+BADLINE_STEAL_PAL = 25 * 40 / (312 * 63)
+CLOCK_SHORT_S = 0.5
+CLOCK_LONG_S = 10.0
+
+
+def clock_cycles(n: int) -> int:
+    """CPU cycles from `couter` to `cdone` for an outer count of n >= 1."""
+    return (n * CLOCK_PASS_CYCLES + (n // 256) * CLOCK_BORROW_MID
+            + (n // 65536) * CLOCK_BORROW_HI - 1)
+
+
+def _clock_passes(mhz: float, seconds: float) -> int:
+    return max(1, min(CLOCK_MAX_PASSES,
+                      int(mhz * 1e6 * seconds / CLOCK_PASS_CYCLES)))
+
+
+class ClockEstimate(float):
+    """The measured MHz (a float, so every existing consumer still works),
+    plus the evidence: the bounds the jiffy quantisation allows, the fixed
+    overhead the fit removed, and the two raw windows."""
+
+    def __new__(cls, mhz, lo, hi, overhead_s, windows):
+        self = super().__new__(cls, mhz)
+        self.lo, self.hi = lo, hi
+        self.overhead_s = overhead_s
+        self.windows = windows
+        return self
+
+    @property
+    def mhz(self) -> float:
+        return float(self)
+
+    @property
+    def pm(self) -> float:
+        return (self.hi - self.lo) / 2.0
+
+
+def clock_fit(n1: int, j1: int, n2: int, j2: int) -> ClockEstimate | None:
+    """Two-point fit. Each jiffy count is floor(60*(t + O) + phase) with its
+    own phase in [0,1), so each is within (-1,+1) of 60*(t + O) and their
+    difference within (-2,+2) of the true 60*(t2 - t1)."""
+    dc = clock_cycles(n2) - clock_cycles(n1)
+    dj = j2 - j1
+    if dc <= 0 or dj < 3:
+        return None
+    f = dc / (dj / 60.0)
+    lo = dc / ((dj + 2) / 60.0)
+    hi = dc / ((dj - 2) / 60.0)
+    # Intercept, extrapolated back from the SHORT window: j1's own (-1,+1)
+    # jiffy plus the slope's relative error times the short window's length
+    # (~0.1 jiffy when the short window is the planned 0.5 s; more when the
+    # clock was far below the expected one and it ran long).
+    t1 = clock_cycles(n1) / f
+    over = j1 / 60.0 - t1
+    over_pm = 1.0 / 60.0 + t1 * (hi - lo) / 2.0 / f
+    est = ClockEstimate(f / 1e6, lo / 1e6, hi / 1e6, over,
+                        ((n1, j1), (n2, j2)))
+    est.overhead_pm_s = over_pm
+    return est
+
+
+def run_clock_measurement(expect_mhz: int, window):
+    """Pure decision logic of the in-band clock check.
+
+    `window(outer) -> jiffies | None` is the only device-coupled step (one
+    OP_CLOCK call); the self-test drives this with synthetic jiffy counts.
+    """
+    n1 = _clock_passes(expect_mhz, CLOCK_SHORT_S)
+    j1 = window(n1)
+    if not j1:
+        return None
+    crude = clock_cycles(n1) / (j1 / 60.0) / 1e6   # overhead-biased; sizing only
+    # Sized as an EXTENSION of the short window, so the difference is ~10 s
+    # even when the short one ran long (turbo not applied: 48 expected, 1 real).
+    n2 = min(CLOCK_MAX_PASSES, n1 + _clock_passes(crude, CLOCK_LONG_S))
+    j2 = window(n2)
+    if not j2:
+        return None
+    est = clock_fit(n1, j1, n2, j2)
+    # The crude reading carries the very overhead the fit removes, so a large
+    # one shortens the extension.  If it came up well short, re-size it once
+    # from the fitted (overhead-free) slope.
+    if est is not None and (j2 - j1) < 0.8 * 60.0 * CLOCK_LONG_S:
+        n3 = min(CLOCK_MAX_PASSES,
+                 n1 + _clock_passes(est.mhz, CLOCK_LONG_S))
+        if n3 > n2:
+            j3 = window(n3)
+            if not j3:
+                return None
+            est = clock_fit(n1, j1, n3, j3)
+    return est
 
 
 class Device:
@@ -835,6 +1225,7 @@ class Device:
         self.prg = None
         self.wait_orig = None
         self.zp: dict[str, int] = {}
+        self.clock_vic: tuple[int, int] | None = None   # ($D011, $D015)
 
     def _resume(self):
         try:
@@ -998,19 +1389,30 @@ class Device:
         return self.read(self.labels["nistcurves_reu_dma_timeout"], 1)[0]
 
     # -- in-band clock verification ----------------------------------------
-    def measure_mhz(self, expect_mhz: int) -> float | None:
-        outer = max(1, min(65535,
-                           int(expect_mhz * 1e6 * 0.5 / CLOCK_INNER_CYCLES)))
-        self.write(ARG_ADDR, bytes([outer & 0xFF, (outer >> 8) & 0xFF]))
+    def measure_mhz(self, expect_mhz: int):
+        self.clock_vic = None
+        est = run_clock_measurement(
+            expect_mhz, lambda outer: self._clock_window(outer, expect_mhz))
+        if est is not None and self.clock_vic is not None:
+            d011, d015 = self.clock_vic
+            est.vic_den = (d011 >> 4) & 1
+            est.sprites = d015
+        return est
+
+    def _clock_window(self, outer: int, expect_mhz: int) -> int | None:
+        """One OP_CLOCK call: run `outer` loop passes, return jiffies."""
+        self.write(ARG_ADDR, bytes((outer >> (8 * k)) & 0xFF
+                                   for k in range(CLOCK_COUNTER_BYTES)))
         self.write(self.labels["bench_ticks"], b"\x00\x00\x00")
         if self.call(OP_CLOCK, timeout_for("clock", expect_mhz),
                      poll_interval=0.05) is None:
             return None
         raw = self.read(self.labels["bench_ticks"], 3)
-        jiffies = (raw[0] << 16) | (raw[1] << 8) | raw[2]
-        if jiffies == 0:
-            return None
-        return outer * CLOCK_INNER_CYCLES / (jiffies / 60.0) / 1e6
+        # $D011 / $D015 as OP_CLOCK read them on the C64 side (ARG+3/+7);
+        # the host reads plain RAM here, never I/O.
+        vic = self.read(ARG_ADDR + 3, 5)
+        self.clock_vic = (vic[0], vic[4])
+        return (raw[0] << 16) | (raw[1] << 8) | raw[2]
 
 
 # --------------------------------------------------------------------------- #
@@ -1167,6 +1569,13 @@ class CellResult:
             f"surface={self.surface}",
             f"clock={self.clock}",
             f"clock_measured={'%.1f' % measured_mhz if measured_mhz else 'UNVERIFIED'}",
+            # issue #173: the jiffy-quantisation bound travels with the value,
+            # so a reader cannot take a 1-decimal figure for a 1% claim.
+            f"clock_pm={'%.2f' % measured_mhz.pm if hasattr(measured_mhz, 'pm') else 'n/a'}",
+            # the display state the clock was measured under: it is the
+            # effective CPU rate with these on (badlines / sprite DMA)
+            f"vic_den={getattr(measured_mhz, 'vic_den', 'n/a')}",
+            f"sprites={'0x%02X' % measured_mhz.sprites if hasattr(measured_mhz, 'sprites') else 'n/a'}",
             f"settle_cy={'native(unmitigated)' if self.settle_cy < 0 else self.settle_cy}",
             f"reu={self.reu_size.replace(' ', '')}",
             f"read={self.read_kind}",
@@ -1246,7 +1655,7 @@ def fetch_cell(dev, mhz, reu_size, rows, n_fetches, settle, name,
     form, k = settle
     # An unmitigated build has no pokeable settle; report it as native rather
     # than as the cycle count of a stub that was never written.
-    settle_cy = stub_cycles(form, k) if dev.mitigated else -1
+    settle_cy = cell_settle_cy(form, k, dev.mitigated)
     cell = CellResult(name, mhz, settle_cy, reu_size,
                       "cpu" + ("+host" if host_read else ""), "fetch")
     mdl, mdh = (dev.labels["nistcurves_mul_dma_lo"],
@@ -1299,6 +1708,95 @@ def fetch_cell(dev, mhz, reu_size, rows, n_fetches, settle, name,
     return cell
 
 
+def cell_settle_cy(form: str, k: int, mitigated: bool) -> int:
+    """settle_cy a CELL row may claim for a POKED settle.
+
+    An unmitigated control has no `nistcurves_reu_dma_wait`, so every poke is
+    a no-op (Device.set_settle returns early) and the cell runs at the
+    build's native settle.  -1 renders as `settle_cy=native(unmitigated)` --
+    the convention fetch_cell always followed and stash_cell did not.
+    """
+    return stub_cycles(form, k) if mitigated else -1
+
+
+def cell_name(surface: str, mhz: int, cy: int, mitigated: bool) -> str:
+    """Name of a cell whose settle is a POKE (fetch / stash ladder).  On a
+    control the requested ladder point is kept only to keep names unique,
+    and spelled so it cannot be read as a delivered settle."""
+    if mitigated:
+        return f"{surface}_{mhz}MHz_{cy}cy"
+    return f"{surface}_{mhz}MHz_native_unpoked-req{cy}"
+
+
+def not_run_line(surface: str, mhz: int, cy: int, size: str, poked: bool,
+                 mitigated: bool, devstr: str, prg_sha: str) -> str:
+    """CELL row for a declared cell that never ran.  `poked`: its settle
+    would have come from the settle poke (false for the bare-metal arbiter,
+    whose +4 cy read distance is its own code)."""
+    if mhz is None:                 # crosscheck: clock picked after leg 4
+        settle = cy if mitigated else "native(unmitigated)"
+        return (f"CELL {surface} surface=fetch clock=n/a "
+                f"settle_cy={settle} reu={size.replace(' ', '')} N=0 k=0 "
+                f"verdict=NOT_RUN device={devstr} "
+                f"prg=sha256:{prg_sha[:16]}")
+    if poked:
+        name = cell_name(surface, mhz, cy, mitigated)
+        settle = cy if mitigated else "native(unmitigated)"
+    else:
+        name, settle = f"{surface}_{mhz}MHz_{cy}cy", cy
+    return (f"CELL {name} surface={surface} clock={mhz} "
+            f"settle_cy={settle} reu={size.replace(' ', '')} N=0 k=0 "
+            f"verdict=NOT_RUN device={devstr} "
+            f"prg=sha256:{prg_sha[:16]}")
+
+
+def leg4_line(mhz: int, m) -> str:
+    """Leg 4's per-clock line for a ClockEstimate `m`."""
+    off = abs(m - mhz) / mhz
+    den = getattr(m, "vic_den", None)
+    spr = getattr(m, "sprites", None)
+    state = (f"vic_den={den if den is not None else 'n/a'} sprites="
+             + (f"0x{spr:02X}" if spr is not None else "n/a"))
+    if den == 1:
+        cond = ("effective CPU rate with the display on: includes badlines "
+                f"(~{BADLINE_STEAL_NTSC:.2%} NTSC / {BADLINE_STEAL_PAL:.2%} "
+                "PAL of PHI2 cycles) and, at the top two speed indices, "
+                "GideonZ/1541ultimate#874's one-PHI2-multiple shortfall")
+    elif den == 0:
+        cond = ("effective CPU rate with the display blanked (no badlines); "
+                "#874's top-index shortfall still applies")
+    else:
+        cond = "display state not captured"
+    return (f"    set {mhz} MHz -> measured {m:.2f} "
+            f"+-{m.pm:.2f} MHz ({off * 100:.1f}% off) [{state}; {cond}; "
+            f"not a delivered-clock reading]; fixed "
+            f"overhead (fit intercept, as measured; may be "
+            f"~0) "
+            f"{m.overhead_s * 1000:.1f} +-"
+            f"{m.overhead_pm_s * 1000:.1f} ms; windows "
+            f"(passes, jiffies) {m.windows}"
+            + ("  <-- DISCARDED (>20%)" if off > 0.20 else ""))
+
+
+def leg5_summary(mhz: int, th: int | None, mitigated: bool) -> str:
+    """Leg 5's per-clock summary line.
+
+    On an unmitigated control every ladder point ran at the same native
+    settle (the poke is a no-op), so `th` is just the nominal label of the
+    first clean cell and names no settle that was applied.  Say what was
+    measured instead: whether the native settle was clean.
+    """
+    if not mitigated:
+        return (f"    {mhz} MHz: native settle (unmitigated control; the "
+                f"ladder collapsed to one point) — "
+                + ("a clean cell followed the last failing one" if th
+                   else "no clean cell after the last failing one; see the "
+                        "CELL rows for N and k"))
+    return (f"    {mhz} MHz: "
+            + (f"smallest clean settle {th} cy" if th
+               else "no ladder point was clean"))
+
+
 def stash_cell(dev, mhz, reu_size, rows, n_fetches, settle, name) -> CellResult:
     """STASH-path cell: poison every row -> poke the settle -> OP_INIT ->
     verify with a LONG settle on the fetch.
@@ -1311,7 +1809,8 @@ def stash_cell(dev, mhz, reu_size, rows, n_fetches, settle, name) -> CellResult:
     reported as one number with the fetch floor.
     """
     form, k = settle
-    cell = CellResult(name, mhz, stub_cycles(form, k), reu_size, "host",
+    cell = CellResult(name, mhz, cell_settle_cy(form, k, dev.mitigated),
+                      reu_size, "host",
                       "stash")
     if not poison_table(dev, mhz):
         cell.error = "poison_table_failed"
@@ -1548,6 +2047,637 @@ def self_test() -> int:
     except Exception as e:
         check("trampoline assembles and links", False, f"{type(e).__name__}: {e}")
 
+    # -- the clock loop's cycle model, against the ASSEMBLED bytes ----------
+    # Oracle sanity first: `ldx #0 / dex / bne` is the textbook
+    # 2 + 256*5 - 1 = 1281 cycles, and 255 more when the bne crosses a page.
+    tiny = bytes([LDX_IMM, 0, DEX, BNE, 0xFD])
+    for org_, want in ((0xC000, 1281), (0xC0FD, 1281 + 255)):
+        try:
+            got, _ = simulate_6502(tiny, org_, org_, {org_ + len(tiny)}, {})
+        except Exception as e:
+            got = f"{type(e).__name__}: {e}"
+        check(f"simulator: ldx#0/dex/bne at ${org_:04X} is {want} cycles",
+              got == want, f"got {got}")
+    try:
+        code_, syms_ = build_trampoline(fake, symbols=True)
+        bad = {n_: (clock_cycles(n_),
+                    clock_loop_cycles_simulated(code_, syms_, n_))
+               for n_ in (1, 2, 255, 256, 257, 513, 600)}
+        bad = {k_: v_ for k_, v_ in bad.items() if v_[0] != v_[1]}
+        check("clock_cycles(n) == cycles simulated from the trampoline's "
+              "bytes, n in {1,2,255,256,257,513,600} (borrow cases incl.)",
+              not bad, "n: (model, simulated) " + str(bad))
+        # One pass entered at counter value v costs clock_cycles(v) -
+        # clock_cycles(v-1); simulate exactly that pass, incl. the 24-bit
+        # high-byte borrow a full run could not reach in reasonable time.
+        bad = {}
+        for v in (2, 5, 256, 512, 65536, 131072, 65536 * 3 + 256):
+            mem_ = {ARG_ADDR + 4 + k: (v >> (8 * k)) & 0xFF
+                    for k in range(CLOCK_COUNTER_BYTES)}
+            got, _ = simulate_6502(code_, TRAMPOLINE_ADDR, syms_["couter"],
+                                   {syms_["couter"], syms_["cdone"]}, mem_)
+            want = clock_cycles(v) - clock_cycles(v - 1)
+            left = sum(mem_[ARG_ADDR + 4 + k] << (8 * k)
+                       for k in range(CLOCK_COUNTER_BYTES))
+            if got != want or left != v - 1:
+                bad[v] = (want, got, left)
+        check("each single pass (incl. 24-bit high-byte borrow) costs what "
+              "clock_cycles() says and decrements the counter by exactly 1",
+              not bad, "v: (model, simulated, counter after) " + str(bad))
+    except Exception as e:
+        check("clock loop simulates", False, f"{type(e).__name__}: {e}")
+
+    # -- issue #173: a fixed overhead must not read as a clock deficit ------
+    # Synthetic device: the window is clock_cycles(outer) at the TRUE clock
+    # plus a fixed overhead, counted by a 60 Hz jiffy clock started at an
+    # arbitrary phase (floor), exactly what bench_start/bench_stop observe.
+    # The phase rotates per call, as it does on hardware.
+    def synth(f_mhz, over_s, phases, log):
+        it = iter(phases * 64)
+
+        def window(outer):
+            t = clock_cycles(outer) / (f_mhz * 1e6) + over_s
+            log.append(t)
+            return int(t * 60.0 + next(it))
+        return window
+
+    worst = []
+    for f_true, expect in ((1, 1), (16, 16), (48, 48), (64, 64),
+                           (47.0, 48), (60.0, 64), (1, 48), (64, 16)):
+        for over_j in (0.0, 2.0, 3.0, 15.0):
+            for phases in ((0.0, 0.0), (0.999, 0.0), (0.0, 0.999),
+                           (0.5, 0.25)):
+                log: list[float] = []
+                est = run_clock_measurement(
+                    expect, synth(f_true, over_j / 60.0, list(phases), log))
+                mhz = getattr(est, "mhz", est)
+                err = (abs(mhz - f_true) / f_true if mhz else float("inf"))
+                over = getattr(est, "overhead_s", None)
+                lo_, hi_ = (getattr(est, "lo", None), getattr(est, "hi", None))
+                o_pm = getattr(est, "overhead_pm_s", None)
+                ok = (err <= 0.006
+                      and over is not None and o_pm is not None
+                      and abs(over - over_j / 60.0) <= o_pm
+                      and (o_pm <= 1.2 / 60.0 if f_true == expect else True)
+                      and lo_ is not None and lo_ <= f_true <= hi_
+                      and (hi_ - lo_) / 2 / f_true <= 0.006
+                      and max(log) <= 40.0)
+                if not ok:
+                    worst.append(f"f={f_true} expect={expect} "
+                                 f"O={over_j:g}j ph={phases}: "
+                                 f"mhz={mhz if mhz is None else round(mhz, 3)}"
+                                 f" err={err:.2%} O_rec={over} "
+                                 f"bounds=({lo_},{hi_}) "
+                                 f"longest={max(log) if log else 0:.1f}s")
+    check("two-point clock: within 0.6% of truth, its +-bounds contain the "
+          "truth and are <= 0.6%, and the "
+          "injected overhead is recovered within its stated bound (<= 1.2 "
+          "jiffy when the clock is the expected one) at 1/16/48/64 MHz, "
+          "0/2/3/15-jiffy overhead, any phase; no window over 40 s",
+          not worst, f"{len(worst)} cases, e.g. " + "; ".join(worst[:3]))
+    # The issue's reported artifact, reproduced on the OLD estimator's shape
+    # (one 0.5 s window), is what the new one must be immune to: the same
+    # 2-jiffy overhead at every clock must leave the estimate unmoved.
+    moved = []
+    for f_true in (1, 16, 48, 64):
+        a0 = run_clock_measurement(f_true, synth(f_true, 0.0, [0.5], []))
+        a2 = run_clock_measurement(f_true, synth(f_true, 2 / 60, [0.5], []))
+        m0, m2 = getattr(a0, "mhz", a0), getattr(a2, "mhz", a2)
+        if not (m0 and m2 and abs(m2 - m0) / f_true <= 0.005):
+            moved.append(f"{f_true} MHz: {m0} -> {m2}")
+    check("injecting a 2-jiffy fixed overhead does not move the estimate",
+          not moved, "; ".join(moved))
+    est48 = run_clock_measurement(48, synth(48, 2 / 60, [0.5], []))
+    ln48 = CellResult("x", 48, 12, "512 KB", "cpu", "fetch").line(
+        "d", est48, "0" * 64)
+    # -- OP_CLOCK end to end: host encoding -> trampoline copy -> counter ----
+    # The loop checks above start at `couter` with the counter pre-seeded, so
+    # the ARG->counter copy and the host's encode/decode were never run.
+    # Here the ARGs are written by Device._clock_window itself, the copy runs
+    # on the assembled bytes, and the fake answers the way bench_stop does:
+    # jiffy_clock $A0 (MSB), $A1, $A2 (LSB) copied in order to bench_ticks.
+    class _FakeClockDev(Device):
+        def __init__(self, f_mhz, d011=0x1B, d015=0x00):
+            super().__init__(None, None)
+            self.labels = fake
+            self.mem: dict[int, int] = {}
+            self.f = f_mhz
+            self.d011, self.d015 = d011, d015
+            self.code, self.syms = build_trampoline(fake, symbols=True)
+            self.counters: list[int] = []
+
+        def write(self, addr, data):
+            for i_, b_ in enumerate(bytes(data)):
+                self.mem[addr + i_] = b_
+
+        def read(self, addr, n):
+            return bytes(self.mem.get(addr + i_, 0) for i_ in range(n))
+
+        def call(self, op, timeout, poll_interval=0.02):
+            if op != OP_CLOCK:
+                raise AssertionError(f"unexpected op {op}")
+            start = self.syms["clock"]
+            if self.code[start - TRAMPOLINE_ADDR] != JSR:
+                raise AssertionError("OP_CLOCK no longer opens with jsr")
+            simulate_6502(self.code, TRAMPOLINE_ADDR, start + 3,
+                          {self.syms["couter"]}, self.mem)
+            n_ = sum(self.mem.get(ARG_ADDR + 4 + k, 0) << (8 * k)
+                     for k in range(CLOCK_COUNTER_BYTES))
+            self.counters.append(n_)
+            j_ = int(clock_cycles(n_) / (self.f * 1e6) * 60.0 + 0.5)
+            self.write(fake["bench_ticks"],
+                       bytes([(j_ >> 16) & 0xFF, (j_ >> 8) & 0xFF, j_ & 0xFF]))
+            # The VIC registers as the C64 side would see them; whatever the
+            # trampoline does with them after bench_stop runs on its bytes.
+            self.mem[0xD011], self.mem[0xD015] = self.d011, self.d015
+            if "cvic" in self.syms:
+                simulate_6502(self.code, TRAMPOLINE_ADDR, self.syms["cvic"],
+                              {self.syms["cvicend"]}, self.mem)
+            return 0.1
+    fake["bench_ticks"] = 0x0890
+    # -- what clock_measured IS: the effective rate with the display on -----
+    vic_bad = []
+    try:
+        for d011_, d015_, den_, spr_ in ((0x1B, 0x00, 1, "0x00"),
+                                         (0x0B, 0x00, 0, "0x00"),
+                                         (0x9B, 0x05, 1, "0x05")):
+            fdv = _FakeClockDev(48, d011=d011_, d015=d015_)
+            est_v = fdv.measure_mhz(48)
+            ln_v = CellResult("x", 48, 12, "512 KB", "cpu", "fetch").line(
+                "d", est_v, "0" * 64)
+            l4_v = leg4_line(48, est_v) if est_v is not None else ""
+            for what_, s_ in (("CELL", ln_v), ("leg 4", l4_v)):
+                if (f"vic_den={den_}" not in s_
+                        or f"sprites={spr_}" not in s_):
+                    vic_bad.append(f"$D011=${d011_:02X} $D015=${d015_:02X}: "
+                                   f"{what_} lacks vic_den={den_} / "
+                                   f"sprites={spr_}: {s_.strip()[:100]!r}")
+            if "vic_den=" in ln_v and (ln_v.index("vic_den=")
+                                        < ln_v.index("clock_pm=")):
+                vic_bad.append("vic_den precedes the clock it qualifies")
+    except Exception as e:
+        vic_bad.append(f"{type(e).__name__}: {e}")
+    check("the clock reading carries the display state it was taken under "
+          "(vic_den from $D011 bit 4, sprites=$D015) on every CELL row and "
+          "the leg-4 line, read on the C64 side by OP_CLOCK",
+          not vic_bad, "; ".join(vic_bad[:3]))
+    txt_bad = []
+    try:
+        buf_ = io.StringIO()
+        with contextlib.redirect_stdout(buf_):
+            describe_plan(parse_args(["--seed", "1"]), sample_rows(20, 1))
+        plan_ = buf_.getvalue()
+        l4_ = leg4_line(48, _FakeClockDev(48).measure_mhz(48))
+        for name_, t_ in (("dry-run plan", plan_), ("leg-4 line", l4_),
+                          ("module docstring", __doc__ or "")):
+            low_ = t_.lower()
+            for need_ in ("badline", "#874", "display on"):
+                if need_ not in low_:
+                    txt_bad.append(f"{name_} does not name {need_!r}")
+            if re.search(r"(?<!not )(?<!not a )delivered clock", low_):
+                txt_bad.append(f"{name_} calls the reading a delivered clock")
+    except Exception as e:
+        txt_bad.append(f"{type(e).__name__}: {e}")
+    check("clock_measured is labelled the effective CPU rate with the display "
+          "on: dry-run, leg 4 and docstring name badlines and #874 and never "
+          "call it a delivered clock", not txt_bad, "; ".join(txt_bad[:4]))
+    try:
+        bad = []
+        for f_, n_ in ((0.05, 0x012345), (0.2, 0x00FF01), (48, 0x0A0B0C),
+                       (1, 0x000102)):
+            fd = _FakeClockDev(f_)
+            j_got = fd._clock_window(n_, 48)
+            j_want = int(clock_cycles(n_) / (f_ * 1e6) * 60.0 + 0.5)
+            if fd.counters != [n_] or j_got != j_want:
+                bad.append(f"n=${n_:06X} f={f_}: counter "
+                           f"{[hex(c) for c in fd.counters]} jiffies "
+                           f"{j_got} want {j_want}")
+        check("_clock_window end to end: ARG encode -> trampoline copy -> "
+              "24-bit counter -> bench_ticks decode (3-byte jiffy counts "
+              "included)", not bad, "; ".join(bad))
+        bad = []
+        for f_ in (1, 16, 48, 64):
+            est_ = _FakeClockDev(f_).measure_mhz(f_)
+            if est_ is None or not est_.lo <= f_ <= est_.hi:
+                bad.append(f"{f_} MHz -> {est_ and (est_.lo, est_.hi)}")
+        check("measure_mhz end to end through the fake device brackets the "
+              "true clock at 1/16/48/64 MHz", not bad, "; ".join(bad))
+    except Exception as e:
+        check("OP_CLOCK end-to-end fake device", False,
+              f"{type(e).__name__}: {e}")
+    finally:
+        fake.pop("bench_ticks", None)
+
+    check("a CELL row carries clock_measured AND its clock_pm bound",
+          est48 is not None and "clock_measured=48.0" in ln48
+          and re.search(r"clock_pm=0\.\d\d ", ln48) is not None, ln48)
+
+    # -- issue #172: firmware provenance comes from the device observed ------
+    # /v1/info strings as reported by the two devices this tool has met.
+    u64e = {"product": "Ultimate 64 Elite", "unique_id": "601A96",
+            "firmware_version": "3.15", "fpga_version": "11F",
+            "core_version": "1.4F"}
+    c64u = {"product": "C64 Ultimate", "unique_id": "5D2518",
+            "firmware_version": "1.1.0", "fpga_version": "122",
+            "core_version": "1.49"}
+    for dev_info in (u64e, c64u):
+        rep = dev_info["firmware_version"]
+        note, why = firmware_note_for_row(rep, None)
+        row = device_string(dev_info, note) if note else ""
+        m_ = re.search(r"/fw([0-9.]+)", row)
+        check(f"no --firmware-note: the row's fw is the reported {rep}, not a "
+              f"constant", why is None and m_ is not None
+              and m_.group(1) == rep, f"row {row!r} refusal {why!r}")
+    note, why = firmware_note_for_row("1.1.0", "3.15+patch814")
+    check("an explicit note naming fw 3.15 on a device reporting 1.1.0 is "
+          "REFUSED", note is None and bool(why), f"recorded {note!r}")
+    note, why = firmware_note_for_row("1.1.0", "1.15+x")
+    check("major matches but minor does not (1.15 vs 1.1.0) -> REFUSED",
+          note is None and bool(why), f"recorded {note!r}")
+    # V-prefixed versions are real /v1/info output (the harness's
+    # u64_capabilities strips "Vv" and its fixtures use these strings).
+    for rep in ("V3.14d", "V3.16", "V3.15", "V3.13"):
+        note, why = firmware_note_for_row(rep, None)
+        check(f"no note, reported {rep!r}: recorded as reported, not "
+              f"'not_reported'", why is None and note is not None
+              and note.startswith(rep) and "not_reported" not in note,
+              f"{note!r} {why!r}")
+    for rep, nt, ok_want in (("V3.14d", "V3.14d+patch", True),
+                             ("V3.14d", "3.14d+patch", True),
+                             ("3.14d", "V3.14d+patch", True),
+                             ("V3.15", "v3.15", True),
+                             ("V3.16", "3.15+patch814", False),
+                             ("V3.14d", "V3.14+patch", False),
+                             ("V3.15", "V3.150", False)):
+        note, why = firmware_note_for_row(rep, nt)
+        check(f"reported {rep!r}, note {nt!r} -> "
+              f"{'accepted' if ok_want else 'REFUSED'}",
+              (note == nt and why is None) if ok_want
+              else (note is None and bool(why)), f"{note!r} {why!r}")
+    # The note lands inside space-delimited key=value CELL rows.
+    for nt in ("1.1.0 verdict=PASS clock_measured=64.0", "1.1.0 + patch814",
+               "1.1.0+k=v", "1.1.0\tx", "1.1.0+patch\n",
+               "1.1.0/fpga999"):
+        note, why = firmware_note_for_row("1.1.0", nt)
+        check(f"note {nt!r} (whitespace, '=' or '/') -> REFUSED",
+              note is None and bool(why), f"recorded {note!r}")
+    for dev_info in (u64e, c64u, dict(c64u, firmware_version="?")):
+        nt_, _w = firmware_note_for_row(dev_info["firmware_version"], None)
+        ds_ = device_string(dev_info, nt_)
+        check(f"device field for {dev_info['product']!r} is one token "
+              f"with exactly 5 '/'-fields (no whitespace or '=')",
+              not re.search(r"[\s=]", ds_) and len(ds_.split("/")) == 5,
+              repr(ds_))
+    note, why = firmware_note_for_row("1.1.0", "1.1.5")
+    check("a note claiming a different patch release (1.1.5 vs 1.1.0) -> "
+          "REFUSED", note is None and bool(why), f"recorded {note!r}")
+    note, why = firmware_note_for_row("3.15", "3.150")
+    check("a note that CONTINUES the reported version (3.150) -> REFUSED",
+          note is None and bool(why), f"recorded {note!r}")
+    check("identity unchanged across a reboot -> no fields",
+          device_identity_changed(u64e, dict(u64e)) == [])
+    check("a different box answering after reboot is detected",
+          device_identity_changed(u64e, c64u) != [])
+    for fld, newv in (("firmware_version", "3.16"), ("fpga_version", "120"),
+                      ("core_version", "1.4E"), ("product", "C64 Ultimate"),
+                      ("unique_id", "000000")):
+        ch_ = device_identity_changed(u64e, dict(u64e, **{fld: newv}))
+        check(f"only {fld} changes across a reboot -> refused, naming it",
+              ch_ == [fld], f"changed fields reported: {ch_}")
+    note, why = firmware_note_for_row("3.15", "3.15+patch814")
+    check("an explicit note agreeing with /v1/info is recorded verbatim",
+          note == "3.15+patch814" and why is None, f"{note!r} {why!r}")
+    note, why = firmware_note_for_row("3.14d", "3.14d")
+    check("a lettered build (3.14d) agrees with its own note",
+          note == "3.14d" and why is None, f"{note!r} {why!r}")
+    note, why = firmware_note_for_row("?", "3.15+patch814")
+    check("an explicit note cannot be verified against a missing "
+          "firmware_version -> REFUSED", note is None and bool(why),
+          f"recorded {note!r}")
+    note, why = firmware_note_for_row("3.15", "patched")
+    check("a note that does not lead with a version -> REFUSED",
+          note is None and bool(why), f"recorded {note!r}")
+
+    # The verdict PROSE is a firmware attribution too, emitted beside rows.
+    clean = CellResult("arb", 64, 4, "512 KB", "cpu", "arbiter"); clean.n = 100
+    prose_ = " ".join(arbiter_verdict(clean, fw_label="1.1.0")
+                      + anchoring_verdict(40, 12, 64, 16, 12,
+                                          fw_label="1.1.0"))
+    check("verdict prose names the OBSERVED firmware, never a hardcoded 3.15",
+          "3.15" not in prose_ and "#814" not in prose_ and "1.1.0" in prose_,
+          prose_[:0] + str([s_ for s_ in ("3.15", "#814") if s_ in prose_]))
+
+    # -- issue #172 defect 2: a refused or unavailable lock never exits 0 ----
+    class _Lock:
+        def __init__(self, result):
+            self.result, self.calls = result, []
+
+        def read_info(self):
+            return {"pid": 72223}
+
+        def acquire(self, timeout=None, progress_window=60.0):
+            self.calls.append((timeout, progress_window))
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return self.result
+    _out = sys.stdout
+    try:
+        sys.stdout = open(os.devnull, "w")
+        rc_refused = acquire_device_lock(_Lock(False), False, 1800.0)
+        rc_waited = acquire_device_lock(_Lock(False), True, 5.0)
+        rc_held = acquire_device_lock(_Lock(True), False, 1800.0)
+        try:
+            rc_broken = acquire_device_lock(_Lock(OSError("EACCES")),
+                                            False, 1800.0)
+        except Exception as e:
+            rc_broken = f"raised {type(e).__name__}"
+    finally:
+        sys.stdout.close()
+        sys.stdout = _out
+    check("refused lock (no --wait) -> non-zero exit", rc_refused != 0,
+          f"rc={rc_refused}")
+    check("lock --wait timed out -> non-zero exit", rc_waited != 0,
+          f"rc={rc_waited}")
+    # An exception escaping main() is exit status 1 from the interpreter, so
+    # propagating is an acceptable non-zero outcome; returning 0 is not.
+    check("unavailable lock (acquire raises) -> non-zero exit",
+          rc_broken != 0, f"rc={rc_broken}")
+    check("acquired lock -> 0 (the run proceeds)", rc_held == 0,
+          f"rc={rc_held}")
+
+    # -- a run that produced no real verdict must not exit 0 ----------------
+    def _cells(*verdicts, settle=12):
+        out = []
+        for i, v in enumerate(verdicts):
+            c_ = CellResult(f"c{i}", 48, settle, "512 KB", "cpu", "fetch")
+            if v in ("PASS", "FAIL"):
+                c_.n, c_.k = 10, (0 if v == "PASS" else 1)
+            elif v == "ERROR":
+                c_.n, c_.error = 3, "timeout"
+            elif v == "CONTAMINATED":
+                c_.n, c_.contaminated = 10, True
+            out.append(c_.line("d", 48.0, "0" * 64))
+        return out
+    _fx = ("NOT_RUN", "ERROR", "CONTAMINATED", "PASS", "FAIL")
+    _got = [re.search(r" verdict=(\S+)", l_).group(1) for l_ in _cells(*_fx)]
+    check("exit-status fixtures really carry the verdicts they name",
+          tuple(_got) == _fx, str(_got))
+    orig_pass = _cells("PASS", settle=ORIG_CYCLES)
+    orig_fail = _cells("FAIL", settle=ORIG_CYCLES)
+    # (name, lines, rc in, mitigated build, exit status wanted) -- the codes
+    # are the documented contract, so they are literals here, not constants.
+    exit_cases = [
+        ("every cell NOT_RUN", _cells("NOT_RUN", "NOT_RUN"), 0, True, 3),
+        ("every cell ERROR", _cells("ERROR", "ERROR"), 0, True, 3),
+        ("every cell CONTAMINATED", _cells("CONTAMINATED"), 0, True, 3),
+        ("NOT_RUN + ERROR + CONTAMINATED only",
+         _cells("NOT_RUN", "ERROR", "CONTAMINATED"), 0, True, 3),
+        ("no CELL line at all", [], 0, True, 3),
+        ("one PASS among NOT_RUNs is PARTIAL", _cells("NOT_RUN", "PASS"),
+         0, True, 4),
+        ("1 PASS + 21 ERROR is PARTIAL", _cells("PASS", *["ERROR"] * 21),
+         0, True, 4),
+        ("1 PASS + 21 NOT_RUN is PARTIAL", _cells("PASS", *["NOT_RUN"] * 21),
+         0, True, 4),
+        ("1 FAIL + 21 CONTAMINATED is PARTIAL",
+         _cells("FAIL", *["CONTAMINATED"] * 21), 0, True, 4),
+        ("complete run, all PASS", _cells("PASS", "PASS") + orig_pass,
+         0, True, 0),
+        ("complete run, sub-floor FAILs are bracket data",
+         _cells("FAIL", "PASS") + orig_pass, 0, True, 0),
+        ("a FAIL at the shipped orig settle is a regression signal",
+         _cells("PASS") + orig_fail, 0, True, 5),
+        ("orig FAIL outranks partial", _cells("NOT_RUN") + orig_fail,
+         0, True, 5),
+        ("orig FAIL on an UNMITIGATED control is expected, not 5",
+         _cells("PASS") + orig_fail, 0, False, 0),
+        ("^C keeps 130 even with verdicts", _cells("PASS"), 130, True, 130),
+    ]
+    _eh = exit_status_help()
+    _codes = (EXIT_OK, EXIT_ABORT, EXIT_REFUSED, EXIT_NO_VERDICT,
+              EXIT_PARTIAL, EXIT_ORIG_FAIL, EXIT_INTERRUPTED)
+    _undoc = [c_ for c_ in _codes
+              if not re.search(rf"^  {c_}\s", _eh, re.M)]
+    check("every EXIT_* code is documented in the docstring / --help",
+          not _undoc and len(set(_codes)) == len(_codes), f"undocumented {_undoc}")
+    for name_, cl_, rc_in, mit_, want in exit_cases:
+        _out = sys.stdout
+        try:
+            sys.stdout = open(os.devnull, "w")
+            got = run_exit_status(cl_, rc_in, mitigated=mit_)
+        finally:
+            sys.stdout.close()
+            sys.stdout = _out
+        check(f"exit status: {name_} -> {want}", got == want, f"got {got}")
+
+    # -- a control build cannot claim a poked settle in ANY CELL field ------
+    # stash_cell is driven for real: the fake's call() times out, so it
+    # returns right after building its CellResult (poison_table_failed).
+    class _FakeStashDev(Device):
+        def __init__(self, labels_):
+            super().__init__(None, None)
+            self.labels = labels_
+            self.wait_orig = bytes(WAIT_ROUTINE_BYTES - 1) + b"\x60"
+            self.mem: dict[int, int] = {}
+
+        def write(self, addr, data):
+            for i_, b_ in enumerate(bytes(data)):
+                self.mem[addr + i_] = b_
+
+        def read(self, addr, n):
+            return bytes(self.mem.get(addr + i_, 0) for i_ in range(n))
+
+        def call(self, op, timeout, poll_interval=0.02):
+            return None
+    unmit_labels = _L({k_: v_ for k_, v_ in fake.items()
+                       if k_ not in MITIGATION_LABELS})
+    lbl_bad = []
+    for mit_, labels_ in ((True, fake), (False, unmit_labels)):
+        fd_ = _FakeStashDev(labels_)
+        if fd_.mitigated != mit_:
+            lbl_bad.append(f"fixture mitigated={fd_.mitigated}, want {mit_}")
+            continue
+        for form_, k_ in (("nop", 0), ("nop", 16), ("orig", 0)):
+            cy_ = stub_cycles(form_, k_)
+            _out = sys.stdout
+            try:
+                sys.stdout = open(os.devnull, "w")
+                c_ = stash_cell(fd_, 48, "512 KB", [1], 5, (form_, k_),
+                                cell_name("stash", 48, cy_, mit_))
+            finally:
+                sys.stdout.close()
+                sys.stdout = _out
+            rows_ = {"stash_cell": c_.line("d", 48.0, "0" * 64),
+                     "not_run(stash)": not_run_line(
+                         "stash", 48, cy_, "512 KB", True, mit_, "d", "0" * 64),
+                     "not_run(fetch)": not_run_line(
+                         "fetch", 48, cy_, "512 KB", True, mit_, "d", "0" * 64)}
+            for what_, ln_ in rows_.items():
+                claims = re.findall(rf"(?<![0-9]){cy_}cy|settle_cy={cy_}\b", ln_)
+                if mit_ and f"settle_cy={cy_}" not in ln_:
+                    lbl_bad.append(f"mitigated {what_} {form_}{k_}: lost "
+                                   f"settle_cy={cy_}: {ln_[:90]}")
+                if not mit_ and (claims or
+                                 "settle_cy=native(unmitigated)" not in ln_):
+                    lbl_bad.append(f"UNMITIGATED {what_} {form_}{k_} claims "
+                                   f"{claims}: {ln_[:90]}")
+    arb_ = not_run_line("arbiter", 48, 4, "512 KB", False, False, "d", "0" * 64)
+    if "settle_cy=4 " not in arb_:
+        lbl_bad.append(f"arbiter's own +4 cy lost on a control: {arb_[:80]}")
+    check("CELL rows on a control build never claim a poked settle (name or "
+          "settle_cy; stash_cell driven, NOT_RUN rows too); mitigated rows "
+          "keep it; the arbiter keeps its own +4 cy",
+          not lbl_bad, "; ".join(lbl_bad[:4]))
+
+    # -- declared cells follow --only; the exit status follows declared ------
+    def _run(argv_, ran_if, extra_emitted=0, discard=()):
+        """A synthetic run: every declared cell for which ran_if(d) holds
+        PASSes, plus `extra_emitted` undeclared PASS rows (e.g. a stage whose
+        cells are not declared); the rest get main()'s NOT_RUN rows."""
+        o_ = parse_args(argv_ + ["--seed", "1"])
+        dec_ = declared_cells(o_)
+        # The keys main() records come from stage_cells(), the same function
+        # main() iterates -- not from the declared set and not from a copy
+        # of main()'s stage gates.  `discard` models leg 4 dropping clocks;
+        # the arbiter runs before leg 4, on the full speed list, as in main().
+        usable_ = [m_ for m_ in o_.speeds if m_ not in discard]
+        ran_ = set()
+        for size_ in o_.reu_sizes:
+            for stage_ in STAGES:
+                for rc_ in stage_cells(o_, stage_, size_,
+                                       o_.speeds if stage_ == "arbiter"
+                                       else usable_):
+                    if ran_if(rc_.key):
+                        ran_.add(rc_.key)
+        lines_ = []
+        for i_, d_ in enumerate(sorted(ran_, key=str)):
+            c_ = CellResult(f"{d_[0]}_{i_}", 48, 12, "512 KB", "cpu", "fetch")
+            c_.n = 10
+            lines_.append(c_.line("d", 48.0, "0" * 64))
+        for i_ in range(extra_emitted):
+            c_ = CellResult(f"extra_{i_}", 48, 12, "512 KB", "cpu", "fetch")
+            c_.n = 10
+            lines_.append(c_.line("d", 48.0, "0" * 64))
+        lines_ += not_run_lines(dec_, ran_, True, "d", "0" * 64)
+        buf_ = io.StringIO()
+        with contextlib.redirect_stdout(buf_):
+            rc_ = run_exit_status(lines_, 0, mitigated=True,
+                                  declared_n=len(dec_))
+        return rc_, dec_, buf_.getvalue()
+    dc_bad = []
+    rc_, dec_, _o = _run(["--only", "fetch"], lambda d: True)
+    if rc_ != 0:
+        dc_bad.append(f"--only fetch, all ran -> {rc_} (declared surfaces "
+                      f"{sorted({d[0] for d in dec_})})")
+    rc_, dec_, _o = _run(["--only", "arbiter,fetch"], lambda d: True)
+    if rc_ != 0:
+        dc_bad.append(f"--only arbiter,fetch, all ran -> {rc_} (declared "
+                      f"{sorted({d[0] for d in dec_})})")
+    rc_, dec_, _o = _run(["--only", "fetch", "--speeds", "64,16"],
+                         lambda d: True, discard=(64,))
+    if rc_ != 4:
+        dc_bad.append(f"--only fetch, 64 MHz discarded -> {rc_}, want 4")
+    rc_, dec_, _o = _run([], lambda d: d[0] != "stash")
+    if rc_ != 4:
+        dc_bad.append(f"default stages, stash never ran -> {rc_}, want 4")
+    rc_, dec_, _o = _run(["--only", "fetch,crosscheck"], lambda d: True)
+    if rc_ != 0 or not any(d[0].startswith("crosscheck") for d in dec_):
+        dc_bad.append(f"--only fetch,crosscheck all ran -> {rc_}; "
+                      f"crosscheck declared: "
+                      f"{any(d[0].startswith('crosscheck') for d in dec_)}")
+    rc_, dec_, _o = _run(["--only", "fetch,crosscheck"],
+                         lambda d: not d[0].startswith("crosscheck"))
+    if rc_ != 4:
+        dc_bad.append(f"--only fetch,crosscheck, crosscheck never ran -> "
+                      f"{rc_}, want 4")
+    check("declared cells follow --only (narrowed complete run -> 0; a "
+          "selected clock discarded -> 4; crosscheck declared when selected)",
+          not dc_bad, "; ".join(dc_bad))
+    rc_, dec_, out_ = _run(["--only", "fetch"], lambda d: True,
+                           extra_emitted=3)
+    check("RUN COMPLETENESS prints the true declared count, not the number "
+          "of CELL lines", f"declared {len(dec_)} cell(s)" in out_,
+          f"declared={len(dec_)}; printed: "
+          f"{out_.strip().splitlines()[0] if out_.strip() else ''!r}")
+
+    # -- an unimplemented stage is a usage error, alone or combined ---------
+    st_bad = []
+    for spec_ in ("sqr", "fetch,sqr", "arbiter,fetch,stash,crosscheck,sqr"):
+        st_, err_ = parse_stages(spec_)
+        if not err_ or "sqr" not in err_ or "fetch" not in err_:
+            st_bad.append(f"--only {spec_} accepted as {st_} (error {err_!r})")
+    for spec_, want_ in (("fetch", ["fetch"]),
+                         ("stash,arbiter", ["arbiter", "stash"]),
+                         ("fetch,crosscheck", ["fetch", "crosscheck"])):
+        st_, err_ = parse_stages(spec_)
+        if err_ or st_ != want_:
+            st_bad.append(f"--only {spec_} -> {st_} {err_!r}, want {want_}")
+    if not parse_stages("bogus")[1]:
+        st_bad.append("--only bogus accepted")
+    for spec_ in ("crosscheck", "arbiter,crosscheck", "stash,crosscheck"):
+        st_, err_ = parse_stages(spec_)
+        if not err_ or "crosscheck" not in err_ or "fetch" not in err_:
+            st_bad.append(f"--only {spec_} (crosscheck without fetch) "
+                          f"accepted as {st_}")
+    # Process level: argparse's usage error is exit 2.  --dry-run touches
+    # no device (U64_HOST is not needed and not set here).
+    env_ = {k_: v_ for k_, v_ in os.environ.items() if k_ != "U64_HOST"}
+    for spec_, word_ in (("sqr", "sqr"), ("fetch,sqr", "sqr"),
+                         ("crosscheck", "crosscheck")):
+        r_ = subprocess.run([sys.executable, os.path.abspath(__file__),
+                             "--dry-run", "--only", spec_],
+                            capture_output=True, text=True, env=env_)
+        if r_.returncode != 2 or word_ not in r_.stderr:
+            st_bad.append(f"process --only {spec_}: exit {r_.returncode}, "
+                          f"stderr {r_.stderr.strip()[-80:]!r}")
+    check("--only: an unimplemented stage (sqr), or crosscheck without "
+          "fetch, is refused with exit 2, alone or combined, naming it and "
+          "listing the implemented stages",
+          not st_bad, "; ".join(st_bad))
+
+    # -- leg 5 prose: a control build cannot report a settle floor ----------
+    l5_bad = []
+    for th_ in (12, 44, ORIG_CYCLES, None):
+        s_ = leg5_summary(48, th_, mitigated=False)
+        if re.search(r"\d+\s*cy\b", s_) or "native" not in s_:
+            l5_bad.append(f"UNMITIGATED th={th_}: {s_.strip()!r}")
+        s_ = leg5_summary(48, th_, mitigated=True)
+        want_ = (f"smallest clean settle {th_} cy" if th_
+                 else "no ladder point was clean")
+        if want_ not in s_:
+            l5_bad.append(f"mitigated th={th_}: {s_.strip()!r}")
+    check("leg 5 summary: a control build names its native settle, never a "
+          "'smallest clean settle N cy'; a mitigated build keeps it",
+          not l5_bad, "; ".join(l5_bad))
+
+    # -- verify-builds: the build/ guard reports even when a build raises ---
+    vb_bad = []
+    with tempfile.TemporaryDirectory() as ub:
+        open(os.path.join(ub, "keep.o"), "w").write("x")
+        kept: list[str] = []
+
+        def _raising_inner(iters_, bdir_):
+            kept.append(bdir_)
+            os.remove(os.path.join(ub, "keep.o"))       # the damage
+            raise SystemExit("build failed: simulated")
+        buf = io.StringIO()
+        raised = None
+        try:
+            with contextlib.redirect_stdout(buf):
+                verify_builds([1], user_build=ub, inner=_raising_inner)
+        except SystemExit as e:
+            raised = e
+        out_ = buf.getvalue()
+        if raised is None:
+            vb_bad.append("the inner failure was swallowed")
+        if "was modified" not in out_ or "deleted keep.o" not in out_:
+            vb_bad.append(f"no build/ diagnostic printed: {out_.strip()!r}")
+        for k_ in kept:
+            shutil.rmtree(k_, ignore_errors=True)
+    check("verify-builds: when a build RAISES, the modified-build/ "
+          "diagnostic is still printed and the failure still propagates",
+          not vb_bad, "; ".join(vb_bad))
+
     if os.path.exists(DEFAULT_PRG) and os.path.exists(DEFAULT_LABELS):
         from c64_test_harness.labels import Labels
         labels = Labels.from_file(DEFAULT_LABELS)
@@ -1586,12 +2716,64 @@ def self_test() -> int:
 # Build verification (no device; not on the measurement path)                  #
 # --------------------------------------------------------------------------- #
 
-def verify_builds(iters: list[int]) -> int:
+def snapshot_tree(root: str) -> dict[str, tuple[int, int]]:
+    """{relpath: (size, mtime_ns)} for every file under root ({} if absent)."""
+    snap = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            p = os.path.join(dirpath, fn)
+            st = os.stat(p)
+            snap[os.path.relpath(p, root)] = (st.st_size, st.st_mtime_ns)
+    return snap
+
+
+def tree_changes(before: dict, after: dict) -> list[str]:
+    out = [f"deleted {k}" for k in sorted(before.keys() - after.keys())]
+    out += [f"created {k}" for k in sorted(after.keys() - before.keys())]
+    out += [f"changed {k}" for k in sorted(before.keys() & after.keys())
+            if before[k] != after[k]]
+    return out
+
+
+def verify_builds(iters: list[int], user_build: str = BUILD_DIR,
+                  inner=None) -> int:
+    # The user's build/ is not this mode's to touch: snapshot it and assert
+    # it is byte-for-byte (names, sizes, mtimes) where it was afterwards.
+    # `user_build` / `inner` exist so the self-test can drive this wrapper
+    # without running a single build.
+    inner = inner or _verify_builds
+    user_build_before = snapshot_tree(user_build)
+    tmp = tempfile.mkdtemp(prefix="nistcurves-verify-builds-")
+    rc = 1
+    try:
+        rc = inner(iters, tmp)
+    finally:
+        # Reported here, on EVERY path: a build that raises (SystemExit from
+        # run_make / build_variant) must still say what it did to build/.
+        changes = tree_changes(user_build_before, snapshot_tree(user_build))
+        if rc == 0 and not changes:
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            print(f"  variant builds kept for inspection in {tmp}")
+        if changes:
+            print(f"\nverify-builds: FAILED — the user's {user_build} was "
+                  f"modified ({len(changes)} entries): "
+                  + "; ".join(changes[:8])
+                  + (" ..." if len(changes) > 8 else ""))
+    if changes:
+        return EXIT_ABORT
+    print(f"  user's build/ untouched: {len(user_build_before)} files, same "
+          f"names, sizes and mtimes")
+    return rc
+
+
+def _verify_builds(iters: list[int], bdir: str) -> int:
     from c64_test_harness.labels import Labels
-    print("Building variants (each `make CONTRACT_DEFINES=...`)\n")
+    print(f"Building variants (each `make BUILD_DIR={bdir} "
+          f"CONTRACT_DEFINES=...`; the user's build/ is never touched)\n")
     rows = []
     print("  default (no CONTRACT_DEFINES)...", flush=True)
-    dflt_prg, dflt_labels, dflt_sha = build_variant("default", "")
+    dflt_prg, dflt_labels, dflt_sha = build_variant("default", "", bdir)
     labels = Labels.from_file(dflt_labels)
     with open(dflt_prg, "rb") as f:
         base_image = f.read()
@@ -1603,7 +2785,7 @@ def verify_builds(iters: list[int]) -> int:
     for n in iters:
         d = f"-D LIB_NISTCURVES_REU_SETTLE_ITER={n}"
         print(f"  ITER={n}...", flush=True)
-        p, _l, sha = build_variant(f"iter{n}", d, expect_iter=n)
+        p, _l, sha = build_variant(f"iter{n}", d, bdir, expect_iter=n)
         with open(p, "rb") as f:
             img = f.read()
         note = []
@@ -1612,16 +2794,14 @@ def verify_builds(iters: list[int]) -> int:
             fails.append(f"iter{n}: poke-equivalence")
         rows.append((f"iter{n}", d, sha, len(img), img[off], " ".join(note)))
     print("  bank $03...", flush=True)
-    bp, _bl, bsha = build_variant("bank03", "-D LIB_SHARED_REU_MUL_BANK=0x03")
+    bp, _bl, bsha = build_variant("bank03", "-D LIB_SHARED_REU_MUL_BANK=0x03",
+                                  bdir)
     with open(bp, "rb") as f:
         bimg = f.read()
     rows.append(("bank03", "-D LIB_SHARED_REU_MUL_BANK=0x03", bsha, len(bimg),
                  bimg[off], "" if bsha != dflt_sha else "SAME AS DEFAULT"))
     if bsha == dflt_sha:
         fails.append("bank03: identical to default")
-    print("\n  restoring the default build...", flush=True)
-    run_make("")
-
     print(f"\nSettle immediate lives at PRG file offset {off} "
           f"(${int.from_bytes(base_image[:2], 'little') + off - 2:04X})\n")
     print(f"  {'variant':9} {'CONTRACT_DEFINES':44} {'bytes':>6} {'ITER':>4}  sha256")
@@ -1674,7 +2854,7 @@ def parse_ladder(spec: str) -> list[tuple[str, int]]:
     return out
 
 
-def arbiter_verdict(cell: CellResult) -> list[str]:
+def arbiter_verdict(cell: CellResult, fw_label: str | None = None) -> list[str]:
     """Pre-declared, written before the run — not chosen after it."""
     L = []
     if cell.error or cell.n == 0:
@@ -1699,14 +2879,15 @@ def arbiter_verdict(cell: CellResult) -> list[str]:
         L.append("  STOP TUNING. No library-side adjustment can be justified "
                  "after this result, and any subsequent reproduction is a "
                  "DEVIATION that must be logged as such, not a result.")
-        L.append("  This is NOT 'the fix was unnecessary', and NOT 'the "
-                 "defect is fixed in fw 3.15 + patch #814'. It is an upper "
-                 "bound on a rate at a stated N, on one device, on one day.")
+        L.append(f"  This is NOT 'the fix was unnecessary', and NOT 'the "
+                 f"defect is fixed in fw {fw_label or '<unrecorded>'}'. It is "
+                 f"an upper bound on a rate at a stated N, on one device, on "
+                 f"one day.")
     return L
 
 
 def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy,
-                      settle_was_varied=True):
+                      settle_was_varied=True, fw_label: str | None = None):
     """Emit an anchoring verdict ONLY if a settle was actually varied.
 
     HARD PRECONDITION ON THE CONCLUSION (2026-08-30). On an unmitigated
@@ -1770,8 +2951,9 @@ def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy,
         L.append("  Between the wall-clock (~3x) and cycle (~1x) predictions; "
                  "the ladder is too coarse to separate them. Report as "
                  "neither.")
-    L.append("  Scope: ONE device generation, ONE firmware (3.15 + local "
-             "patch #814), and a floor for the FETCH path only — the stash "
+    L.append(f"  Scope: ONE device generation, ONE firmware (fw "
+             f"{fw_label or '<unrecorded>'}, as observed via /v1/info), and "
+             "a floor for the FETCH path only — the stash "
              "path's floor is a separate number and must not be merged with "
              "it. Fleet experience (c64-lib-contract §13.6) is that the C64 "
              "Ultimate needed materially more settle than the U64 Elite and "
@@ -1785,7 +2967,39 @@ def anchoring_verdict(th_hi, th_lo, hi_mhz, lo_mhz, ladder_min_cy,
 # Plan (dry run)                                                               #
 # --------------------------------------------------------------------------- #
 
-STAGES = ["arbiter", "fetch", "stash", "crosscheck", "sqr"]
+STAGES = ["arbiter", "fetch", "stash", "crosscheck"]      # implemented, in order
+
+# Named in the design but NOT implemented.  Asking for one is a usage error
+# (exit 2): it used to be accepted, printed "NOT RUN" in prose, declared no
+# cell, and so exited 3 alone or was silently dropped beside other stages.
+UNIMPLEMENTED_STAGES = {
+    "sqr": "the fp_sqr diagonal-site leg (+15 cy data-read distance) is not "
+           "implemented in this revision",
+}
+
+
+def parse_stages(spec: str) -> tuple[list[str], str | None]:
+    """--only value -> (stages in canonical order, usage error or None)."""
+    only = [s.strip() for s in spec.split(",") if s.strip()]
+    unimpl = [s for s in only if s in UNIMPLEMENTED_STAGES]
+    if unimpl:
+        why = "; ".join(f"{s}: {UNIMPLEMENTED_STAGES[s]}" for s in unimpl)
+        return [], (f"stage(s) {unimpl} not implemented ({why}). "
+                    f"Implemented stages: {','.join(STAGES)}")
+    bad = [s for s in only if s not in STAGES]
+    if bad:
+        return [], (f"unknown stage(s) {bad}; implemented stages: "
+                    f"{','.join(STAGES)}")
+    if not only:
+        return [], f"--only is empty; implemented stages: {','.join(STAGES)}"
+    if "crosscheck" in only and "fetch" not in only:
+        # crosscheck re-runs FETCH cells after a reboot and compares them
+        # with leg 5's; without fetch it can never run, so it would only
+        # ever be declared and come out NOT_RUN (exit 4).
+        return [], ("stage 'crosscheck' requires 'fetch' (it re-runs fetch "
+                    "cells after a reboot and compares them with leg 5); add "
+                    f"fetch to --only. Implemented stages: {','.join(STAGES)}")
+    return [s for s in STAGES if s in only], None
 
 
 def describe_plan(opts, rows) -> None:
@@ -1816,8 +3030,19 @@ def describe_plan(opts, rows) -> None:
           "our fix. Never dropped.")
     print("  3. detector positive control (skip-the-fetch -> all-poison) and "
           "poison-without-rebuild self-check")
-    print("  4. in-band clock verification at every clock used (CIA Timer A "
-          "jiffies, NOT the CIA1 TOD clock)")
+    print(f"  4. in-band clock check at every clock used (CIA Timer A "
+          f"jiffies, NOT the CIA1 TOD clock): a {CLOCK_SHORT_S:g} s window "
+          f"plus a ~{CLOCK_LONG_S:g} s extension, clock = slope, so a fixed "
+          f"overhead cancels and is reported; +- bound on every row "
+          f"(issue #173). The reading is the EFFECTIVE CPU rate with the "
+          f"display on, the conditions the cells run in: it includes "
+          f"badlines (~{BADLINE_STEAL_NTSC:.2%} NTSC / "
+          f"{BADLINE_STEAL_PAL:.2%} PAL), GideonZ/1541ultimate#874's "
+          f"one-PHI2-multiple shortfall at the top two speed indices, and "
+          f"the KERNAL jiffy IRQ (~1-2% at 1 MHz, negligible at turbo). It "
+          f"is not a delivered-clock reading ($D011=$0B, $D015=0, SEI, "
+          f"free-running CIA timer are not set up). $D011/$D015 are read "
+          f"on the C64 side and carried as vic_den= / sprites=")
     print(f"  5. FETCH-path cells (the observed surface): settle "
           f"{opts.ladder} = {[stub_cycles(f, k) for f, k in lad]} cy, at "
           f"{opts.speeds} MHz, cpu-read, N={opts.n} each, index histogram "
@@ -1828,7 +3053,8 @@ def describe_plan(opts, rows) -> None:
     print(f"  7. reboot-per-cell cross-check on 3 cells chosen to span the "
           f"risk (most-likely-to-fail, first-after-a-clock-change, a clean "
           f"one), compared as RATES not verdicts")
-    print(f"  8. optional: fp_sqr diagonal site; REU size; bank")
+    print(f"  8. optional: REU size; bank. (The fp_sqr diagonal-site stage "
+          f"'sqr' is NOT implemented; --only sqr is refused with exit 2.)")
     print()
     print(f"Settle control    : POKE nistcurves_reu_dma_wait "
           f"({WAIT_ROUTINE_BYTES} B) in place — no rebuild, no reload, no "
@@ -1860,7 +3086,15 @@ def describe_plan(opts, rows) -> None:
           f"obligation (a) on a later build by history")
     print(f"dma_timeout flag  : sticky by design and not reset by re-init, so "
           f"the host clears it per cell and reports it per cell")
-    print(f"Firmware note     : fw {opts.firmware_note} — on EVERY row")
+    print("Firmware field    : "
+          + (f"fw {opts.firmware_note!r} — on EVERY row, but ONLY if it "
+             f"begins with the version /v1/info reports at startup; "
+             f"otherwise the run refuses (exit 2) before any reboot or write "
+             f"(issue #172)" if opts.firmware_note is not None else
+             f"fw <the version /v1/info reports at startup>"
+             f"{FIRMWARE_UNVERIFIED_SUFFIX} — on EVERY row; never a "
+             f"constant (issue #172). Pass --firmware-note to annotate a "
+             f"locally patched build"))
     print(f"Restore config    : "
           + ("NO (--no-restore)" if opts.no_restore else
              "yes, in a finally block, to the values OBSERVED AT STARTUP (the "
@@ -1909,13 +3143,26 @@ def normalise_size(spec: str) -> str:
                      f"{sorted(REU_SIZE_ALIASES)}")
 
 
+def exit_status_help() -> str:
+    """The EXIT STATUS section of the module docstring, verbatim, so --help
+    and the docstring cannot drift apart."""
+    doc = __doc__ or ""
+    start = doc.find("EXIT STATUS\n")
+    end = doc.find("\n\n", doc.find("Precedence", start))
+    return doc[start:end].rstrip() if start >= 0 else ""
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(
         prog="test_reu_mul_u64.py",
-        description="U64 hardware probe for the SPEC §8.2 REU DMA settle.")
+        description="U64 hardware probe for the SPEC §8.2 REU DMA settle.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=exit_status_help())
     p.add_argument("--only", default="arbiter,fetch,stash",
                    help=f"stages, in order: {','.join(STAGES)} "
-                        f"(default arbiter,fetch,stash)")
+                        f"(default arbiter,fetch,stash). 'sqr' (fp_sqr "
+                        f"diagonal site) is NOT implemented and is refused "
+                        f"with exit 2; so is crosscheck without fetch")
     p.add_argument("--speeds", default="48,16",
                    help="clocks to measure, highest first (default 48,16)")
     p.add_argument("--ladder", default="nop0,nop2,nop6,nop16,orig",
@@ -1942,7 +3189,15 @@ def parse_args(argv):
     p.add_argument("--wait", action="store_true")
     p.add_argument("--lock-timeout", type=float, default=1800.0)
     p.add_argument("--no-restore", action="store_true")
-    p.add_argument("--firmware-note", default=DEFAULT_FIRMWARE_NOTE)
+    p.add_argument("--firmware-note", default=None,
+                   help="annotation recorded as the row's fw field, e.g. "
+                        "'3.15+patch814'. MUST begin with the version "
+                        "/v1/info reports or the run refuses (issue #172). "
+                        "Default: the reported version, marked unverified "
+                        "for patch level. The guard pins ONLY the base "
+                        "version; everything after it is the operator's "
+                        "unverified claim. Allowed characters: letters, "
+                        "digits, . _ + ( ) ~ -")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--verify-builds", action="store_true")
@@ -1950,11 +3205,9 @@ def parse_args(argv):
                    help="--verify-builds only: knob values to build")
     p.add_argument("--verbose", action="store_true")
     o = p.parse_args(argv)
-    o.only = [s.strip() for s in o.only.split(",") if s.strip()]
-    bad = [s for s in o.only if s not in STAGES]
-    if bad:
-        p.error(f"unknown stage(s) {bad}; valid: {STAGES}")
-    o.only = [s for s in STAGES if s in o.only]
+    o.only, stage_err = parse_stages(o.only)
+    if stage_err:
+        p.error(stage_err)
     o.speeds = [int(x) for x in o.speeds.split(",") if x.strip()]
     o.iters = sorted({int(x) for x in o.iters.split(",") if x.strip()})
     try:
@@ -1976,6 +3229,142 @@ def parse_args(argv):
 # Main                                                                         #
 # --------------------------------------------------------------------------- #
 
+CROSSCHECK_TAGS = ("most_likely_fail", "after_clock_change", "clean")
+
+
+def crosscheck_key(tag: str, settle: tuple[str, int], size: str) -> tuple:
+    """Crosscheck cells' clock is chosen from the clocks leg 4 kept, so it
+    is not known when the run is declared: key on tag + settle instead."""
+    return (f"crosscheck_{tag}", None, stub_cycles(*settle), size)
+
+
+class RunCell(tuple):
+    """One cell main() executes: (tag, mhz, settle, key).  `key` is what
+    main() records in `ran` -- it must match a declared_cells() entry."""
+    __slots__ = ()
+
+    def __new__(cls, tag, mhz, settle, key):
+        return super().__new__(cls, (tag, mhz, settle, key))
+
+    tag = property(lambda s: s[0])
+    mhz = property(lambda s: s[1])
+    settle = property(lambda s: s[2])
+    key = property(lambda s: s[3])
+
+
+def stage_cells(opts, stage: str, size: str, usable: list[int]) -> list:
+    """The cells main() runs for one stage at one REU size, in execution
+    order, given the clocks leg 4 kept.  main() iterates exactly this list
+    and records each entry's `key`, so the self-test's view of "what ran"
+    comes from the code under test rather than from a copy of it."""
+    ladder = parse_ladder(opts.ladder)
+    if stage not in opts.only or not usable:
+        return []
+    if stage == "arbiter":
+        mhz = opts.speeds[0]
+        return [RunCell("arbiter", mhz, None, ("arbiter", mhz, 4, size))]
+    if stage in ("fetch", "stash"):
+        return [RunCell(stage, mhz, (f, k),
+                        (stage, mhz, stub_cycles(f, k), size))
+                for mhz in usable for f, k in ladder]
+    if stage == "crosscheck":
+        if "fetch" not in opts.only:
+            return []
+        short = ladder[0]
+        return [RunCell(tag, mhz, settle, crosscheck_key(tag, settle, size))
+                for tag, mhz, settle in (
+                    ("most_likely_fail", usable[0], short),
+                    ("after_clock_change", usable[-1], short),
+                    ("clean", usable[0], ("orig", 0)))]
+    return []
+
+
+def declared_cells(opts) -> list[tuple]:
+    """Every cell the run intends to produce, for the SELECTED stages only:
+    (surface, mhz, cy, size).  A deselected stage is not a cell that failed
+    to run, so it must not become a NOT_RUN row (that made every narrowed
+    run exit 4 and taught wrappers to ignore 4)."""
+    ladder = parse_ladder(opts.ladder)
+    only = set(opts.only)
+    declared: list[tuple] = []
+    for size in opts.reu_sizes:
+        if "arbiter" in only:
+            declared.append(("arbiter", opts.speeds[0], 4, size))
+        for mhz in opts.speeds:
+            for f, k in ladder:
+                if "fetch" in only:
+                    declared.append(("fetch", mhz, stub_cycles(f, k), size))
+                if "stash" in only:
+                    declared.append(("stash", mhz, stub_cycles(f, k), size))
+        if "crosscheck" in only:
+            # parse_stages() refuses crosscheck without fetch, so a declared
+            # crosscheck cell is always one main() can run.
+            for tag in CROSSCHECK_TAGS:
+                settle = ("orig", 0) if tag == "clean" else ladder[0]
+                declared.append(crosscheck_key(tag, settle, size))
+    return declared
+
+
+def not_run_lines(declared, ran, mitigated: bool, devstr: str,
+                  prg_sha: str) -> list[str]:
+    """NOT_RUN rows for every declared cell that never ran."""
+    out = []
+    for d in declared:
+        if d not in ran:
+            surf, mhz, cy, size = d
+            out.append(not_run_line(surf, mhz, cy, size, surf != "arbiter",
+                                    mitigated, devstr, prg_sha))
+    return out
+
+
+def run_exit_status(cell_lines: list[str], rc: int,
+                    mitigated: bool = True,
+                    declared_n: int | None = None) -> int:
+    """Process exit status from the CELL lines the run actually emitted
+    (every declared cell has one, run or NOT_RUN).  See EXIT STATUS in the
+    module docstring.  Precedence: an rc already decided (130) > 3 (no real
+    verdict) > 5 (FAIL at the shipped settle) > 4 (partial) > 0.
+
+    A FAIL below the shipped settle is expected bracket data, not a tool
+    failure.  A FAIL at the shipped body (settle_cy == ORIG_CYCLES) on a
+    MITIGATED build means the library as shipped returned wrong rows: a
+    regression signal, distinct from everything else.  On the unmitigated
+    control a FAIL is the expected outcome, so it never yields 5.
+    """
+    if rc:
+        return rc
+    cells = []
+    for ln in cell_lines:
+        if not ln.startswith("CELL "):
+            continue
+        v = re.search(r" verdict=(\S+)", ln)
+        s = re.search(r" settle_cy=(\S+)", ln)
+        cells.append((v.group(1) if v else "?", s.group(1) if s else "?"))
+    verdicts = [v for v, _ in cells]
+    real = [v for v in verdicts if v in ("PASS", "FAIL")]
+    counts = {v: verdicts.count(v) for v in sorted(set(verdicts))}
+    n_decl = declared_n if declared_n is not None else len(cells)
+    print(f"\nRUN COMPLETENESS: declared {n_decl} cell(s), emitted "
+          f"{len(cells)} CELL row(s), ran "
+          f"{len(cells) - counts.get('NOT_RUN', 0)}, real verdicts "
+          f"{len(real)}; verdict counts {counts or '{}'}")
+    if not real:
+        print("  NO REAL VERDICT: the measurement did not happen; exit 3.")
+        return EXIT_NO_VERDICT
+    orig_fails = [1 for v, s in cells
+                  if v == "FAIL" and s == str(ORIG_CYCLES)] if mitigated else []
+    if orig_fails:
+        print(f"  {len(orig_fails)} FAIL(s) AT THE SHIPPED SETTLE "
+              f"({ORIG_CYCLES} cy): the library as shipped returned wrong "
+              f"rows -- a regression signal, not bracket data; exit 5.")
+        return EXIT_ORIG_FAIL
+    if len(real) < len(cells):
+        print(f"  PARTIAL: {len(cells) - len(real)} declared cell(s) ended "
+              f"NOT_RUN / ERROR / CONTAMINATED; exit 4.")
+        return EXIT_PARTIAL
+    return EXIT_OK
+
+
 def main(argv=None):
     opts = parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -1992,7 +3381,7 @@ def main(argv=None):
     host = os.environ.get("U64_HOST")
     if not host:
         print("U64_HOST not set — refusing to guess a device address.")
-        return 1
+        return EXIT_ABORT
 
     from c64_test_harness.backends.device_lock import DeviceLock
     from c64_test_harness.backends.ultimate64 import Ultimate64Transport
@@ -2004,39 +3393,26 @@ def main(argv=None):
     probe = probe_u64(host)
     if not getattr(probe, "reachable", False):
         print(f"U64 at {host} not reachable: {probe}")
-        return 1
+        return EXIT_ABORT
 
     try:
         DeviceLock.cleanup_stale()
     except Exception as e:
         print(f"  [lock] cleanup_stale: WARN {type(e).__name__}: {e}")
     lock = DeviceLock(host)
-    holder = lock.read_info()
-    if holder is not None:
-        print(f"  [lock] currently held: {holder}")
-    acquired = (lock.acquire(timeout=opts.lock_timeout) if opts.wait
-                else lock.acquire(timeout=0.0, progress_window=None))
-    if not acquired:
-        print("FATAL: device lock not acquired"
-              + ("" if opts.wait else " and --wait was not given")
-              + f"; holder {lock.read_info()}")
-        return 2
-    print("  [lock] acquired")
+    lock_rc = acquire_device_lock(lock, opts.wait, opts.lock_timeout)
+    if lock_rc:
+        return lock_rc
 
     transport = client = snapshot = dev = None
     lines: list[str] = []
     prose: list[str] = []
     stage_times: list[tuple[str, float]] = []
     rc = 0
+    mitigated_build = True      # set from the labels once the build is known
     ladder = parse_ladder(opts.ladder)
     ladder_min_cy = min(stub_cycles(f, k) for f, k in ladder)
-    declared: list[tuple] = []      # every cell we intend to run
-    for size in opts.reu_sizes:
-        declared.append(("arbiter", opts.speeds[0], 4, size))
-        for mhz in opts.speeds:
-            for f, k in ladder:
-                declared.append(("fetch", mhz, stub_cycles(f, k), size))
-                declared.append(("stash", mhz, stub_cycles(f, k), size))
+    declared = declared_cells(opts)     # every cell we intend to run
     ran: set[tuple] = set()
 
     try:
@@ -2049,13 +3425,19 @@ def main(argv=None):
         fw = info.get("firmware_version", "?")
         fpga = info.get("fpga_version", "?")
         core = info.get("core_version", "?")
-        devstr = (f"{product}/{serial}/fw{opts.firmware_note}/fpga{fpga}"
-                  f"/core{core}")
+        fw_note, refusal = firmware_note_for_row(fw, opts.firmware_note)
         print(f"\nDevice: {product} serial {serial}")
+        if refusal:
+            # Nothing has been written, rebooted or snapshotted yet.
+            print(f"FATAL: {refusal}")
+            rc = EXIT_REFUSED
+            return rc
+        devstr = device_string(info, fw_note)
         print(f"        fw {fw} (reported) -> recorded as "
-              f"{opts.firmware_note}; fpga {fpga}, core {core}")
-        print("        /v1/info cannot distinguish stock 3.15 from this "
-              "device's local patch, so the row says so explicitly.")
+              f"{fw_note}; fpga {fpga}, core {core}")
+        print("        /v1/info cannot distinguish a stock build from a "
+              "locally patched one, so the row says what was observed and "
+              "who asserted the rest.")
 
         snapshot = snapshot_state(client)
         print("\nPre-run config OBSERVED AT STARTUP (the restore target — "
@@ -2097,6 +3479,7 @@ def main(argv=None):
         prg_sha = sha256_of(prg)
         print(f"  PRG sha256 {prg_sha}")
         _mit = [n for n in MITIGATION_LABELS if labels.address(n) is not None]
+        mitigated_build = bool(_mit)
         if len(_mit) == len(MITIGATION_LABELS):
             print(f"  nistcurves_reu_dma_wait @ "
                   f"${labels['nistcurves_reu_dma_wait']:04X}, reu_mul_init @ "
@@ -2117,6 +3500,17 @@ def main(argv=None):
               f"Anything else that moves during this run prints a DEVIATION "
               f"line.")
 
+        def boot_and_reconfirm(size_):
+            # Rows carry the identity observed at startup (issue #172); after
+            # every reboot, confirm the box answering is still that one.
+            dev.boot(prg, labels, opts.boot_mhz, reu_size=size_)
+            changed = device_identity_changed(info, client.get_info())
+            if changed:
+                raise SystemExit(
+                    f"ABORT: /v1/info after reboot differs from startup in "
+                    f"{changed}; the rows' device field would no longer name "
+                    f"the device that produced them.")
+
         def emit(line):
             lines.append(line)
             print(line, flush=True)
@@ -2124,7 +3518,7 @@ def main(argv=None):
         for size in opts.reu_sizes:
             print(f"\n{'=' * 78}\n=== REU size {size} ===")
             t_size = time.monotonic()
-            dev.boot(prg, labels, opts.boot_mhz, reu_size=size)
+            boot_and_reconfirm(size)
 
             # ---- LEG 1b: REU presence ---------------------------------
             print("\n  [leg 1] REU presence probe @ 1 MHz")
@@ -2136,9 +3530,9 @@ def main(argv=None):
 
             # ---- LEG 2: THE ARBITER -----------------------------------
             arb = None
-            if "arbiter" in opts.only:
+            for arb_cell in stage_cells(opts, "arbiter", size, opts.speeds):
                 t0 = time.monotonic()
-                mhz = opts.speeds[0]
+                mhz = arb_cell.mhz
                 set_turbo_mhz(client, mhz); time.sleep(0.5)
                 m = dev.measure_mhz(mhz)
                 print(f"\n  [leg 2] THE ARBITER: bare-metal minimal-shape "
@@ -2151,8 +3545,8 @@ def main(argv=None):
                 arb = arbiter_cell(dev, mhz, size, rows, opts.arbiter_n)
                 print_cell_detail(arb)
                 emit(arb.line(devstr, m, prg_sha))
-                ran.add(("arbiter", mhz, 4, size))
-                for ln in arbiter_verdict(arb):
+                ran.add(arb_cell.key)
+                for ln in arbiter_verdict(arb, fw_label=fw_note):
                     print(ln); prose.append(ln)
                 stage_times.append((f"arbiter/{size}", time.monotonic() - t0))
 
@@ -2194,9 +3588,7 @@ def main(argv=None):
                           f"discarded")
                 else:
                     off = abs(m - mhz) / mhz
-                    print(f"    set {mhz} MHz -> measured {m:.1f} MHz "
-                          f"({off * 100:.0f}% off)"
-                          + ("  <-- DISCARDED (>20%)" if off > 0.20 else ""))
+                    print(leg4_line(mhz, m))
                     if off > 0.20:
                         measured[mhz] = None
             usable = [m for m in opts.speeds if measured.get(m) is not None]
@@ -2205,51 +3597,56 @@ def main(argv=None):
 
             # ---- LEG 5: FETCH path ------------------------------------
             thresholds: dict[int, int | None] = {}
-            if "fetch" in opts.only:
+            fetch_cells = stage_cells(opts, "fetch", size, usable)
+            if fetch_cells:
                 t0 = time.monotonic()
                 print(f"\n  [leg 5] FETCH-path cells (the observed surface) "
                       f"— settle {opts.ladder}")
-                for mhz in usable:
+                for mhz in dict.fromkeys(c_.mhz for c_ in fetch_cells):
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
                     th = None
-                    for form, k in ladder:
+                    for run_cell in [c_ for c_ in fetch_cells
+                                     if c_.mhz == mhz]:
+                        form, k = run_cell.settle
                         cy = stub_cycles(form, k)
-                        name = f"fetch_{mhz}MHz_{cy}cy"
+                        name = cell_name("fetch", mhz, cy, dev.mitigated)
                         c = fetch_cell(dev, mhz, size, rows, opts.n,
                                        (form, k), name,
                                        host_read=opts.host_read)
                         print_cell_detail(c)
                         emit(c.line(devstr, measured[mhz], prg_sha))
-                        ran.add(("fetch", mhz, cy, size))
+                        ran.add(run_cell.key)
                         if c.verdict == "PASS" and th is None:
                             th = cy
                         if c.verdict == "FAIL":
                             th = None
                     thresholds[mhz] = th
-                    print(f"    {mhz} MHz: "
-                          + (f"smallest clean settle {th} cy" if th
-                             else "no ladder point was clean"))
+                    print(leg5_summary(mhz, th, dev.mitigated))
                 stage_times.append((f"fetch/{size}", time.monotonic() - t0))
 
             # ---- LEG 6: STASH path ------------------------------------
-            if "stash" in opts.only:
+            stash_cells = stage_cells(opts, "stash", size, usable)
+            if stash_cells:
                 t0 = time.monotonic()
                 print(f"\n  [leg 6] STASH-path cells (the hypothesised "
                       f"surface; poisoned before every rebuild)")
-                for mhz in usable:
+                for mhz in dict.fromkeys(c_.mhz for c_ in stash_cells):
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
-                    for form, k in ladder:
+                    for run_cell in [c_ for c_ in stash_cells
+                                     if c_.mhz == mhz]:
+                        form, k = run_cell.settle
                         cy = stub_cycles(form, k)
-                        name = f"stash_{mhz}MHz_{cy}cy"
+                        name = cell_name("stash", mhz, cy, dev.mitigated)
                         c = stash_cell(dev, mhz, size, rows, opts.n,
                                        (form, k), name)
                         print_cell_detail(c)
                         emit(c.line(devstr, measured[mhz], prg_sha))
-                        ran.add(("stash", mhz, cy, size))
+                        ran.add(run_cell.key)
                 stage_times.append((f"stash/{size}", time.monotonic() - t0))
 
             # ---- LEG 7: reboot-per-cell cross-check -------------------
-            if "crosscheck" in opts.only and "fetch" in opts.only:
+            cross_cells = stage_cells(opts, "crosscheck", size, usable)
+            if cross_cells:
                 t0 = time.monotonic()
                 print("\n  [leg 7] reboot-per-cell cross-check, compared as "
                       "RATES not verdicts")
@@ -2261,26 +3658,18 @@ def main(argv=None):
                       "FAILs + reboot PASS = carry-over artifact; cheap PASS "
                       "+ reboot FAIL = HALT, something a reboot clears is "
                       "masking the defect.")
-                short = ladder[0]
-                for tag, mhz, settle in (
-                        ("most_likely_fail", usable[0], short),
-                        ("after_clock_change", usable[-1], short),
-                        ("clean", usable[0], ("orig", 0))):
-                    dev.boot(prg, labels, opts.boot_mhz, reu_size=size)
+                for run_cell in cross_cells:
+                    tag, mhz, settle = (run_cell.tag, run_cell.mhz,
+                                        run_cell.settle)
+                    boot_and_reconfirm(size)
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
                     c = fetch_cell(dev, mhz, size, rows, opts.n, settle,
                                    f"crosscheck_{tag}_{mhz}MHz",
                                    host_read=opts.host_read)
                     emit(c.line(devstr, measured.get(mhz), prg_sha))
+                    ran.add(run_cell.key)
                 stage_times.append((f"crosscheck/{size}",
                                     time.monotonic() - t0))
-
-            # ---- optional: fp_sqr diagonal ----------------------------
-            if "sqr" in opts.only:
-                print("\n  [sqr] fp_sqr diagonal-site leg is declared but not "
-                      "implemented in this revision — the +15 cy data-read "
-                      "distance it would probe is recorded in the report "
-                      "instead. NOT RUN.")
 
             dev.restore_settle()
             stage_times.append((f"size {size} total", time.monotonic() - t_size))
@@ -2291,18 +3680,13 @@ def main(argv=None):
                                             thresholds.get(usable[-1]),
                                             usable[0], usable[-1],
                                             ladder_min_cy,
-                                            settle_was_varied=dev.mitigated):
+                                            settle_was_varied=dev.mitigated,
+                                            fw_label=fw_note):
                     print(ln); prose.append(f"[{size}] {ln}")
 
         # cells declared but never run, so a reader can tell 0/N from untested
-        for d in declared:
-            if d not in ran:
-                surf, mhz, cy, size = d
-                lines.append(
-                    f"CELL {surf}_{mhz}MHz_{cy}cy surface={surf} clock={mhz} "
-                    f"settle_cy={cy} reu={size.replace(' ', '')} N=0 k=0 "
-                    f"verdict=NOT_RUN device={devstr} "
-                    f"prg=sha256:{prg_sha[:16]}")
+        lines.extend(not_run_lines(declared, ran, mitigated_build, devstr,
+                                   prg_sha))
 
         try:
             set_turbo_mhz(client, 1)
@@ -2311,7 +3695,7 @@ def main(argv=None):
 
     except KeyboardInterrupt:
         print("\nINTERRUPTED — restoring device state before exit.")
-        rc = 130
+        rc = EXIT_INTERRUPTED
     finally:
         if dev is not None:
             dev.restore_settle()
@@ -2357,7 +3741,8 @@ def main(argv=None):
         print("\nElapsed per stage:")
         for name, secs in stage_times:
             print(f"  {name:22} {secs:7.0f} s")
-    return rc
+    return run_exit_status(lines, rc, mitigated=mitigated_build,
+                           declared_n=len(declared))
 
 
 if __name__ == "__main__":
