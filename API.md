@@ -1185,7 +1185,7 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
 .assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 10), lderror, "c64-nist-curves v0.10 or newer is required"
-.assert LIB_NISTCURVES_ABI_VERSION = 4, lderror, "c64-nist-curves ABI v4 expected; rebuild consumer"
+.assert LIB_NISTCURVES_ABI_VERSION = 5, lderror, "c64-nist-curves ABI v5 expected; rebuild consumer"
 ```
 
 This uses `.assert`/`lderror` rather than `.if`/`.error`. `.if` requires
@@ -1200,11 +1200,13 @@ before anything runs, so a mismatched consumer is still caught before
 producing a bad PRG, just via a `ld65` error instead of a `ca65` error.
 
 `LIB_NISTCURVES_ABI_VERSION` is the load-bearing gate for consumers
-pinning to a specific ABI generation — it changes only when public
-exports are removed or renamed. Note it is **not** in lockstep with
-`LIB_NISTCURVES_VERSION_MAJOR` pre-1.0: SPEC §7 describes breaking
-changes riding MINOR bumps while the contract is in v0.x, so MAJOR
-stays 0 across exactly the breakage this gate exists to catch. It is
+pinning to a specific ABI generation. It moves when a consumer conforming
+to the previously documented contract can be broken (SPEC §7, as of
+contract 1.1.0): an export removed or renamed, or an entry point's return
+set gaining a value — not merely when the export list changes. Note it is
+**not** in lockstep with `LIB_NISTCURVES_VERSION_MAJOR` pre-1.0: SPEC §1
+says "a library may break its surface on a MINOR bump while pre-1.0", so
+MAJOR stays 0 across exactly the breakage this gate exists to catch. It is
 instead an independent generation counter starting at 1 (this library
 shipped 0 from v0.3.0 through v0.8.0 — an outlier against the other
 contract adopters — and corrected to 1 at v0.9.0; see the versioning
@@ -1245,15 +1247,20 @@ The library is currently in the v0.x pre-stable series. Version policy:
 - **PATCH** bumps (v0.7.0 → v0.7.1) ship bugfixes or performance
   improvements with no public API changes. Always safe to adopt;
   `LIB_ABI_VERSION` unchanged.
-- **MINOR** bumps (v0.6.x → v0.7.0) may add public symbols (new entry
-  points, new constants, new SPEC §3/§5/§8 manifest equates) but will
-  not remove or rename existing ones. Additive changes; safe to adopt
-  if your consumer's `.import` list is a subset of what the new
-  version exports. `LIB_ABI_VERSION` unchanged.
+- **MINOR** bumps (v0.6.x → v0.7.0) add public symbols (new entry
+  points, new constants, new SPEC §3/§5/§8 manifest equates) and — while
+  the library is pre-1.0 — **may also remove or rename them**, as SPEC §1
+  permits. That is not hypothetical: v0.9.0 removed 17 exports, v0.10.0
+  removed the three unprefixed §8.2 `LIB_SHARED_REU_MUL_*` equates, and
+  v0.16.0 removed the bare `sqtab_lo` / `sqtab_hi`. A removal is preceded
+  by at least one MINOR release in which the name is documented as
+  deprecated (SPEC §7's one-MINOR deprecation cycle) unless the contract
+  forbids the export outright, is always called out in CHANGELOG.md with
+  the consumer action, and always moves `LIB_NISTCURVES_ABI_VERSION`.
+  A MINOR is safe to adopt unchanged only if the counter did not move.
 - **MAJOR** bumps (v0.x → v1.0) are reserved for the first stability
-  commitment. After v1.0.0, MAJOR bumps indicate breaking API changes
-  and will be documented in CHANGELOG.md with migration notes.
-  `LIB_ABI_VERSION` bumps in lockstep.
+  commitment. After v1.0.0, removals and renames ride MAJOR bumps only,
+  with migration notes in CHANGELOG.md, and the counter moves with them.
 
 Consumers should pin to a specific tag rather than tracking the
 mainline branch. The `src/lib_version.s` constants are the authoritative

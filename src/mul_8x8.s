@@ -62,29 +62,18 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 .assert (LIB_SHARED_SQTAB_BASE & $00ff) = 0, error, "sqtab base must be page-aligned (SPEC §8.1)"
 .assert sqtab_hi = sqtab_lo + $0200,        error, "sqtab_hi must follow sqtab_lo by $0200 (SPEC §8.1)"
 
-; §8.1 (v0.9.1): sqtab_lo/sqtab_hi are canonical NAMES, but canonical does not
-; mean exported -- they derive from the consumer-input LIB_SHARED_SQTAB_BASE,
-; and every §8.1 adopter derives the same two, so the bare exports are a
-; #82-class collision in any composed link. Export-gated under the §6.5 window;
-; removed at the next MAJOR. In-library they are same-TU equates (og_common)
-; plus one .import from the never-archived main.s sqtab-window guard, which the
-; standalone build (no gate) still satisfies.
-;
-; Narrowed further by the SPEC 1.1.0 realignment: a build that DEFERS §8.1 to a
-; canonical provider must not export them at all. In the deferral arm the
-; provider derives the same two names from the same base, so the collision is
-; certain rather than merely possible -- and a consumer who has already gone to
-; the trouble of supplying a provider is exactly the one who should not have to
-; discover a second gate (`-D LIB_NO_BARE_EXPORTS=1`) to link. There is no
-; in-tree importer left to protect: src/main.s's sqtab-window guard asserts
-; against LIB_SHARED_SQTAB_BASE, not against these labels.
-; EXPORTED FROM src/sqtab_aliases.s SINCE ISSUE #155, not from here. The two
-; names stay local equates in this TU (the body below indexes them and the SMC
-; page-delta math is computed from them), but exporting them HERE is what made
-; every reference into this member -- the mandatory `sqtab_init` boot call, the
-; §8.3 body, `og_common` under FP_ONCHIP_MUL -- drag two displaceable names
-; into a consumer's link. Same values, same gate, same archives, own TU.
-; Do not re-add the .export here.
+; SPEC §8.1: sqtab_lo/sqtab_hi are canonical NAMES, but they "MUST NOT be
+; exported either — they are source-level names each consuming TU derives".
+; So they are local equates here and exported by NO TU in this library. They
+; were exported, gated, from v0.10.0 (here) and from src/sqtab_aliases.s
+; (issue #155), riding a §6.5 window until v0.16.0 removed them, ABI 4 -> 5;
+; src/lib_version.s records why that was a MINOR. Every §8.1 adopter derives
+; the same two names from the same base, so an export is a duplicate-
+; identifier collision in any composed link, and no in-tree importer remains:
+; src/main.s's sqtab-window guard asserts against LIB_SHARED_SQTAB_BASE.
+; make check-archives (forbidden_export_check) fails any archive member or
+; source arm, gated or not, that exports either name.
+; Do not add an .export of either name, here or anywhere.
 
 ; =============================================================================
 ; sqtab_init - Build quarter-square lookup table at sqtab_lo / sqtab_hi

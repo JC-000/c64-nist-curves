@@ -1158,7 +1158,8 @@ BARE_GATED = {
     # every deprecated bare name the LIB_NO_BARE_EXPORTS gate must suppress
     "zp_tmp1", "zp_tmp2", "zp_ptr1", "zp_ptr2",
     "mul_dma_lo", "mul_dma_hi", "mul_cached_a", "mul_src2_buf",
-    "sqtab_lo", "sqtab_hi",
+    # sqtab_lo/sqtab_hi left this roster at v0.16.0: they are no longer
+    # gated-but-exported, they are exported by nothing (FORBIDDEN_EXPORTS).
     "LIB_VERSION_MAJOR", "LIB_VERSION_MINOR", "LIB_VERSION_PATCH",
     "LIB_ABI_VERSION",
 }
@@ -1191,12 +1192,17 @@ def bare_gated(names):
 # it must export no bare name in either configuration -- is asserted by
 # zp_alias_audit() below, which has the populated-dump sentinel that makes an
 # absence assertion mean something.
-GATE_TUS = ["zp_aliases", "mul_aliases", "data_shared", "sqtab_aliases",
+GATE_TUS = ["zp_aliases", "mul_aliases", "data_shared",
             "lib_version", "precalc_manifest"]
 # `mul_8x8` left this list at issue #155: it owns no bare name any more, the
 # two it used to own (sqtab_lo/sqtab_hi) having moved to `sqtab_aliases.s`.
 # The sentinel above would fail it as a permanently-green entry -- which is
 # the check working, and is how this edit was found rather than remembered.
+# `sqtab_aliases` left at v0.16.0, with the file: SPEC §8.1 forbids the
+# export outright, so the pair went rather than riding the window. Left in,
+# two legs fire -- "are in GATE_TUS but ship in no archive" and "are in
+# GATE_TUS but own no displaceable name" (observed). Their absence from
+# every archive is forbidden_export_check's job, not this roster's.
 
 
 # --- R2 exported-vs-summed ZP audit (issue #113, chacha-template method) -----
@@ -2291,6 +2297,8 @@ def packaging_check(failures, archives):
     src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
     shipped_inc = LIBDIR / "nistcurves.inc"
     shipped_cfg = LIBDIR / "cfg" / "nistcurves-example.cfg"
+    src_sqb = REPO / "src" / "sqtab_base.inc"
+    shipped_sqb = LIBDIR / "sqtab_base.inc"
     archive = LIBDIR / "nistcurves.a"
 
     # (1) `make lib` produced all three artifacts, and the shipped header/cfg
@@ -2298,20 +2306,65 @@ def packaging_check(failures, archives):
     # exactly the drift this pin exists to catch).
     ok = True
     for label, p in (("archive", archive), ("header", shipped_inc),
-                     ("example cfg", shipped_cfg)):
+                     ("example cfg", shipped_cfg),
+                     ("sqtab base include", shipped_sqb)):
         if not p.exists():
             failures.append(f"packaging: `make lib` did not produce the {label} ({p})")
             print(f"  PACKAGING FAIL: missing {label}: {p}")
             ok = False
     for label, s, d in (("header", src_inc, shipped_inc),
-                        ("example cfg", src_cfg, shipped_cfg)):
+                        ("example cfg", src_cfg, shipped_cfg),
+                        ("sqtab base include", src_sqb, shipped_sqb)):
         if s.exists() and d.exists() and s.read_bytes() != d.read_bytes():
             failures.append(f"packaging: shipped {label} differs from {s}")
             print(f"  PACKAGING FAIL: build/lib copy of the {label} is stale")
             ok = False
     if not ok:
         return
-    print("  artifacts OK (.a + .inc + example .cfg, shipped copies match src/)")
+    print("  artifacts OK (.a + .inc + sqtab_base.inc + example .cfg, shipped "
+          "copies match src/)")
+
+    # (1b) sqtab_base.inc is self-contained from build/lib alone (v0.16.0).
+    # With the bare sqtab_lo/sqtab_hi exports gone (SPEC §8.1), deriving them
+    # in the consumer's own TU is the ONLY way to obtain them, and
+    # nistcurves.inc tells consumers to do it with this include. So assemble
+    # exactly that, with -I pointing at build/lib and nowhere else, and check
+    # the derived value both at the shipped default and under a -D override.
+    # The default is not restated here: it is parsed from src/sqtab_base.inc,
+    # which (1) has just proved byte-identical to the shipped copy.
+    mdef = re.search(r"LIB_SHARED_SQTAB_BASE\s*=\s*\$([0-9a-fA-F]+)",
+                     src_sqb.read_text())
+    sqb_ok = mdef is not None
+    if not mdef:
+        failures.append("packaging: cannot parse the default out of "
+                        "src/sqtab_base.inc -- the derivation probe would "
+                        "compare against nothing")
+        print("  SQTAB INC FAIL: default unparsed")
+    # Failures here do not end the leg: the header rows below are independent
+    # of this file, and returning early would hide their result.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        rows = ((int(mdef.group(1), 16), []),
+                (0xA000, ["-D", "LIB_SHARED_SQTAB_BASE=0xA000"])) if mdef else ()
+        for want, dargs in rows:
+            (td / "d.s").write_text(
+                '.include "sqtab_base.inc"\n'
+                "sqtab_lo = LIB_SHARED_SQTAB_BASE\n"
+                "sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200\n"
+                f".assert sqtab_lo = ${want:04X}, error, \"derived sqtab_lo\"\n"
+                f".assert sqtab_hi = ${want + 0x200:04X}, error, \"derived sqtab_hi\"\n")
+            rc, out = sh(["ca65", "--cpu", "6502", "-I", str(LIBDIR), *dargs,
+                          "-o", str(td / "d.o"), str(td / "d.s")])
+            note_examined(1, "sqtab derivation probe")
+            if rc:
+                failures.append(f"packaging: deriving sqtab_lo from the shipped "
+                                f"sqtab_base.inc {dargs or '(default)'} failed: "
+                                f"{out.strip()[:200]}")
+                print(f"  SQTAB INC FAIL {dargs or '(default)'}: {out.strip()[:200]}")
+                sqb_ok = False
+    if sqb_ok:
+        print("  sqtab_base.inc OK (consumer derivation from build/lib alone: "
+              "default and -D override both land where asserted)")
 
     # (2) Every LIB_NISTCURVES_* segment the sources emit must be mapped by the
     # example cfg. A consumer copies that SEGMENTS block; an unmapped segment

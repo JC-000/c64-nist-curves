@@ -166,7 +166,8 @@ ecdsa384_msg_struct_ptr: .res 2, 0
 ;     §8.3 product channel. The borrow was safe but it made fp256.o/fp384.o
 ;     IMPORT a mul_8x8.o symbol, so every link that called any field op pulled
 ;     that member in and with it the displaceable bare `sqtab_lo`/`sqtab_hi`
-;     -- the §6.1 collision #155 demonstrates. Private scratch here breaks the
+;     -- the §6.1 collision #155 demonstrates (that pair is exported by nothing
+;     since v0.16.0, SPEC §8.1). Private scratch here breaks the
 ;     pull path and stops the field layer writing through an APP_OWNED
 ;     consumer's provider cells for its own purposes.
 .export fp384_diag_lo, fp384_diag_hi

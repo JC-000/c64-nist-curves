@@ -86,7 +86,7 @@ CFG = $(SRC_DIR)/c64.cfg
 # doesn't touch (Lim-Lee anchors, the other curve's state, SHA buffers,
 # test-driver scratch).
 MODULES = main constants zp_config zp_aliases lib_version reu_config lib_manifest \
-          precalc_manifest mul_8x8 sqtab_aliases reu_mul_init \
+          precalc_manifest mul_8x8 reu_mul_init \
           fp256 mod256 curve256 points256_core points256_comb inv256 ecdsa256 \
           fp384 mod384 curve384 points384_core points384_comb ecdsa384 ecdsa384_msg \
           sha384 \
@@ -502,7 +502,7 @@ LIB_CORE_P384CURVE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
 # the REU multiply table (issues #69/#78; verify-onchip archives contain
 # zero REU DMA code, API.md §8.4.2).
 LIB_MUL_OBJS  = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
-                $(BUILD_DIR)/mul_8x8.o $(BUILD_DIR)/sqtab_aliases.o \
+                $(BUILD_DIR)/mul_8x8.o \
                 $(BUILD_DIR)/reu_mul_init.o \
                 $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
@@ -638,7 +638,7 @@ LIB_CORE_ONCHIP_OBJS = $(BUILD_DIR)/lib_version.o \
                 $(BUILD_DIR)/zp_config.o \
                 $(BUILD_DIR)/zp_aliases.o
 LIB_MUL_ONCHIP_OBJS = $(BUILD_DIR)/constants.o $(BUILD_DIR)/reu_config.o \
-                $(BUILD_DIR)/mul_8x8_onchip.o $(BUILD_DIR)/sqtab_aliases.o \
+                $(BUILD_DIR)/mul_8x8_onchip.o \
                 $(BUILD_DIR)/data_shared.o \
                 $(BUILD_DIR)/data_reu_wait.o \
                 $(BUILD_DIR)/data_mul_stage.o \
@@ -674,13 +674,21 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
 # still bind is §3's header-import rule, which governs any header that exists
 # -- see src/nistcurves.inc.
 #
-# Both are checked-in sources copied verbatim into build/lib/ -- not generated,
+# All three are checked-in sources copied verbatim into build/lib/ -- not generated,
 # so there is exactly one canonical copy of each and no chance of the shipped
 # artifact drifting from the one in the tree:
 #
 #   build/lib/nistcurves.a                    the archive (per-variant name)
 #   build/lib/nistcurves.inc                  <- src/nistcurves.inc
+#   build/lib/sqtab_base.inc                  <- src/sqtab_base.inc
 #   build/lib/cfg/nistcurves-example.cfg      <- cfg/nistcurves-example.cfg
+#
+# sqtab_base.inc ships from v0.16.0, when the bare sqtab_lo/sqtab_hi exports
+# were removed (SPEC §8.1 forbids them). A consumer now has to derive the two
+# names in its own TU, and the header tells it to do so with this include --
+# which, until it shipped, existed only in the library's src/. Without it the
+# consumer would transcribe the $9C00 default out of prose: one more copy of
+# the default to drift from the one the archive was built with.
 #
 # EVERY `lib*` target carries $(LIB_PACKAGING), not just `lib`: a consumer who
 # runs `make lib-p256-verify` gets an archive whose header and cfg they need
@@ -694,7 +702,8 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
 LIB_INC         = $(LIB_DIR)/nistcurves.inc
 LIB_CFG_DIR     = $(LIB_DIR)/cfg
 LIB_EXAMPLE_CFG = $(LIB_CFG_DIR)/nistcurves-example.cfg
-LIB_PACKAGING   = $(LIB_INC) $(LIB_EXAMPLE_CFG)
+LIB_SQTAB_INC   = $(LIB_DIR)/sqtab_base.inc
+LIB_PACKAGING   = $(LIB_INC) $(LIB_SQTAB_INC) $(LIB_EXAMPLE_CFG)
 
 lib:             $(LIB_DIR)/nistcurves.a $(LIB_PACKAGING)
 lib-p256-comb:   $(LIB_DIR)/nistcurves-p256-comb.a $(LIB_PACKAGING)
@@ -716,6 +725,9 @@ $(LIB_CFG_DIR):
 	mkdir -p $(LIB_CFG_DIR)
 
 $(LIB_INC): $(SRC_DIR)/nistcurves.inc | $(LIB_DIR)
+	cp $< $@
+
+$(LIB_SQTAB_INC): $(SRC_DIR)/sqtab_base.inc | $(LIB_DIR)
 	cp $< $@
 
 $(LIB_EXAMPLE_CFG): cfg/nistcurves-example.cfg | $(LIB_CFG_DIR)
