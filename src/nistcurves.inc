@@ -463,7 +463,16 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .endif
 
 .if _NC_FIELD .and (.not .defined(FP_ONCHIP_MUL))
-.import LIB_NISTCURVES_PRECALC_reu_mul_SIZE
+; 131072 does not fit 16 bits, so precalc_table.inc (canonical, unedited)
+; exports this SIZE far. A plain absolute import drew ld65 "Address size
+; mismatch" in every consumer build that referenced it, and `: far` is
+; rejected under --cpu 6502 -- so the far import is declared under .p816 and
+; the consumer's CPU is restored straight after (.pushcpu/.popcpu, so a
+; 65C02 consumer stays 65C02). Imports only; no code is assembled here.
+.pushcpu
+.p816
+.import LIB_NISTCURVES_PRECALC_reu_mul_SIZE: far
+.popcpu
 .import LIB_NISTCURVES_PRECALC_reu_mul_REGION
 .import LIB_NISTCURVES_PRECALC_reu_mul_SHARED
 .endif
@@ -511,7 +520,13 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .import reu_mul_tables_init      ; §8.2 canonical entry
 .import reu_mul_init             ; historical nist-curves alias, same address
 .endif
-.ifndef SHARED_REU_MUL_FETCH
+; Gated EXACTLY as src/mul_8x8.s gates the export: absent under
+; SHARED_REU_MUL_FETCH (the consumer provides it) and under FP_ONCHIP_MUL (the
+; onchip profile never DMAs a row, so the archive does not ship the fetch).
+; The header used to declare it for the onchip archives too, and a consumer
+; referencing it got `Unresolved external 'reu_fetch_mul_row'` (#170).
+; Bare import, no .else pin: this is an entry point, not a value.
+.if .not (.defined(SHARED_REU_MUL_FETCH) .or .defined(FP_ONCHIP_MUL))
 ; Canonical per-row fetch: A = row index on entry; on return the 512 bytes are
 ; at LIB_NISTCURVES_SHARED_REU_MUL_STAGE_LO / _STAGE_HI. Offered to consumers
 ; that want to drive the fetch themselves — the library's own fp_mul / fp_sqr
@@ -555,8 +570,11 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .import mul_cached_a, mul_src2_buf
 .endif
 
-; Operand widths (src/constants.s).
-.import FP256_SIZE, FP384_SIZE
+; Operand widths (src/constants.s). `.importzp`, not `.import`: constants.s
+; exports both as zeropage-sized constants (32 and 48), so an absolute import
+; drew ld65 "Address size mismatch" in every consumer build that used them
+; (found by check-archives' header leg once it referenced every name, #170).
+.importzp FP256_SIZE, FP384_SIZE
 
 .endif ; _NC_FIELD
 

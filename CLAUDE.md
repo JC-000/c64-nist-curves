@@ -110,6 +110,18 @@ isolation, knob staleness asserting the *artifact* flipped), `make check-docs`
 (every doc snippet assembles, plus the release-notes self-reference check), and
 PRG byte-identity when nothing should move.
 
+`make check-archives` does not write to `build/`. The knob-staleness and §6.2
+override legs drive `make BUILD_DIR=<tmp>` in throwaway directories (before
+#167 a passing run left `build/` with 2 objects and no archive). Every leg runs
+under a crash guard. The run ends with `legs: N of N ran to completion`: the
+per-archive population comes from the Makefile, and leg functions are
+discovered by shape and must all be registered. **The #144 PRG-staleness
+negative test must remove BOTH forcing mechanisms:** the stamp recipe's
+`rm $(BUILD_DIR)/*.prg` and `$(PRG)` on the `$(KNOB_FORCE)` line. Dropping
+only the rm is correctly green, because the phony prerequisite still forces
+the relink. With both removed the artifact leg goes red deterministically,
+since it future-dates the PRG.
+
 Companion docs (read alongside this file):
 - `README.md` — user-facing overview, full benchmark tables, ECDSA ABI walkthrough.
 - `API.md` — library API reference; §4 (re-entrancy contract) and §8 (consumer integration / submodule pinning) are load-bearing.
