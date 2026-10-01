@@ -79,7 +79,8 @@ Three later releases matter here:
   - `abi_surface_check` compares the built archives with
     `tools/abi_baseline.json`, the last **tag's** exported surface and ABI.
     It fails a removed name without a counter move, a decrease, or a step
-    with no `; k -> k+1` reason line in `src/lib_version.s`.
+    with no `; k -> k+1 (issue #NNN or vX.Y.Z) <4+ words>` reason line in
+    `src/lib_version.s` (a bare arrow does not count).
   - `abi_doc_binding_check` makes every documented
     `.assert LIB_NISTCURVES_ABI_VERSION = N, lderror` in API.md,
     `src/nistcurves.inc` and `src/lib_version.s` equal the built value.

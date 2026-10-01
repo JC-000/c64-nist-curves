@@ -3566,6 +3566,24 @@ def built_abi_version():
     return od65_value([BUILD / "lib_version.o"], "LIB_NISTCURVES_ABI_VERSION")
 
 
+ABI_REASON_MIN_WORDS = 4
+_ABI_REASON_REF_RE = re.compile(r"#\d+|\bv\d+\.\d+\.\d+\b")
+
+
+def abi_step_reason(text, k):
+    """The stated reason for ABI step k -> k+1 in src/lib_version.s, or None.
+
+    The reason is the rest of the `; k -> k+1` line. It must name an issue or
+    a release and say at least ABI_REASON_MIN_WORDS words; otherwise the step
+    is unexplained."""
+    for m in re.finditer(rf"^;\s*{k}\s*->\s*{k + 1}\b(.*)$", text, re.M):
+        rest = m.group(1)
+        words = re.findall(r"[A-Za-z][A-Za-z'-]+", _ABI_REASON_REF_RE.sub(" ", rest))
+        if _ABI_REASON_REF_RE.search(rest) and len(words) >= ABI_REASON_MIN_WORDS:
+            return rest.strip()
+    return None
+
+
 @leg
 def abi_surface_check(failures):
     """SPEC §1/§7: a name the last RELEASE exported may disappear only if
@@ -3588,9 +3606,12 @@ def abi_surface_check(failures):
         archive no longer built, needs ABI > baseline ABI;
       * the ABI never goes down;
       * every step k -> k+1 between the two values needs a stated reason: a
-        `; k -> k+1` comment line in src/lib_version.s. An ABI that moved
-        with no removal is allowed (§7 moves it for behaviour too), but not
-        silently.
+        `; k -> k+1 <reason>` comment line in src/lib_version.s, where the
+        reason on that line carries an issue reference (`#NNN`) or a release
+        (`vX.Y.Z`) AND at least ABI_REASON_MIN_WORDS words. A bare arrow is not
+        a reason: review mutant tV went ABI 4 -> 6 on `; 5 -> 6` alone and
+        passed. An ABI that moved with no removal is allowed (§7 moves it for
+        behaviour too), but not silently.
     Scope: the DEFAULT configuration, the one the baseline records. A missing,
     unparseable or empty baseline fails; an empty population proves
     nothing."""
@@ -3656,11 +3677,13 @@ def abi_surface_check(failures):
     if cur_abi > base_abi:
         lv = (REPO / "src" / "lib_version.s").read_text()
         missing = [f"{k} -> {k + 1}" for k in range(base_abi, cur_abi)
-                   if not re.search(rf"^;\s*{k}\s*->\s*{k + 1}\b", lv, re.M)]
+                   if abi_step_reason(lv, k) is None]
         if missing:
             failures.append(f"abi surface: ABI {base_abi} -> {cur_abi} with no "
-                            f"stated reason for step(s) {missing} -- add a "
-                            "`; k -> k+1 (...)` line to src/lib_version.s")
+                            f"stated reason for step(s) {missing} -- each needs a "
+                            "`; k -> k+1 (issue #NNN or vX.Y.Z) <at least "
+                            f"{ABI_REASON_MIN_WORDS} words>` line in "
+                            "src/lib_version.s; a bare arrow is not a reason")
             print(f"  ABI FAIL: unexplained step(s) {missing}")
     if not failures or not any(f.startswith("abi surface") for f in failures):
         print(f"  abi surface OK ({len(rows)} archives, "
