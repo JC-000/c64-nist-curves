@@ -13,7 +13,7 @@ the macro invocations) MUST remain in lock-step — an asymmetry between
 them blocks adopter PRs per the intake-reviewer rule in
 c64-lib-contract `adopters.md` step 6. To re-audit:
 
-```
+```sh
 od65 --dump-exports build/precalc_manifest.o | grep LIB_PRECALC
 grep -n LIB_PRECALC_TABLE src/precalc_manifest.s
 ```

@@ -14,6 +14,34 @@ contract).
 
 ### Fixed
 
+- **`nistcurves.inc` declared names some archives do not provide, or
+  declared them with the wrong address size (issue #170).** The header leg
+  of `make check-archives` used to pull no archive member, so none of this
+  was visible. Its stub now references every name the header declares
+  under each archive's switch set, and any ld65 warning fails the leg.
+  Three consumer-visible header changes followed. No archive or PRG bytes
+  change.
+  - `reu_fetch_mul_row` is no longer declared under `FP_ONCHIP_MUL`. The
+    five `*-onchip` archives deliberately do not ship it; `src/mul_8x8.s`
+    gates the export on `SHARED_REU_MUL_FETCH` or `FP_ONCHIP_MUL`. A
+    consumer referencing it got `Unresolved external 'reu_fetch_mul_row'`
+    at link; it now gets an undefined-symbol error at assembly, which names
+    the real cause.
+  - `FP256_SIZE` / `FP384_SIZE` are now `.importzp`, matching their
+    zeropage export from `constants.s`. With the old header,
+    `ldx #FP256_SIZE` failed to assemble with `Range error`; it now
+    assembles. **Breaking for one pattern:** a consumer TU that includes
+    the header AND says `.import FP256_SIZE` itself now fails with
+    `Address size mismatch for symbol 'FP256_SIZE'`. Delete the redundant
+    `.import`, or write `.importzp`.
+  - `LIB_NISTCURVES_PRECALC_reu_mul_SIZE` (131072) is now imported `far`,
+    inside `.pushcpu` / `.p816` ... `.popcpu`. The canonical
+    `precalc_table.inc` exports it far, and an absolute import drew an
+    `Address size mismatch` ld65 warning in every consumer build that
+    referenced it. The consumer's CPU is restored after the import (a
+    `--cpu 65c02` consumer keeps `stz`). A `.dword` of it still emits
+    `00 00 02 00`, and consumers that never reference it are unaffected.
+
 - **`tools/test_reu_mul_u64.py`: provenance, clock and exit status are
   measured from the device in hand (issues #172, #173).** Tool-only; the
   PRG and archives are unchanged.
@@ -55,7 +83,7 @@ contract).
       speed indices (U64E 40 -> 38.99, 48 -> 47.00);
     - the small KERNAL jiffy-IRQ cost.
 
-    U64E fw 3.15 / core 1.4F NTSC hardware measured 48 -> 45.00 +-0.15
+    U64E fw 3.15 / fpga 125 / core 1.50 (NTSC) hardware measured 48 -> 45.00 +-0.15
     with intercept 0.0 +-18.4 ms, and 16 -> 15.30 +-0.05 with intercept
     -6.0 +-18.4 ms. So there is no fixed overhead, and badlines plus #874
     predict 45.25 / 15.41. A delivered-clock reading would need

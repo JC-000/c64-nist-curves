@@ -20,15 +20,25 @@ allowlist below:
       entry that is now satisfied within the set also fails (the gap closed --
       update the docs and shrink the allowlist).
 
-  (b) ld65 dummy-link smoke tests. A small table of supported / documented-
-      broken entry points per archive is assembled with ca65 and linked
-      against the built archive. An entry point documented as linkable must
-      link clean; one documented as broken must fail with unresolved symbols
-      that are a subset of the allowlist (never a fresh symbol, never zero).
+  (b) ld65 dummy-link smoke tests. A small table of supported entry points
+      per archive is assembled with ca65 and linked against the built
+      archive. A supported entry point must link clean; a documented consumer
+      gap (an entry point the archive deliberately does not provide, e.g.
+      reu_mul_init in the onchip archives) must fail on unresolved symbols
+      that all appear in CONSUMER_GAPS -- a table separate from the closure
+      allowlist since issue #167, which is what made such a row passable.
 
-Both directions are violations, which is what makes it a ratchet rather than a
-one-way smoke test: reality drifting looser OR tighter than the documented
-contract exits non-zero, forcing the docs and this table to move together.
+The closure sweep is two-directional, which is what makes it a ratchet rather
+than a one-way smoke test: reality drifting looser OR tighter than the
+documented contract exits non-zero, forcing the docs and this table to move
+together. With every allowlist empty the tighter direction (an allowlisted gap
+closing) has nothing to examine; the leg says so on every run rather than
+printing an OK that reads the same as "checked and fine" (issue #167).
+
+Every leg runs under a crash guard (``run_leg``): an exception in one leg is
+recorded as that leg's failure and the run continues, and the run ends with a
+count of legs that ran against legs that exist. A leg that raises used to
+abort the process and take every later leg with it (issue #167).
 
 Object lists are derived by parsing the Makefile ``ar65 a`` recipe lines
 (the single source of truth for archive composition) rather than hardcoded.
@@ -43,7 +53,58 @@ import re
 import subprocess
 import sys
 import tempfile
+import functools
 from pathlib import Path
+
+# --- Leg run log (issue #167 re-review A/B/C) --------------------------------
+# Every leg AND sub-leg carries @leg. The wrapper records entry and completion;
+# _run_all_legs then requires every decorated function to have been ENTERED,
+# so a sub-leg dropped from its caller, a deleted registration (including the
+# registry leg's own) or a leg nobody calls fails the run instead of quietly
+# shrinking "N of N". leg_registry_check separately scans this file's AST for
+# leg-shaped functions that lack the decorator.
+LEG_FUNCS = {}
+LEG_ENTERED = set()
+LEG_COMPLETED = set()
+# "Entered" is not "examined" (issue #167 re-review E2): a leg whose first
+# statement is `return` was entered, completed, and checked nothing. Each leg
+# reports what it examined, in real units, via note_examined(); a completed
+# invocation that examined nothing is a zero-examination failure, collected
+# here and asserted by _run_all_legs. A leg that may LEGITIMATELY examine
+# nothing must be listed in LEGS_MAY_EXAMINE_NONE (ratcheted: a listed leg that
+# did examine something fails as stale). Empty today.
+LEGS_MAY_EXAMINE_NONE = {}
+LEG_EXAMINED = {}          # leg name -> list of per-invocation {unit: count}
+LEG_ZERO_EXAMINED = []     # leg names whose invocation examined nothing
+_LEG_STACK = []
+
+
+def note_examined(n, unit):
+    """Record that the innermost running leg examined `n` items of `unit`."""
+    if _LEG_STACK:
+        counts = _LEG_STACK[-1][1]
+        counts[unit] = counts.get(unit, 0) + n
+
+
+def leg(fn):
+    LEG_FUNCS[fn.__name__] = fn
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        LEG_ENTERED.add(fn.__name__)
+        counts = {}
+        _LEG_STACK.append((fn.__name__, counts))
+        try:
+            result = fn(*args, **kwargs)
+        finally:
+            _LEG_STACK.pop()
+        LEG_COMPLETED.add(fn.__name__)
+        LEG_EXAMINED.setdefault(fn.__name__, []).append(counts)
+        if not any(counts.values()):
+            LEG_ZERO_EXAMINED.append(fn.__name__)
+        return result
+    return wrapper
+
 
 REPO = Path(__file__).resolve().parent.parent
 BUILD = REPO / "build"
@@ -474,8 +535,14 @@ MUST_NOT_EXPORT["nistcurves-app-owned.a"] = (
 
 # --- Dummy-link smoke tests: (label, [import symbols], expect_link) ----------
 # expect_link True  -> documented as linkable, must link clean.
-# expect_link False -> documented as broken, must fail with unresolved symbols
-#                      that are a subset of that archive's KNOWN_EXTERNAL set.
+# expect_link False -> documented as NOT provided by this archive: the link
+#                      must fail on unresolved symbols, every one of them
+#                      listed in CONSUMER_GAPS[archive] (below).
+# Every archive the Makefile builds must have an entry (issue #167: the
+# app-owned archive had none and was silently skipped). Until #167 all 36
+# rows were True and the False branches were unreachable, because a False
+# row's unresolved set had to sit inside KNOWN_EXTERNAL -- the closure
+# table -- which made one unpassable; CONSUMER_GAPS decouples them.
 SMOKE = {
     "nistcurves.a": [
         ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
@@ -560,7 +627,55 @@ SMOKE = {
         ("variable-base building blocks",
          ["ec_scalar_mul_var", "ec_jacobian_to_affine", "fp_mod_inv", "fp_mod_mul"], True),
     ],
+    # SPEC §6.3 APP_OWNED: the field/point/ECDSA/SHA surface links from the
+    # archive alone; every §8.x primitive is the consumer's (rows below).
+    # This archive had NO rows until issue #167, and SMOKE.get() yielded
+    # nothing for it without complaint.
+    "nistcurves-app-owned.a": [
+        ("packaged ecdsa_verify_256", ["ecdsa_verify_256"], True),
+        ("packaged ecdsa_verify_384", ["ecdsa_verify_384"], True),
+        ("sha384 streaming", ["sha384_init", "sha384_update", "sha384_final"], True),
+        ("packaged ecdsa_verify_with_message_384",
+         ["ecdsa_verify_with_message_384"], True),
+        ("fixed-base comb machinery", ["ec_scalar_mul", "ec_precompute_256"], True),
+    ],
 }
+
+# --- Documented CONSUMER gaps (issue #167) -----------------------------------
+# Entry points a consumer may NOT resolve from an archive, by design. This is
+# deliberately separate from KNOWN_EXTERNAL: that table lists names the
+# archive's own members import and leave unresolved (a closure property),
+# while these are names the archive does not provide at all. Coupling the two
+# made an expect_link=False row unpassable -- its unresolved set had to sit
+# inside KNOWN_EXTERNAL, which the closure leg then failed as stale.
+# Ratcheted both ways in archive_contract_check: a False row may only fail on
+# names listed here, and every name listed here must be observed unresolved
+# by some False row of that archive.
+_ONCHIP_ARCHIVES = ["nistcurves-onchip.a", "nistcurves-p256-verify-onchip.a",
+                    "nistcurves-p384-verify-onchip.a",
+                    "nistcurves-p384-curve-onchip.a",
+                    "nistcurves-p256-comb-onchip.a"]
+_REU_MUL_SURFACE = ["reu_mul_init", "reu_mul_tables_init", "reu_fetch_mul_row"]
+_FIELD_INIT_SURFACE = ["sqtab_init", "mul_tables_init", "ct_mul_8x8"]
+CONSUMER_GAPS = {a: set(_REU_MUL_SURFACE) for a in _ONCHIP_ARCHIVES}
+CONSUMER_GAPS["nistcurves-p384-sha384.a"] = set(_REU_MUL_SURFACE + _FIELD_INIT_SURFACE)
+CONSUMER_GAPS["nistcurves-app-owned.a"] = set(_REU_MUL_SURFACE + _FIELD_INIT_SURFACE)
+for _a in _ONCHIP_ARCHIVES:
+    SMOKE[_a] = SMOKE[_a] + [
+        # API.md §8.4.2: "onchip consumers need only sqtab_init".
+        ("onchip boot init: sqtab_init only", ["sqtab_init"], True),
+        # API.md §8.4.2: "reu_mul_init is deliberately unlinkable from them";
+        # mul_8x8.s drops the fetch export under FP_ONCHIP_MUL too.
+        ("§8.2 provider + fetch deliberately unlinkable", _REU_MUL_SURFACE, False),
+    ]
+SMOKE["nistcurves-p384-sha384.a"] = SMOKE["nistcurves-p384-sha384.a"] + [
+    ("no field layer: §8.1-§8.3 entries unlinkable",
+     _REU_MUL_SURFACE + _FIELD_INIT_SURFACE, False),
+]
+SMOKE["nistcurves-app-owned.a"] = SMOKE["nistcurves-app-owned.a"] + [
+    ("every §8.x primitive deferred to the consumer (§6.3)",
+     _REU_MUL_SURFACE + _FIELD_INIT_SURFACE, False),
+]
 
 # Minimal ld65 config: ZP + one catch-all region, every LIB_NISTCURVES_*
 # segment optional so any archive subset places cleanly.
@@ -1148,6 +1263,27 @@ ZP_ALIAS_ARMS = {
 }
 
 
+def _zp_arm_ragged(failures, leg, arm):
+    """True (and a recorded, NAMED failure) when `arm` -- taken from
+    ZP_ARM_OBJECTS -- is missing from one of the other two ZP rosters.
+
+    The legs that walk ZP_ARM_OBJECTS index the other two by the same key.
+    A ragged roster used to raise KeyError there, which aborted the whole run
+    ~15 legs before zp_roster_reconciliation_check could name the defect and
+    swallowed every leg after it (issue #167). The arm is now reported as
+    unaudited by this leg and skipped, the run continues, and the
+    reconciliation leg still reports the raggedness in its own words."""
+    absent = [r for r, d in (("ZP_ALIAS_ARMS", ZP_ALIAS_ARMS),
+                             ("ZP_ARM_DEFINES", ZP_ARM_DEFINES)) if arm not in d]
+    if not absent:
+        return False
+    failures.append(f"{leg} {arm}: arm missing from {absent} -- ragged ZP "
+                    "roster, this arm is unaudited by this leg")
+    print(f"  ROSTER FAIL {arm}: not in {', '.join(absent)}; "
+          "arm skipped by this leg (see ZP roster reconciliation)")
+    return True
+
+
 def od65_zp_exports(obj):
     """name -> address for zeropage-sized exports of one object.
     Sentinel: od65 exits 0 on non-objects, so an unreadable input must fail
@@ -1221,6 +1357,7 @@ def od65_export_records(obj):
     return recs
 
 
+@leg
 def zp_alias_audit(failures):
     """Issue #113 + #154: per variant arm --
 
@@ -1245,6 +1382,8 @@ def zp_alias_audit(failures):
     print("\n=== R2 ZP audit: exported union vs equate + alias accounting ===")
     alias_seen = set()
     for arm, archives in ZP_ARM_OBJECTS.items():
+        if _zp_arm_ragged(failures, "zp-audit", arm):
+            continue
         alias_obj, want_bare = ZP_ALIAS_ARMS[arm]
         exports = od65_zp_exports(BUILD / (arm + ".o"))
         if exports is None:
@@ -1261,6 +1400,7 @@ def zp_alias_audit(failures):
                   "refusing to conclude anything from what is missing")
             continue
         bad = False
+        note_examined(len(exports), "zp export")
         # (0) PARTITION RECONCILIATION. The sentinel above proves the dump has
         # something in it; this proves we have accounted for ALL of it. Every
         # name in the member must land in exactly one known bucket -- bare
@@ -1427,6 +1567,7 @@ def zp_alias_audit(failures):
         print(f"  alias surface present: {sorted(alias_seen)}")
 
 
+@leg
 def zp_alias_link_identity(failures):
     """Issue #154: drive every bare alias through a REAL ld65 link against the
     archive that is supposed to carry it, and require it to resolve to its
@@ -1451,6 +1592,8 @@ def zp_alias_link_identity(failures):
     import tempfile
     print("\n=== §6.1 bare-alias link identity (issue #154) ===")
     for arm, archives in ZP_ARM_OBJECTS.items():
+        if _zp_arm_ragged(failures, "zp-alias link", arm):
+            continue
         _, want_bare = ZP_ALIAS_ARMS[arm]
         for name in archives:
             archive = LIBDIR / name
@@ -1476,6 +1619,7 @@ def zp_alias_link_identity(failures):
                     continue
                 rc, out = sh(["ld65", "-C", str(td / "cfg"), "-Ln", str(td / "lbl"),
                               "-o", str(td / "o.prg"), str(td / "p.o"), str(archive)])
+                note_examined(len(pairs), "alias link")
                 unresolved = set(re.findall(r"Unresolved external '([^']+)'", out))
                 if not want_bare:
                     # SHA arm: the bare name must be absent from this archive.
@@ -1523,6 +1667,7 @@ def zp_alias_link_identity(failures):
                     print(f"  {name:34s} {', '.join(shown)} (each == its canonical slot)")
 
 
+@leg
 def version_identity_check(failures):
     """§1 identity: the VERSION file and the lib_version.o equates MUST agree.
     v0.10.0 shipped self-misreporting as 0.10.1 -- PATCH carried over from the
@@ -1540,6 +1685,7 @@ def version_identity_check(failures):
         m = re.search(r'Name:\s*"LIB_NISTCURVES_VERSION_' + part
                       + r'"(?:.|\n)*?Value:\s*0x([0-9A-Fa-f]+)', out)
         got.append(str(int(m.group(1), 16)) if m else "?")
+        note_examined(1, "version component")
     if got != want:
         failures.append(f"version identity: VERSION file {'.'.join(want)} != equates {'.'.join(got)}")
         print(f"  IDENTITY FAIL: VERSION file says {'.'.join(want)}, built equates say {'.'.join(got)}")
@@ -1547,6 +1693,7 @@ def version_identity_check(failures):
         print(f"  identity OK ({'.'.join(got)})")
 
 
+@leg
 def gated_surface_check(failures, archives):
     """§6.5 window ratchet: a -D LIB_NO_BARE_EXPORTS=1 build of every
     gate-owning TU must export zero deprecated bare names. This is the whole
@@ -1632,7 +1779,17 @@ def gated_surface_check(failures, archives):
             uobj = Path(td) / (obj + "_ungated.o")
             rc, out = sh(["ca65", "--cpu", "6502", *dargs,
                           "-I", "src", "-o", str(uobj), f"src/{tu}.s"])
-            urecs = od65_export_records(uobj) if not rc else None
+            if rc:
+                failures.append(f"gated surface [{arm}]: does not assemble ungated")
+                print(f"  GATE FAIL [{arm}]: does not assemble ungated: "
+                      f"{out.splitlines()[0] if out else ''}")
+                continue
+            # Issue #168: rc and an unreadable dump used to share one None
+            # and one message, so an od65 failure on an object ca65 had just
+            # built was reported as "does not assemble ungated" -- sending the
+            # operator to the wrong tool. Same two-branch split as the gated
+            # arm below.
+            urecs = od65_export_records(uobj)
             unames = set(urecs) if isinstance(urecs, dict) else urecs
             if unames is COUNT_MISMATCH:
                 failures.append(f"gated surface [{arm}]: name extraction "
@@ -1641,11 +1798,12 @@ def gated_surface_check(failures, archives):
                 print(f"  GATE FAIL [{arm}]: extraction dropped names vs Count")
                 continue
             if unames is None:
-                failures.append(f"gated surface [{arm}]: does not assemble ungated")
-                print(f"  GATE FAIL [{arm}]: does not assemble ungated: "
-                      f"{out.splitlines()[0] if out else ''}")
+                failures.append(f"gated surface [{arm}]: ungated dump is unreadable "
+                                "(ca65 assembled it; od65 could not read it)")
+                print(f"  GATE FAIL [{arm}]: ungated dump unreadable")
                 continue
             owns = bare_gated(unames)
+            note_examined(1, "shipped arm")
             owned[obj] = sorted(owns)
 
             gobj = Path(td) / (obj + "_gated.o")
@@ -1784,6 +1942,7 @@ APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",
                          "-D", "SHARED_REU_MUL_FETCH", "-D", "SHARED_CT_MUL_8X8"]
 
 
+@leg
 def app_owned_reachability_check(failures):
     """Reachability of APP_OWNED x profile (issue #123). §6.3 was RETIRED at
     contract 1.0.0 and the citations here are history, not a live obligation --
@@ -1808,6 +1967,7 @@ def app_owned_reachability_check(failures):
                 continue
             imports = od65_names(obj, "--dump-imports")
             exports = od65_names(obj, "--dump-exports")
+            note_examined(1, "deferring profile")
             leaked = sorted(exports & CT_MUL_PROVIDER_SYMS)
             if leaked:
                 failures.append(f"app-owned x {label}: deferring TU re-exports provider surface {leaked}")
@@ -1899,8 +2059,16 @@ HEADER_BARE_SYMS = [
 ]
 
 # A consumer TU: includes the shipped header, emits the 2-byte PRG load
-# address the example cfg expects, and nothing else. Every import the header
-# makes must resolve against the archive for this to link.
+# address the example cfg expects, and REFERENCES every name the header
+# declares for the switch set in force (header_stub_for).
+#
+# The reference is load-bearing (issue #170). The header is nothing but
+# `.import`s and equates, and ca65 DROPS an import nothing references: the
+# stub without references assembled to an object whose only import was
+# __LOADADDR__, so linking it "against an archive" pulled zero archive
+# members, and a header declaring a symbol no archive exports printed twelve
+# `header OK [<archive>]` rows anyway. With every declared name referenced,
+# each one survives into the object and ld65 must resolve it from the archive.
 HEADER_STUB = """\
 .include "nistcurves.inc"
 
@@ -1913,25 +2081,193 @@ entry:
     rts
 """
 
+_HDR_IMPORT_RE = re.compile(r"^\s*\.import(?:zp)?\s+(.+)$", re.I)
+# Any import-declaring directive ANYWHERE on a line (a label in front, a
+# .define body, a macro body). Only the line-start form above is modelled.
+_HDR_ANY_IMPORT_RE = re.compile(r"\.(import|importzp)\b", re.I)
+# Import-declaring directives the enumeration below does not model. Finding
+# one is a failure, not a skip: a name it declares would go unreferenced, and
+# an unreferenced import is exactly the vacuity this machinery exists to end.
+_HDR_UNMODELLED_RE = re.compile(
+    r"\.(global|globalzp|forceimport)\b", re.I)
+# Macros allowed to contain an import, and why. Ratcheted both ways by
+# header_declared_imports: an import inside any OTHER macro (or a .define)
+# fails, and an entry here whose macro no longer exists or no longer imports
+# fails too. NISTCURVES_PIN_OVERRIDE's `.import sym` sits in a private .scope
+# and is referenced by the macro's own link-time assert, so ca65 keeps it and
+# the guard rows drive it with a real -D; it needs no stub reference.
+# Value: the ONLY import line the macro body may contain, whitespace-normalised
+# (issue #170 re-review D: allowlisting the whole body let a second
+# `.import bogus` inside the macro's .scope pass unexamined).
+HEADER_IMPORT_MACROS_ALLOWED = {
+    "NISTCURVES_PIN_OVERRIDE": ".import sym",
+}
+
+
+def header_declared_imports(td, incdir, defines):
+    """The names `incdir/nistcurves.inc` .imports under `defines`, as ca65
+    itself decides them -- not as a regex over every conditional arm guesses.
+
+    An instrumented copy of the header gets a `.out` after each line-start
+    `.import`/`.importzp`. ca65 executes a `.out` only in an ACTIVE
+    conditional arm, so the printed names are exactly the ones this switch
+    set declares.
+
+    Any import this model cannot see is UNMODELLED and fails the caller
+    (issue #170 review M3): an import not at line start (`lbl: .import x`), one
+    inside a `.define` body, one inside any macro but the allowlisted
+    NISTCURVES_PIN_OVERRIDE, and .global/.globalzp/.forceimport.
+
+    Returns (declared, text_names, unmodelled, rc, out): `declared` is None
+    when the instrumented copy does not assemble (the caller then reports the
+    real header's own assemble error), `text_names` is every name any arm
+    could declare, `unmodelled` lists what this does not handle.
+    """
+    text = (Path(incdir) / "nistcurves.inc").read_text()
+    out_lines, text_names, unmodelled = [], set(), []
+    macro = None
+    macro_imports = []
+    macros_importing = set()
+    for ln in text.splitlines():
+        out_lines.append(ln)
+        code = ln.split(";", 1)[0]
+        mm = re.match(r"^\s*\.macro\s+(\w+)", code, re.I)
+        if mm:
+            macro, macro_imports = mm.group(1), []
+            continue
+        if re.match(r"^\s*\.endmacro\b", code, re.I):
+            allowed = HEADER_IMPORT_MACROS_ALLOWED.get(macro)
+            if allowed is not None and macro_imports:
+                macros_importing.add(macro)
+                if macro_imports != [allowed]:
+                    unmodelled.append(
+                        f"macro {macro} may contain exactly one import line, "
+                        f"'{allowed}'; found {macro_imports}")
+            macro = None
+            continue
+        if macro is not None:
+            if _HDR_ANY_IMPORT_RE.search(code) or _HDR_UNMODELLED_RE.search(code):
+                if macro in HEADER_IMPORT_MACROS_ALLOWED:
+                    macro_imports.append(" ".join(code.split()))
+                else:
+                    unmodelled.append(f"import inside macro {macro}: {ln.strip()}")
+            continue
+        if _HDR_UNMODELLED_RE.search(code):
+            unmodelled.append(ln.strip())
+            continue
+        if re.match(r"^\s*\.define\b", code, re.I) and _HDR_ANY_IMPORT_RE.search(code):
+            unmodelled.append(f"import inside .define: {ln.strip()}")
+            continue
+        m = _HDR_IMPORT_RE.match(code)
+        if not m:
+            if _HDR_ANY_IMPORT_RE.search(code):
+                unmodelled.append(f"import not at line start: {ln.strip()}")
+            continue
+        for n in m.group(1).split(","):
+            n = n.split(":", 1)[0].strip()
+            if n:
+                text_names.add(n)
+                out_lines.append(f'.out "NCHDRIMPORT {n}"')
+    for mac in sorted(set(HEADER_IMPORT_MACROS_ALLOWED) - macros_importing):
+        unmodelled.append(f"HEADER_IMPORT_MACROS_ALLOWED names {mac}, which "
+                          "imports nothing in the header -- shrink the table")
+    idir = Path(td) / "hdr_instr"
+    idir.mkdir(exist_ok=True)
+    (idir / "nistcurves.inc").write_text("\n".join(out_lines) + "\n")
+    src = idir / "enum.s"
+    src.write_text('.include "nistcurves.inc"\n')
+    rc, out = sh(["ca65", "--cpu", "6502", *defines, "-I", str(idir),
+                  "-o", str(idir / "enum.o"), str(src)])
+    if rc:
+        return None, text_names, unmodelled, rc, out
+    declared = set(re.findall(r"^NCHDRIMPORT (\S+)\s*$", out, re.M))
+    return declared, text_names, unmodelled, rc, out
+
+
+def header_stub_for(declared):
+    """HEADER_STUB plus one `.dword` per declared name, so ca65 keeps every
+    import and ld65 has to resolve each one. `.dword` because several declared
+    equates exceed 16 bits (the 128 KB reu_mul precalc SIZE, for one)."""
+    refs = "".join(f"    .dword {n}\n" for n in sorted(declared))
+    return (HEADER_STUB
+            + "\n; issue #170: reference every declared import so none is dropped\n"
+            + refs)
+
+
+def _ld65_warnings(out):
+    """ld65 warning lines, path-stripped so they read the same every run.
+    Every one fails a header row: a consumer build referencing the name gets
+    the same warning. (There was a one-entry known-warning table for the far
+    reu_mul SIZE; the header now imports it far under .p816, issue #170
+    review item 6, and the table is gone.)"""
+    return [re.sub(r"/\S*/", "", ln.strip())
+            for ln in (out or "").splitlines() if "Warning:" in ln]
+
+
+def referencing_header_stub(td, incdir, defines):
+    """(stub_text, probe_err, declared) for the header under `defines`.
+
+    stub_text is None when the instrumented copy does not assemble (the
+    caller assembles the plain stub to surface the REAL header's error).
+    probe_err is a string when the probe cannot vouch for a result built from
+    this stub: unmodelled import forms, or an empty declared set. Shared by the
+    header leg and the gated-link leg so neither can fall back silently to
+    the non-referencing stub (issue #170 review item 5)."""
+    declared, _, unmodelled, _, eout = header_declared_imports(td, incdir, defines)
+    if declared is None:
+        return None, None, None
+    if unmodelled:
+        return None, (f"header uses import forms this probe does not "
+                      f"reference: {unmodelled}"), declared
+    if not declared:
+        return None, ("header declares no import under this switch set -- a "
+                      "link would bind nothing"), declared
+    return header_stub_for(declared), None, declared
+
 
 def _header_link(td, incdir, cfg, archive, defines):
-    """Assemble HEADER_STUB (+ defines) against `incdir`, link vs `archive`.
+    """Assemble the referencing header stub (+ defines) against `incdir`,
+    link vs `archive`.
 
-    Returns (asm_rc, asm_out, link_rc, link_out); link_* are (None, "") when
-    the assemble failed.
+    Returns (asm_rc, asm_out, link_rc, link_out, probe_err); link_* are
+    (None, "") when the assemble failed. `probe_err` is a string when the
+    probe itself cannot vouch for its result -- an unmodelled import
+    directive, an empty declared set, or a declared name ca65 still dropped --
+    and None otherwise. A caller must treat a non-None probe_err as a failure
+    in its own right, never as "assembles/links fine".
     """
+    stub, perr, declared = referencing_header_stub(td, incdir, defines)
     src = td / "hdr_consumer.s"
-    src.write_text(HEADER_STUB)
     obj = td / "hdr_consumer.o"
+    if stub is None and perr is None:
+        # The instrumented copy failed, so the real one will too (the bare-
+        # import rows rely on exactly that). Report the REAL header's error.
+        src.write_text(HEADER_STUB)
+        arc, aout = sh(["ca65", "--cpu", "6502", *defines, "-I", str(incdir),
+                        "-o", str(obj), str(src)])
+        if arc == 0:
+            return arc, aout, None, "", (
+                "the instrumented header copy failed to assemble while the "
+                "real one assembled -- the import enumeration is broken")
+        return arc, aout, None, "", None
+    if perr:
+        return 0, "", None, "", perr
+    src.write_text(stub)
     arc, aout = sh(["ca65", "--cpu", "6502", *defines, "-I", str(incdir),
                     "-o", str(obj), str(src)])
     if arc != 0:
-        return arc, aout, None, ""
+        return arc, aout, None, "", None
+    kept = od65_names(obj, "--dump-imports")
+    dropped = sorted(declared - kept)
+    if dropped:
+        return arc, aout, None, "", (f"ca65 dropped declared imports {dropped} "
+                                     "-- the link would not resolve them")
     lrc, lout = sh(["ld65", "-C", str(cfg), "-o", str(td / "hdr_consumer.prg"),
                     str(obj), str(archive)])
-    return arc, aout, lrc, lout
+    return arc, aout, lrc, lout, None
 
 
+@leg
 def packaging_check(failures, archives):
     """SPEC §6.1 packaging artifacts + SPEC §3 header-import guard rule.
 
@@ -2016,16 +2352,42 @@ def packaging_check(failures, archives):
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
 
-        arc, aout, lrc, lout = _header_link(td, LIBDIR, src_cfg, archive, [])
+        # Population sentinel for the per-archive rows below: every name the
+        # header could declare, and which of them some archive row actually
+        # drives. A name no row drives is unproven by this leg, and is listed
+        # every run rather than silently left out (issue #170).
+        _, all_names, unmodelled, _, _ = header_declared_imports(td, LIBDIR, [])
+        if unmodelled:
+            failures.append(f"header: import directives the probe does not "
+                            f"model: {unmodelled}")
+            print(f"  HEADER FAIL: unmodelled import directives {unmodelled}")
+        driven = set()
+
+        arc, aout, lrc, lout, perr = _header_link(td, LIBDIR, src_cfg, archive, [])
+        if perr:
+            failures.append(f"header: probe cannot vouch for nistcurves.a: {perr}")
+            print(f"  HEADER FAIL: probe vs nistcurves.a: {perr}")
+            return
         if arc != 0:
             failures.append("header: the shipped .inc does not assemble")
             print(f"  HEADER FAIL: plain include does not assemble:\n{aout}")
             return
         if lrc != 0:
-            failures.append("header: a consumer including the shipped .inc does not link")
+            unres = sorted(set(re.findall(r"Unresolved external '([^']+)'", lout)))
+            failures.append(f"header: a consumer including the shipped .inc does "
+                            f"not link vs nistcurves.a (unresolved {unres})")
             print(f"  HEADER FAIL: plain include does not link vs nistcurves.a:\n{lout}")
-            return
-        print("  header OK (plain .include assembles and links against nistcurves.a)")
+        elif _ld65_warnings(lout):
+            # Recorded, not returned on: the per-archive rows below still run
+            # and say which archives share the defect.
+            failures.append(f"header: plain include links vs nistcurves.a with "
+                            f"ld65 warnings: {_ld65_warnings(lout)}")
+            print("  HEADER FAIL: plain include links with ld65 warnings:")
+            for w in _ld65_warnings(lout):
+                print(f"      {w}")
+        else:
+            print("  header OK (plain .include assembles; every declared name "
+                  "resolves against nistcurves.a, no ld65 warning)")
 
         # (3b) ... and against EVERY archive, with the variant switch set that
         # archive is built with. The header gates ~650 lines by those switches,
@@ -2042,15 +2404,50 @@ def packaging_check(failures, archives):
             dargs = []
             for d in adefs:
                 dargs += ["-D", d]
-            arc, aout, lrc, lout = _header_link(td, LIBDIR, src_cfg, apath, dargs)
-            if arc != 0:
+            arc, aout, lrc, lout, perr = _header_link(td, LIBDIR, src_cfg, apath, dargs)
+            note_examined(1, "header archive row")
+            declared = header_declared_imports(td, LIBDIR, dargs)[0] or set()
+            driven |= declared
+            warns = _ld65_warnings(lout)
+            if perr:
+                failures.append(f"header [{aname}]: probe cannot vouch: {perr}")
+                print(f"  HEADER FAIL [{aname}]: {perr}")
+            elif arc != 0:
                 failures.append(f"header: does not assemble for {aname}'s switch set")
                 print(f"  HEADER FAIL [{aname}]: assemble:\n{aout}")
             elif lrc != 0:
-                failures.append(f"header: does not link against {aname}")
-                print(f"  HEADER FAIL [{aname}]: link:\n{lout}")
+                unres = sorted(set(re.findall(r"Unresolved external '([^']+)'", lout)))
+                failures.append(f"header: declares {unres or '(see ld65)'} for "
+                                f"{aname}'s switch set, but the archive does not "
+                                "resolve them")
+                print(f"  HEADER FAIL [{aname}]: link, unresolved {unres}:\n{lout.strip()}")
+            elif warns:
+                # A warning here lands in every consumer build that references
+                # the name, e.g. an import whose address size disagrees with
+                # the defining TU's export. The header is what decides that,
+                # so it is the header's defect.
+                failures.append(f"header [{aname}]: links with ld65 warnings: {warns}")
+                print(f"  HEADER FAIL [{aname}]: ld65 warnings:")
+                for w in warns:
+                    print(f"      {w}")
             else:
-                print(f"  header OK [{aname}]")
+                print(f"  header OK [{aname}] ({len(declared)} declared names "
+                      "referenced, each resolved from the archive, no ld65 warning)")
+        # Every name the header can declare must be declared -- and so
+        # resolved -- by at least one archive row (issue #170 review item 4).
+        # A name reachable only under a consumer -D switch is unproven here;
+        # give that switch set its own header row rather than let it pass as
+        # a printed footnote.
+        undriven = sorted(all_names - driven)
+        if undriven:
+            failures.append(f"header: {undriven} are declared by the header "
+                            "under no archive row's switch set, so no row "
+                            "proves they resolve -- add a header row for the "
+                            "switch set that reaches them")
+            print(f"  HEADER FAIL: names no archive row drives: {undriven}")
+        else:
+            print(f"  header names driven by an archive row: {len(driven)} of "
+                  f"{len(all_names)}")
 
         # (4) Guarded symbols: right value assembles AND links; wrong value
         # assembles but MUST be rejected at link by the .else assert.
@@ -2061,8 +2458,12 @@ def packaging_check(failures, archives):
                 print(f"  GUARD FAIL [{sym}]: not exported by the archive")
                 continue
 
-            arc, aout, lrc, lout = _header_link(
+            arc, aout, lrc, lout, perr = _header_link(
                 td, LIBDIR, src_cfg, archive, ["-D", f"{sym}={real}"])
+            if perr:
+                failures.append(f"header: -D {sym}={real}: probe cannot vouch: {perr}")
+                print(f"  GUARD FAIL [{sym}]: {perr}")
+                continue
             if arc != 0:
                 failures.append(f"header: -D {sym}={real} does not assemble ({sym} import is not .ifndef-guarded)")
                 print(f"  GUARD FAIL [{sym}]: documented override does not assemble "
@@ -2074,8 +2475,12 @@ def packaging_check(failures, archives):
                 continue
 
             wrong = real ^ 1
-            arc, aout, lrc, lout = _header_link(
+            arc, aout, lrc, lout, perr = _header_link(
                 td, LIBDIR, src_cfg, archive, ["-D", f"{sym}={wrong}"])
+            if perr:
+                failures.append(f"header: -D {sym}={wrong}: probe cannot vouch: {perr}")
+                print(f"  GUARD FAIL [{sym}]: {perr}")
+                continue
             if arc != 0:
                 failures.append(f"header: -D {sym}={wrong} does not assemble")
                 print(f"  GUARD FAIL [{sym}]: wrong override does not assemble:\n{aout.strip()}")
@@ -2095,7 +2500,7 @@ def packaging_check(failures, archives):
         # (5) Bare-import symbols: their defining TU assigns unconditionally,
         # so §3 says the -D must collide loudly rather than be absorbed.
         for sym in HEADER_BARE_SYMS:
-            arc, aout, _, _ = _header_link(td, LIBDIR, src_cfg, archive,
+            arc, aout, _, _, _ = _header_link(td, LIBDIR, src_cfg, archive,
                                            ["-D", f"{sym}=1"])
             if arc == 0:
                 failures.append(f"header: -D {sym}=1 assembled -- a derived equate's import "
@@ -2108,6 +2513,7 @@ def packaging_check(failures, archives):
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
 
 
+@leg
 def gated_link_check(failures, archives):
     """§6.5 at the level a consumer meets it: an ld65 LINK of a GATED archive.
 
@@ -2158,6 +2564,7 @@ def gated_link_check(failures, archives):
     """
     import tempfile
     print("\n=== §6.5 gated LINK (every archive rebuilt under the gate) ===")
+    n_before = len(failures)
     arms = shipped_object_arms(archives)
     src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
     # HEADER_ARCHIVE_SWITCHES is a hand-maintained roster, and it is the
@@ -2191,6 +2598,7 @@ def gated_link_check(failures, archives):
             print(f"  GATED LINK FAIL [{aname}]: ar65 t failed")
             continue
         real = {Path(ln.strip()).stem for ln in out.splitlines() if ln.strip().endswith(".o")}
+        note_examined(1, "archive member list")
         if not real:
             failures.append(f"gated link [{aname}]: `ar65 t` listed no members, "
                             "so the reconciliation would be vacuous")
@@ -2379,11 +2787,29 @@ def gated_link_check(failures, archives):
                 # reference to a name the gate deleted show up as ld65's
                 # `Unresolved external` -- the failure this leg exists for, and
                 # the one no per-object assertion can see.
+                #
+                # Issue #170: the stub also REFERENCES every name the header
+                # declares under this switch set (+ the gate). Without that,
+                # every header import was dropped and "links against the
+                # shipped header" bound nothing about the header: a bare
+                # `.import mul_dma_lo` moved outside the header's
+                # `.ifndef LIB_NO_BARE_EXPORTS` linked clean here.
                 dargs = list(switches)
                 if gated:
                     dargs += ["-D", "LIB_NO_BARE_EXPORTS=1"]
                 hs = td / f"{'g' if gated else 'u'}_hdr.s"
-                hs.write_text(HEADER_STUB)
+                # No silent fallback to the non-referencing stub (issue #170
+                # review item 5): an unmodelled/empty enumeration is a failure.
+                hstub, hperr, _ = referencing_header_stub(td, LIBDIR, dargs)
+                if hperr:
+                    failures.append(f"gated link [{aname}]: header probe cannot "
+                                    f"vouch ({'gated' if gated else 'ungated'}): {hperr}")
+                    print(f"  GATED LINK FAIL [{aname}]: header probe: {hperr}")
+                    broke = True
+                    break
+                # hstub None => the instrumented header does not assemble; the
+                # plain stub below then surfaces the real header's error.
+                hs.write_text(hstub if hstub is not None else HEADER_STUB)
                 ho = td / f"{'g' if gated else 'u'}_hdr.o"
                 arc, aout = sh(["ca65", "--cpu", "6502", *dargs, "-I", str(LIBDIR),
                                 "-o", str(ho), str(hs)])
@@ -2436,10 +2862,14 @@ def gated_link_check(failures, archives):
             # archive's gated link here resolves closed -- app-owned
             # included, because in the DMA profile the `.import
             # poly_prod_lo/hi` is unreferenced and ca65 drops it. So the
-            # `beyond` branch below is an empty-population absence with no
-            # negative test. It is fail-closed, but `new_unres` is what
-            # actually carries this leg; do not read the allowlist as
-            # load-bearing.
+            # `beyond` branch below never fires on a correct tree; `new_unres`
+            # is what carries this leg day to day. Its negative test (issue
+            # #167): append `.import beyond_probe_167` + `jsr beyond_probe_167`
+            # to src/sha384.s -- unresolved with AND without the gate, so
+            # new_unres/stale stay empty -- and this leg reports
+            #   GATED LINK FAIL [nistcurves.a]: unresolved beyond allowlist:
+            #   ['beyond_probe_167']
+            # for each of the six archives shipping sha384.o.
             new_unres = sorted(gunres - uunres)
             if new_unres:
                 failures.append(
@@ -2472,13 +2902,20 @@ def gated_link_check(failures, archives):
                       f"externals reported:\n{glout.strip()}")
                 continue
             done.append((aname, len(ubare)))
-    if len(done) == len(HEADER_ARCHIVE_SWITCHES):
+            note_examined(1, "gated archive link")
+    # Issue #167: the success line used to print whenever all twelve gated
+    # links completed, even directly beneath twelve "archive missing" /
+    # member-reconciliation failures from this same leg.
+    if len(failures) == n_before and len(done) == len(HEADER_ARCHIVE_SWITCHES):
         total = sum(n for _, n in done)
         print(f"  gated link OK ({len(done)} archives rebuilt with "
               f"-D LIB_NO_BARE_EXPORTS=1, {total} bare names suppressed across "
-              "them, each links against the shipped header)")
+              "them; each archive's member objects, rebuilt under the gate, "
+              "linked explicitly with a stub that references every name the "
+              "gate-defined header declares)")
 
 
+@leg
 def gate_tus_derivation_check(failures):
     """GATE_TUS is a roster. Derive the same set from the sources and compare.
 
@@ -2533,6 +2970,7 @@ def gate_tus_derivation_check(failures):
                 unreadable.append(label)
                 continue
             a, b = od65_export_names(ung), od65_export_names(gat)
+            note_examined(1, "source arm")
             if a is None or b is None or a is COUNT_MISMATCH or b is COUNT_MISMATCH:
                 unreadable.append(label)
                 continue
@@ -2559,6 +2997,7 @@ def gate_tus_derivation_check(failures):
               f"source arms, roster matches exactly)")
 
 
+@leg
 def zp_roster_reconciliation_check(failures):
     """The ZP legs iterate over hand-maintained rosters. Reconcile them against
     the Makefile, or a seventh variant is silently unaudited by all four.
@@ -2566,8 +3005,10 @@ def zp_roster_reconciliation_check(failures):
     ZP_ARM_OBJECTS, ZP_ARM_DEFINES and ZP_ALIAS_ARMS are each iterated over
     themselves, and nothing cross-checks them against the archives that
     actually exist. Adding a variant to the Makefile and to none of them leaves
-    every ZP leg quietly not covering it: the half-updated case raises
-    KeyError, the not-updated-at-all case says nothing.
+    every ZP leg quietly not covering it: the half-updated case used to raise
+    KeyError in zp_alias_audit and abort the run before reaching this leg (it
+    is now a named per-leg failure, issue #167, and this leg still runs), the
+    not-updated-at-all case says nothing.
 
     Same mechanism as BARE_GATED, which listed none of the 18 bare
     LIB_PRECALC_* names the §8.4 macro emits and so reported "0 bare names" for
@@ -2581,6 +3022,7 @@ def zp_roster_reconciliation_check(failures):
         print("  ROSTER FAIL: no archives parsed")
         return
     covered = {a for arms in ZP_ARM_OBJECTS.values() for a in arms}
+    note_examined(len(archives), "archive")
     missing = sorted(archives - covered)
     phantom = sorted(covered - archives)
     keys = set(ZP_ARM_OBJECTS) | set(ZP_ARM_DEFINES) | set(ZP_ALIAS_ARMS)
@@ -2604,6 +3046,7 @@ def zp_roster_reconciliation_check(failures):
               f"archives, all three rosters agree)")
 
 
+@leg
 def footprint_basis_check(failures):
     """The §5 measurement basis is od65 segment sums. Pin that it equals a real
     link, because if it stops doing so the footprint leg understates SILENTLY.
@@ -2736,6 +3179,7 @@ def footprint_basis_check(failures):
                      line.strip())
         if m:
             starts[m.group(1)] = (int(m.group(2), 16), int(m.group(3), 16))
+            note_examined(1, "placed segment")
     real_fill = 0
     for seg in FOOTPRINT_ALIGNED & set(starts):
         if seg not in FOOTPRINT_SEGMENTS:
@@ -2783,6 +3227,7 @@ def footprint_basis_check(failures):
               f"the sum-based §5 measurand equals the placed span)")
 
 
+@leg
 def sibling_sqtab_collision_check(failures):
     """§6.1 + §8.1: the MANDATORY boot call must not drag a bare sqtab name in.
 
@@ -2849,6 +3294,7 @@ def sibling_sqtab_collision_check(failures):
     checked = pinned = 0
     for archive in archives:
         name = archive.name
+        note_examined(1, "archive")
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             (td / "cfg").write_text(CONSUMER_CFG)
@@ -2922,6 +3368,7 @@ def sibling_sqtab_collision_check(failures):
               f"{pinned} value-pinned against sqtab_base.inc")
 
 
+@leg
 def sibling_bare_collision_check(failures):
     """§6.1: importing a §8.2 output equate must not drag a bare `mul_` name in.
 
@@ -2967,6 +3414,7 @@ def sibling_bare_collision_check(failures):
             failures.append(f"sibling collision: {name} not built")
             print(f"  SIBLING FAIL [{name}]: archive missing")
             continue
+        note_examined(1, "archive")
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             (td / "cfg").write_text(cfg)
@@ -2991,6 +3439,7 @@ def sibling_bare_collision_check(failures):
             print(f"  sibling OK [{name}] (§8.2 output equate pulls no bare name)")
 
 
+@leg
 def od65_extraction_canary(failures):
     r"""Pin the assumption every other leg here rests on: that we see every name
     od65 prints.
@@ -3053,6 +3502,7 @@ def od65_extraction_canary(failures):
         objp = Path(obj)
         for mode in ("--dump-exports", "--dump-imports"):
             raw = sh(["od65", mode, obj])[1]
+            note_examined(1, "object dump")
             # Substring, never tokenised: immune to the padding by construction.
             nospace = set(re.findall(r'Name:"([^"]+)"', raw))
             if not nospace:
@@ -3127,6 +3577,7 @@ def od65_extraction_canary(failures):
         print(f"  canary OK ({seen} no-space name occurrences, all extracted)")
 
 
+@leg
 def app_owned_buffer_ownership_check(failures):
     """Issue #149: resolving the §8.2 settle state must not drag an APP_OWNED
     buffer definition into the link.
@@ -3199,6 +3650,7 @@ def app_owned_buffer_ownership_check(failures):
                 continue
             rc, out = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "o.prg"),
                           str(td / "c.o"), str(archive)])
+            note_examined(1, "ownership link")
         if "Duplicate external identifier" in out:
             dup = sorted(set(re.findall(
                 r"Duplicate external identifier: '([^']+)'", out)))
@@ -3213,6 +3665,7 @@ def app_owned_buffer_ownership_check(failures):
               f"duplicating the APP_OWNED buffers)")
 
 
+@leg
 def defines_staleness_check(failures):
     """Knob-staleness guard. §6.3 was RETIRED at contract 1.0.0; what survives
     is §6.2's define-scoping rule, and the artifact-flipped property below is
@@ -3226,8 +3679,29 @@ def defines_staleness_check(failures):
     flow six ways -- three per knob, CONTRACT_DEFINES then
     CONTRACT_ZP_DEFINES -- and reads the built object's exported surface each
     time, which is SPEC v0.11.1's "assert the artifact flipped, not that
-    something rebuilt". Runs LAST: a knob change wipes build/*.o by design;
-    the final leg restores the default configuration."""
+    something rebuilt".
+
+    Runs in a THROWAWAY build directory (`make BUILD_DIR=<tmp>`; LIB_DIR and
+    the knob stamp derive from BUILD_DIR), never in build/ (issue #167
+    review item 7). A knob change wipes the directory's objects, archives and
+    PRG by design; in build/ that wiped the operator's build mid-run, raced
+    any concurrent make, and a SIGKILL left it wiped. The two sub-legs below
+    each get their own directory, and the §6.2 override sub-leg runs whatever
+    the knob sub-leg concluded (review item 12: an early `return` there used
+    to skip it entirely)."""
+    import shutil
+    for sub in (_knob_staleness_legs, _zp_override_leg):
+        note_examined(1, "sub-leg")
+        kb = Path(tempfile.mkdtemp(prefix="check_archives_knobs_"))
+        try:
+            sub(failures, kb)
+        finally:
+            shutil.rmtree(kb, ignore_errors=True)
+
+
+@leg
+def _knob_staleness_legs(failures, kb):
+    mk = ["make", "-C", str(REPO), f"BUILD_DIR={kb}"]
     print("\n=== knob-staleness guard (defines change must rebuild; was §6.3) ===")
 
     # --- Linked-artifact leg (issue #144) ------------------------------------
@@ -3246,26 +3720,46 @@ def defines_staleness_check(failures):
     # the object IS the evidence. So this leg deliberately picks a knob whose
     # failure path is longest -- downstream of the link.
     #
-    # Negative-tested by reverting the Makefile fix (dropping *.prg from the
-    # stamp's rm list): this leg goes red on the second build while every
-    # object-level leg above stays green.
+    # Negative test (issue #167 review item 8). Since #178/#180 the PRG is
+    # forced by TWO mechanisms: the stamp recipe's `rm $(BUILD_DIR)/*.prg`
+    # and the `$(PRG): $(KNOB_FORCE)` prerequisite. Dropping only the rm --
+    # the negative test this comment used to cite -- leaves the second one
+    # relinking and is correctly green. Drop BOTH and this leg goes red:
+    #   ARTIFACT FAIL: changed knob did not flip the PRG
+    # deterministically, because the PRG is future-dated below. Before that,
+    # the red depended on the rebuild landing in the PRG's own mtime second:
+    # with a 2 s delay between builds (a slower host) the same double
+    # mutation reported "artifact leg OK".
     def prg_sha():
-        prg = BUILD / "nist-curves.prg"
+        prg = kb / "nist-curves.prg"
         if not prg.exists():
             return None
         return hashlib.sha256(prg.read_bytes()).hexdigest()
 
     art_legs = [
-        (["make", "-C", str(REPO)], "default"),
-        (["make", "-C", str(REPO),
+        ([*mk], "default"),
+        ([*mk,
           "CONTRACT_DEFINES=-D LIB_NISTCURVES_REU_SETTLE_ITER=4"], "ITER=4"),
-        (["make", "-C", str(REPO)], "revert to default"),
+        ([*mk], "revert to default"),
     ]
     art_hashes = []
     for cmd, label in art_legs:
         rc, _ = sh(cmd)
         h = prg_sha()
+        note_examined(1, "PRG build")
         art_hashes.append(h)
+        if label == "default" and h is not None:
+            # DETERMINISTIC red (issue #167 review item 8). The skipped-link
+            # failure needs the old PRG to look newer than the rebuilt
+            # objects; left to the clock that only happens when the rebuild
+            # lands in the PRG's own second, so the documented negative test
+            # did not go red on a fast host. Future-dating the PRG makes it
+            # always look newer: if the knob change does not DELETE it, make
+            # skips the link every time. Same technique as check_inc_deps.
+            import os
+            import time
+            future = time.time() + 86400
+            os.utime(kb / "nist-curves.prg", (future, future))
         if rc or h is None:
             failures.append(
                 f"knob-staleness(artifact): {label}: build failed (rc={rc})")
@@ -3290,7 +3784,7 @@ def defines_staleness_check(failures):
 
 
     def fp_src1_value():
-        return od65_value([BUILD / "zp_config.o"], "fp_src1")
+        return od65_value([kb / "zp_config.o"], "fp_src1")
 
     # SPEC v0.11.1 states the two properties an invalidation guard must have:
     # unchanged knobs must not rebuild (the mtime leg at the bottom), and the
@@ -3308,20 +3802,21 @@ def defines_staleness_check(failures):
     # change wipes build/*.o, and the ZP legs' final default-build leg is what
     # leaves zp_config.o current for the incrementality assertion.
     def bare_version_exported():
-        return "LIB_VERSION_MAJOR" in od65_names(BUILD / "lib_version.o",
+        return "LIB_VERSION_MAJOR" in od65_names(kb / "lib_version.o",
                                                  "--dump-exports")
 
     defines_legs = [
-        (["make", "-C", str(REPO), "build/lib_version.o"], True,
+        ([*mk, f"{kb}/lib_version.o"], True,
          "default build (bare §1 aliases exported)"),
-        (["make", "-C", str(REPO), "build/lib_version.o",
+        ([*mk, f"{kb}/lib_version.o",
           "CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1"], False,
          "changed CONTRACT_DEFINES must take effect (stale reuse would keep the bare exports)"),
-        (["make", "-C", str(REPO), "build/lib_version.o"], True,
+        ([*mk, f"{kb}/lib_version.o"], True,
          "revert to default"),
     ]
     for cmd, want, label in defines_legs:
         rc, out = sh(cmd)
+        note_examined(1, "object build")
         got = bare_version_exported()
         if rc or got != want:
             failures.append(
@@ -3334,23 +3829,24 @@ def defines_staleness_check(failures):
             return
 
     legs = [
-        (["make", "-C", str(REPO), "build/zp_config.o"], 0x22, "default build"),
-        (["make", "-C", str(REPO), "build/zp_config.o",
+        ([*mk, f"{kb}/zp_config.o"], 0x22, "default build"),
+        ([*mk, f"{kb}/zp_config.o",
           "CONTRACT_ZP_DEFINES=-D fp_src1=0x50"],
          0x50, "changed knob must take effect (stale-reuse would keep 0x22)"),
-        (["make", "-C", str(REPO), "build/zp_config.o"], 0x22, "revert to default"),
+        ([*mk, f"{kb}/zp_config.o"], 0x22, "revert to default"),
     ]
     for cmd, want, label in legs:
         rc, out = sh(cmd)
+        note_examined(1, "object build")
         got = fp_src1_value()
         if rc or got != want:
             failures.append(f"knob-staleness: {label}: fp_src1={got if got is not None else '?'}, want {hex(want)} (rc={rc})")
             print(f"  STALENESS FAIL [{label}]: fp_src1 = {hex(got) if got is not None else '?'}, expected {hex(want)}")
             return
     # incremental sanity: an unchanged-knob re-run must NOT rebuild
-    before = (BUILD / "zp_config.o").stat().st_mtime_ns
-    sh(["make", "-C", str(REPO), "build/zp_config.o"])
-    after = (BUILD / "zp_config.o").stat().st_mtime_ns
+    before = (kb / "zp_config.o").stat().st_mtime_ns
+    sh([*mk, f"{kb}/zp_config.o"])
+    after = (kb / "zp_config.o").stat().st_mtime_ns
     if before != after:
         failures.append("knob-staleness: unchanged knobs re-ran the assembler (stamp churns)")
         print("  STALENESS FAIL: unchanged knobs rebuilt the object -- stamp not stable")
@@ -3358,6 +3854,9 @@ def defines_staleness_check(failures):
     print("  staleness guard OK (both knobs flip the artifact; revert restores; "
           "no-change is incremental)")
 
+
+@leg
+def _zp_override_leg(failures, kb):
     # --- §6.2 CONTRACT_ZP_DEFINES scoping across the #154 TU split -----------
     # zp_config.s DEFINES the slots and takes the ZP overrides; zp_aliases.s
     # IMPORTS them and must not (`-D` of an imported name is a hard ca65
@@ -3377,21 +3876,46 @@ def defines_staleness_check(failures):
     # -- §6.2's named silent failure). A leg that proves 2 of 12 recipes is
     # evidence about 2 of 12 recipes.
     print("\n=== §6.2 ZP override reaches slot AND alias together (issue #154) ===")
-    for arm, (alias_obj, bare) in sorted(ZP_ALIAS_ARMS.items()):
+    # Population from the Makefile, not from the table under test (issue
+    # #167): iterating ZP_ALIAS_ARMS meant an arm missing from it was simply
+    # never probed and the leg still printed its closing line.
+    shipped = sorted(obj for obj, rec in shipped_object_arms(
+        parse_makefile_archives()).items() if rec[0] == "zp_config")
+    if not shipped:
+        failures.append("zp-override: no shipped zp_config arm parsed from the "
+                        "Makefile -- the probe population is empty")
+        print("  OVERRIDE FAIL: no shipped zp_config arm found")
+    unprobed = sorted(set(shipped) - set(ZP_ALIAS_ARMS))
+    phantom = sorted(set(ZP_ALIAS_ARMS) - set(shipped))
+    if unprobed:
+        failures.append(f"zp-override: shipped arms {unprobed} are not in "
+                        "ZP_ALIAS_ARMS, so their override wiring is unprobed")
+        print(f"  OVERRIDE FAIL: shipped zp_config arms with no alias roster "
+              f"entry, NOT probed: {unprobed}")
+    if phantom:
+        failures.append(f"zp-override: ZP_ALIAS_ARMS names {phantom}, which no "
+                        "archive ships")
+        print(f"  OVERRIDE FAIL: roster arms no archive ships: {phantom}")
+    for arm in shipped:
+        if arm not in ZP_ALIAS_ARMS:
+            continue
+        alias_obj, bare = ZP_ALIAS_ARMS[arm]
         if "zp_ptr2" not in bare:
             print(f"  override SKIP [{arm}]: arm exports no bare zp_ptr2")
             continue
-        _zp_override_probe(failures, arm, alias_obj)
+        _zp_override_probe(failures, arm, alias_obj, kb)
+        note_examined(1, "zp arm probed")
     print("  (each arm driven with a real -D through make, both spellings read "
           "from an ld65 map)")
 
 
-def _zp_override_probe(failures, arm, alias_obj):
+def _zp_override_probe(failures, arm, alias_obj, kb):
+    mk = ["make", "-C", str(REPO), f"BUILD_DIR={kb}"]
     import tempfile
     for knob, want in ((["CONTRACT_ZP_DEFINES=-D nistcurves_zp_ptr2=0x60"], 0x60),
                        ([], 0xfd)):
-        rc, out = sh(["make", "-C", str(REPO), f"build/{arm}.o",
-                      f"build/{alias_obj}.o", *knob])
+        rc, out = sh([*mk, f"{kb}/{arm}.o",
+                      f"{kb}/{alias_obj}.o", *knob])
         if rc:
             failures.append(f"zp-override {arm}: build failed with {knob or ['(default)']}")
             print(f"  OVERRIDE FAIL [{arm}]: make failed for {knob or ['(default)']}:\n{out}")
@@ -3411,7 +3935,7 @@ def _zp_override_probe(failures, arm, alias_obj):
                 return
             rc, out = sh(["ld65", "-C", str(td / "cfg"), "-Ln", str(td / "lbl"),
                           "-o", str(td / "o.prg"), str(td / "p.o"),
-                          str(BUILD / f"{arm}.o"), str(BUILD / f"{alias_obj}.o")])
+                          str(kb / f"{arm}.o"), str(kb / f"{alias_obj}.o")])
             if rc:
                 failures.append(f"zp-override: link failed at {hex(want)}")
                 print(f"  OVERRIDE FAIL: link failed:\n{out}")
@@ -3434,12 +3958,345 @@ def _zp_override_probe(failures, arm, alias_obj):
               f"both link at ${want:02x}")
 
 
-def main():
-    archives = parse_makefile_archives()
-    failures = []
+def run_leg(failures, label, fn, *args):
+    """Run one leg. An exception is that leg's FAILURE, not the run's end.
 
-    # (c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting.
+    Returns True when the leg ran to completion (whatever it concluded),
+    False when it raised. Only Exception is caught: KeyboardInterrupt and
+    SystemExit still stop the run, as an operator would expect."""
+    try:
+        fn(*args)
+        return True
+    except Exception as exc:          # noqa: BLE001 -- that is the point
+        import traceback
+        failures.append(f"leg '{label}' CRASHED ({type(exc).__name__}: {exc}) "
+                        "-- it reported nothing; later legs still ran")
+        print(f"  LEG CRASH [{label}]: {type(exc).__name__}: {exc}")
+        for ln in traceback.format_exc().rstrip().splitlines():
+            print(f"    {ln}")
+        return False
+
+
+@leg
+def archive_contract_check(failures, archives, name):
+    """Per-archive legs: (a) closure, (a2) provider pins, (a3) manifest
+    values, (a4) footprint measurement, (b) dummy-link smoke rows."""
+    archive_path = LIBDIR / name
+    print(f"=== {name} ===")
+    allow = KNOWN_EXTERNAL.get(name)
+    if allow is None:
+        # Reported (and reconciled) by archive_population_check; still run
+        # every other sub-leg for this archive rather than skipping it.
+        print("  CLOSURE FAIL: no KNOWN_EXTERNAL entry; closure checked "
+              "against an empty allowlist")
+        allow = set()
+    if name not in archives:
+        failures.append(f"{name}: not found in Makefile ar65 recipes")
+        print("  MAKEFILE: no ar65 recipe parsed for this archive")
+        return
+    if not archive_path.exists():
+        failures.append(f"{name}: archive not built ({archive_path})")
+        print(f"  MISSING: {archive_path} -- run `make {name.replace('.a','').replace('nistcurves','lib').replace('lib-','lib-')}` first")
+        return
+
+    # (a) closure sweep over the object set.
+    mods = archives[name]
+    imports, exports = set(), set()
+    for mod in mods:
+        o = BUILD / (mod + ".o")
+        imports |= od65_names(o, "--dump-imports")
+        exports |= od65_names(o, "--dump-exports")
+    unresolved = imports - exports
+    note_examined(len(mods), "archive member")
+    unexpected = sorted(unresolved - allow)
+    stale = sorted(allow - unresolved)
+    if unexpected:
+        failures.append(f"{name}: unexpected unresolved externals {unexpected}")
+        print(f"  CLOSURE FAIL: new unresolved (not on allowlist): {unexpected}")
+    if stale:
+        failures.append(f"{name}: allowlisted externals now resolved {stale} -- shrink allowlist + update docs")
+        print(f"  CLOSURE FAIL: allowlist entries now resolved: {stale}")
+    if not unexpected and not stale:
+        if allow:
+            print(f"  closure OK: documented gaps = {sorted(allow)} "
+                  "(both directions examined)")
+        else:
+            # Issue #167: with an empty allowlist `stale` is empty by
+            # construction, so the shrink direction examined nothing. Say so,
+            # rather than print an OK that reads like "checked and fine". The
+            # direction is live the moment an entry exists: allowlisting a
+            # resolved name (e.g. fp_mul on nistcurves.a) prints
+            # "CLOSURE FAIL: allowlist entries now resolved: ['fp_mul']".
+            print(f"  closure OK: 0 unexpected of {len(unresolved)} unresolved; "
+                  "allowlist empty (shrink-direction dormant)")
+
+    # (a2) SPEC §8.2 provider presence/absence pins (issue #81).
+    missing = sorted(MUST_EXPORT.get(name, set()) - exports)
+    leaked = sorted(MUST_NOT_EXPORT.get(name, set()) & exports)
+    if missing:
+        failures.append(f"{name}: required exports missing {missing}")
+        print(f"  EXPORT FAIL: required symbols not exported: {missing}")
+    if leaked:
+        failures.append(f"{name}: forbidden exports present {leaked}")
+        print(f"  EXPORT FAIL: symbols must not ship in this archive: {leaked}")
+    if not missing and not leaked:
+        print("  provider pins OK (reu_mul_init presence/absence matches contract)")
+
+    # (a3) manifest VALUE pins. Symbol presence alone cannot catch a
+    # regression that ships the right equate carrying the wrong number --
+    # exactly how issue #88 slipped in, where the sha384 archive exported
+    # a well-formed manifest describing a different library.
+    obj_paths = [BUILD / (m + ".o") for m in mods]
+    for sym, want in sorted(MANIFEST_VALUES.get(name, {}).items()):
+        got = od65_value(obj_paths, sym)
+        if got is None:
+            failures.append(f"{name}: manifest equate {sym} not found")
+            print(f"  VALUE FAIL: {sym} not exported")
+        elif got != want:
+            failures.append(f"{name}: {sym} = {got}, contract says {want}")
+            print(f"  VALUE FAIL: {sym} = {got}, expected {want}")
+    if MANIFEST_VALUES.get(name):
+        print("  manifest value pins OK (§5 equates match the pinned table)")
+
+    # (a4) §5 footprint MEASUREMENT (issue #142). The pins above compare
+    # the manifest against MANIFEST_VALUES -- a hard-coded copy of the same
+    # numbers in this file. Both sides are the table, so the leg reports
+    # agreement while checking nothing about the archive, and a figure that
+    # has drifted from the bytes it describes passes. That is the shape
+    # that left 43 of 45 §5 values wrong before issue #90, sitting inside
+    # the gate that exists to prevent a recurrence.
+    #
+    # This measures instead, and checks the one property §5 states
+    # normatively: "Footprint equates MUST be safe-direction: round up,
+    # never down", with RESIDENT and COLD a pair a consumer budgets
+    # together. So the invariant is
+    #
+    #     RESIDENT_BYTES + COLD_BYTES  >=  measured code+rodata
+    #
+    # An understating figure makes a consumer's §5 fit check pass while the
+    # library overruns their region, which is the direction that corrupts.
+    measured, unknown = measured_code_rodata(mods)
+    if unknown:
+        # A new segment must not silently escape the accounting: whoever
+        # adds one decides whether it is footprint, here, on purpose.
+        failures.append(f"{name}: unclassified segment(s) {sorted(unknown)} "
+                        f"-- add them to FOOTPRINT_SEGMENTS or the exclusions")
+        print(f"  FOOTPRINT FAIL: unclassified segment(s) {sorted(unknown)}")
+    else:
+        declared = 0
+        have_both = True
+        for sym in ("LIB_NISTCURVES_RESIDENT_BYTES", "LIB_NISTCURVES_COLD_BYTES"):
+            v = od65_value(obj_paths, sym)
+            if v is None:
+                have_both = False
+            else:
+                declared += v
+        if not have_both:
+            failures.append(f"{name}: §5 footprint equates missing")
+            print("  FOOTPRINT FAIL: RESIDENT/COLD not both exported")
+        resident = od65_value(obj_paths, "LIB_NISTCURVES_RESIDENT_BYTES")
+        cold = od65_value(obj_paths, "LIB_NISTCURVES_COLD_BYTES")
+        if resident is not None and cold is not None and resident < measured - cold:
+            # RESIDENT alone is what a consumer sizing a resident-only
+            # region binds to; pinning only the sum leaves it unchecked.
+            failures.append(
+                f"{name}: §5 RESIDENT_BYTES understates -- {resident} declared, "
+                f"but measured {measured} minus COLD {cold} needs {measured - cold}")
+            print(f"  FOOTPRINT FAIL: RESIDENT {resident} < measured-minus-COLD {measured - cold}")
+        elif declared < measured:
+            failures.append(
+                f"{name}: §5 footprint understates -- RESIDENT+COLD = {declared} "
+                f"but the archive's code+rodata measures {measured} "
+                f"(short by {measured - declared}; §5 requires safe-direction)")
+            print(f"  FOOTPRINT FAIL: declared {declared} < measured {measured}")
+        else:
+            slack = declared - measured
+            pct = (slack / measured * 100) if measured else 0.0
+            print(f"  footprint OK (RESIDENT+COLD {declared} >= measured "
+                  f"{measured}, +{slack} B / {pct:.1f}%)")
+
+    # (b) dummy-link smoke tests (see SMOKE / CONSUMER_GAPS).
+    if name not in SMOKE:
+        failures.append(f"{name}: no SMOKE rows -- this archive's entry points "
+                        "are never link-tested")
+        print("  LINK FAIL: no SMOKE entry for this archive")
+    gaps = CONSUMER_GAPS.get(name, set())
+    gap_seen = set()
+    for label, imps, expect_link in SMOKE.get(name, []):
+        ok, unres, raw = link_test(archive_path, imps)
+        if expect_link:
+            if ok:
+                print(f"  link OK   [{label}]")
+            else:
+                failures.append(f"{name}: '{label}' should link but failed: {sorted(unres)}")
+                print(f"  LINK FAIL [{label}] expected clean, got unresolved {sorted(unres)}")
+        else:
+            if ok:
+                failures.append(f"{name}: '{label}' should FAIL to link (documented "
+                                "consumer gap) but linked clean -- update docs and "
+                                "CONSUMER_GAPS")
+                print(f"  LINK FAIL [{label}] expected documented-unlinkable, but it linked")
+            elif not unres:
+                failures.append(f"{name}: '{label}' failed for a non-symbol reason:\n{raw}")
+                print(f"  LINK FAIL [{label}] failed but not on unresolved symbols")
+            elif not unres <= gaps:
+                extra = sorted(unres - gaps)
+                failures.append(f"{name}: '{label}' unresolved beyond CONSUMER_GAPS: {extra}")
+                print(f"  LINK FAIL [{label}] unresolved beyond CONSUMER_GAPS: {extra}")
+            else:
+                gap_seen |= unres
+                print(f"  link gap OK [{label}] unresolved (documented): {sorted(unres)}")
+    stale_gaps = sorted(gaps - gap_seen)
+    if stale_gaps:
+        failures.append(f"{name}: CONSUMER_GAPS lists {stale_gaps} but no "
+                        "expect_link=False row observed them unresolved -- "
+                        "add a row, or shrink the table")
+        print(f"  LINK FAIL: CONSUMER_GAPS entries never observed unresolved: {stale_gaps}")
+    print()
+
+
+@leg
+def archive_population_check(failures, archives):
+    """The per-archive legs iterate the archives the MAKEFILE builds. Every
+    per-archive table must cover exactly that population (CONSUMER_GAPS: a
+    subset of it, since most archives have no gap).
+
+    Issue #167 review F2: the per-archive legs used to iterate KNOWN_EXTERNAL's
+    keys, and the "every archive has SMOKE rows" rule iterated the same table
+    -- so deleting one KNOWN_EXTERNAL entry dropped that archive's closure,
+    pins, manifest, footprint and SMOKE legs and still reported
+    "legs: 27 of 27", PASS."""
+    print("\n=== per-archive population (Makefile vs every per-archive table) ===")
+    built = set(archives)
+    note_examined(len(built), "archive")
+    if not built:
+        failures.append("archive population: no archive parsed from the Makefile")
+        print("  POPULATION FAIL: no archives parsed")
+        return
+    bad = False
+    for tname, table, subset in (
+            ("KNOWN_EXTERNAL", KNOWN_EXTERNAL, False), ("SMOKE", SMOKE, False),
+            ("MUST_EXPORT", MUST_EXPORT, False),
+            ("MUST_NOT_EXPORT", MUST_NOT_EXPORT, False),
+            ("MANIFEST_VALUES", MANIFEST_VALUES, False),
+            ("HEADER_ARCHIVE_SWITCHES", HEADER_ARCHIVE_SWITCHES, False),
+            ("CONSUMER_GAPS", CONSUMER_GAPS, True)):
+        keys = set(table)
+        missing = sorted(built - keys) if not subset else []
+        phantom = sorted(keys - built)
+        if missing:
+            failures.append(f"archive population: {tname} has no entry for "
+                            f"built archive(s) {missing}")
+            print(f"  POPULATION FAIL: {tname} missing {missing}")
+            bad = True
+        if phantom:
+            failures.append(f"archive population: {tname} names {phantom}, "
+                            "which no ar65 recipe builds")
+            print(f"  POPULATION FAIL: {tname} phantom {phantom}")
+            bad = True
+    if not bad:
+        print(f"  population OK ({len(built)} archives from the Makefile; all "
+              "per-archive tables cover exactly them, CONSUMER_GAPS a subset)")
+
+
+# Leg-shaped functions that are deliberately NOT legs. Ratcheted both ways by
+# leg_registry_check: an undecorated leg-shaped function not listed here fails,
+# and an entry here that is no longer leg-shaped (or no longer exists) fails.
+LEG_REGISTRY_EXEMPT = {
+    "run_leg": "the crash guard itself",
+    "_run_all_legs": "the runner that calls every leg and checks the run log",
+    "_zp_arm_ragged": "per-arm roster helper called by two ZP legs",
+    "_zp_override_probe": "per-arm probe called by _zp_override_leg",
+}
+_MUTATING_METHODS = {"append", "extend", "insert", "add", "update",
+                     "setdefault", "__setitem__", "__iadd__"}
+_LEG_NAME_RE = re.compile(r".*_(check|canary|leg|legs|audit|identity)")
+
+
+def _leg_shaped_functions():
+    """{name: decorated?} for every function in this file that LOOKS like a
+    leg: leg-like name, a parameter whose name contains "fail", or an
+    `.append(...)` on one of its own parameters or on any name containing
+    "fail" (catches a renamed `failures` and a `_`-prefixed leg, issue #167
+    re-review B). Read from the AST, so a `_` prefix or a renamed parameter
+    does not hide a function the way the old inspect-based discovery let it."""
+    import ast
+    tree = ast.parse(Path(__file__).read_text())
+    found = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        params = {a.arg for a in node.args.args}
+        def hit(name_node):
+            return (isinstance(name_node, ast.Name)
+                    and (name_node.id in params or "fail" in name_node.id))
+
+        # Any MUTATION of a parameter (or of a name containing "fail"), not
+        # only .append (issue #167 re-review E1: `errs.extend([...])` in an
+        # unregistered function passed): a mutating method call, an augmented
+        # assignment, or a subscript assignment.
+        appends_param = False
+        for c in ast.walk(node):
+            if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                    and c.func.attr in _MUTATING_METHODS and hit(c.func.value)):
+                appends_param = True
+            elif isinstance(c, ast.AugAssign) and (
+                    hit(c.target) or (isinstance(c.target, ast.Subscript)
+                                      and hit(c.target.value))):
+                appends_param = True
+            elif isinstance(c, ast.Assign) and any(
+                    isinstance(t, ast.Subscript) and hit(t.value)
+                    for t in c.targets):
+                appends_param = True
+        if (_LEG_NAME_RE.fullmatch(node.name)
+                or any("fail" in p for p in params) or appends_param):
+            decorated = any(isinstance(d, ast.Name) and d.id == "leg"
+                            for d in node.decorator_list)
+            found[node.name] = decorated
+    return found
+
+
+@leg
+def leg_registry_check(failures, registered):
+    """Every leg-shaped function must carry @leg (or be an explicit, ratcheted
+    exemption), and every registered top-level leg must carry it too.
+
+    Whether each decorated leg actually RAN is asserted at the end of
+    _run_all_legs from the run log, outside any leg, so deleting this leg's
+    own registration is caught as well (re-review C)."""
+    print("\n=== leg registry (leg-shaped functions vs @leg vs registered) ===")
+    shaped = _leg_shaped_functions()
+    note_examined(len(shaped), "leg-shaped function")
+    undecorated = {n for n, d in shaped.items() if not d}
+    missing = sorted(undecorated - set(LEG_REGISTRY_EXEMPT))
+    stale_exempt = sorted(set(LEG_REGISTRY_EXEMPT) - undecorated)
+    not_leg = sorted(n for n in registered if n not in LEG_FUNCS)
+    if missing:
+        failures.append(f"leg registry: {missing} look like legs but carry no "
+                        "@leg -- the run log cannot prove they ran")
+        print(f"  REGISTRY FAIL: leg-shaped but undecorated {missing}")
+    if stale_exempt:
+        failures.append(f"leg registry: LEG_REGISTRY_EXEMPT names {stale_exempt}, "
+                        "which are no longer undecorated leg-shaped functions")
+        print(f"  REGISTRY FAIL: stale exemptions {stale_exempt}")
+    if not_leg:
+        failures.append(f"leg registry: registered {not_leg} carry no @leg")
+        print(f"  REGISTRY FAIL: registered but undecorated {not_leg}")
+    if not (missing or stale_exempt or not_leg):
+        print(f"  registry OK ({len(LEG_FUNCS)} @leg functions, "
+              f"{len(LEG_REGISTRY_EXEMPT)} ratcheted exemptions, "
+              f"{len(shaped)} leg-shaped functions scanned)")
+
+
+
+
+@leg
+def cfg_placement_check(failures):
+    """(c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting."""
     m, offenders = cfg_bss_before_emitting()
+    if m is not None:
+        note_examined(len(re.findall(r"^\s*[A-Za-z_]\w*\s*:.*load\s*=\s*MAIN",
+                                     m.group(1), re.M)), "MAIN segment")
     print("\n=== src/c64.cfg placement ===")
     if m is None:
         failures.append("c64.cfg: could not parse SEGMENTS block")
@@ -3452,167 +4309,98 @@ def main():
     else:
         print("  placement OK (no bss segment precedes a file-emitting one)")
 
-    version_identity_check(failures)
-    zp_alias_audit(failures)
-    zp_alias_link_identity(failures)
-    gated_surface_check(failures, archives)
-    app_owned_reachability_check(failures)
-    packaging_check(failures, archives)
-    gated_link_check(failures, archives)
 
-    for name in sorted(KNOWN_EXTERNAL):
-        allow = KNOWN_EXTERNAL[name]
-        archive_path = LIBDIR / name
-        print(f"=== {name} ===")
-        if name not in archives:
-            failures.append(f"{name}: not found in Makefile ar65 recipes")
-            print("  MAKEFILE: no ar65 recipe parsed for this archive")
-            continue
-        if not archive_path.exists():
-            failures.append(f"{name}: archive not built ({archive_path})")
-            print(f"  MISSING: {archive_path} -- run `make {name.replace('.a','').replace('nistcurves','lib').replace('lib-','lib-')}` first")
-            continue
+def main():
+    """Run the ratchet. No leg writes to build/: the knob-staleness and §6.2
+    override legs, which drive real `make` invocations whose knob stamp wipes
+    objects, archives and PRG by design, run in their own throwaway
+    BUILD_DIR (defines_staleness_check). A passing run used to leave build/
+    with 2 objects and no archive (issue #167 extras); a snapshot/restore
+    stopped that but still wiped build/ mid-run, which item 7 of the review
+    removed at the source."""
+    return _run_all_legs()
 
-        # (a) closure sweep over the object set.
-        mods = archives[name]
-        imports, exports = set(), set()
-        for mod in mods:
-            o = BUILD / (mod + ".o")
-            imports |= od65_names(o, "--dump-imports")
-            exports |= od65_names(o, "--dump-exports")
-        unresolved = imports - exports
-        unexpected = sorted(unresolved - allow)
-        stale = sorted(allow - unresolved)
-        if unexpected:
-            failures.append(f"{name}: unexpected unresolved externals {unexpected}")
-            print(f"  CLOSURE FAIL: new unresolved (not on allowlist): {unexpected}")
-        if stale:
-            failures.append(f"{name}: allowlisted externals now resolved {stale} -- shrink allowlist + update docs")
-            print(f"  CLOSURE FAIL: allowlist entries now resolved: {stale}")
-        if not unexpected and not stale:
-            gap = sorted(allow) if allow else "(none)"
-            print(f"  closure OK: documented gaps = {gap}")
 
-        # (a2) SPEC §8.2 provider presence/absence pins (issue #81).
-        missing = sorted(MUST_EXPORT.get(name, set()) - exports)
-        leaked = sorted(MUST_NOT_EXPORT.get(name, set()) & exports)
-        if missing:
-            failures.append(f"{name}: required exports missing {missing}")
-            print(f"  EXPORT FAIL: required symbols not exported: {missing}")
-        if leaked:
-            failures.append(f"{name}: forbidden exports present {leaked}")
-            print(f"  EXPORT FAIL: symbols must not ship in this archive: {leaked}")
-        if not missing and not leaked:
-            print("  provider pins OK (reu_mul_init presence/absence matches contract)")
+def _run_all_legs():
+    archives = parse_makefile_archives()
+    failures = []
 
-        # (a3) manifest VALUE pins. Symbol presence alone cannot catch a
-        # regression that ships the right equate carrying the wrong number --
-        # exactly how issue #88 slipped in, where the sha384 archive exported
-        # a well-formed manifest describing a different library.
-        obj_paths = [BUILD / (m + ".o") for m in mods]
-        for sym, want in sorted(MANIFEST_VALUES.get(name, {}).items()):
-            got = od65_value(obj_paths, sym)
-            if got is None:
-                failures.append(f"{name}: manifest equate {sym} not found")
-                print(f"  VALUE FAIL: {sym} not exported")
-            elif got != want:
-                failures.append(f"{name}: {sym} = {got}, contract says {want}")
-                print(f"  VALUE FAIL: {sym} = {got}, expected {want}")
-        if MANIFEST_VALUES.get(name):
-            print("  manifest value pins OK (§5 equates match the pinned table)")
-
-        # (a4) §5 footprint MEASUREMENT (issue #142). The pins above compare
-        # the manifest against MANIFEST_VALUES -- a hard-coded copy of the same
-        # numbers in this file. Both sides are the table, so the leg reports
-        # agreement while checking nothing about the archive, and a figure that
-        # has drifted from the bytes it describes passes. That is the shape
-        # that left 43 of 45 §5 values wrong before issue #90, sitting inside
-        # the gate that exists to prevent a recurrence.
-        #
-        # This measures instead, and checks the one property §5 states
-        # normatively: "Footprint equates MUST be safe-direction: round up,
-        # never down", with RESIDENT and COLD a pair a consumer budgets
-        # together. So the invariant is
-        #
-        #     RESIDENT_BYTES + COLD_BYTES  >=  measured code+rodata
-        #
-        # An understating figure makes a consumer's §5 fit check pass while the
-        # library overruns their region, which is the direction that corrupts.
-        measured, unknown = measured_code_rodata(mods)
-        if unknown:
-            # A new segment must not silently escape the accounting: whoever
-            # adds one decides whether it is footprint, here, on purpose.
-            failures.append(f"{name}: unclassified segment(s) {sorted(unknown)} "
-                            f"-- add them to FOOTPRINT_SEGMENTS or the exclusions")
-            print(f"  FOOTPRINT FAIL: unclassified segment(s) {sorted(unknown)}")
+    # Every leg runs under run_leg(): a leg that raises is recorded as that
+    # leg's failure and the run moves on (issue #167 -- a KeyError in
+    # zp_alias_audit used to abort the process ~15 legs early, so the operator
+    # saw a traceback instead of the named defect and nothing after it ran).
+    legs = [
+        ("per-archive population", archive_population_check, (failures, archives)),
+        ("c64.cfg placement", cfg_placement_check, (failures,)),
+        ("§1 version identity", version_identity_check, (failures,)),
+        ("R2 ZP audit", zp_alias_audit, (failures,)),
+        ("§6.1 bare-alias link identity", zp_alias_link_identity, (failures,)),
+        ("gated surface", gated_surface_check, (failures, archives)),
+        ("APP_OWNED reachability", app_owned_reachability_check, (failures,)),
+        ("§6.1 packaging + §3 header", packaging_check, (failures, archives)),
+        ("§6.5 gated link", gated_link_check, (failures, archives)),
+    ]
+    # Population: the archives the Makefile builds, never a table under test
+    # (issue #167 review F2).
+    legs += [(f"archive contract [{name}]", archive_contract_check,
+              (failures, archives, name)) for name in sorted(archives)]
+    legs += [
+        ("GATE_TUS derivation", gate_tus_derivation_check, (failures,)),
+        ("ZP roster reconciliation", zp_roster_reconciliation_check, (failures,)),
+        ("§5 footprint basis", footprint_basis_check, (failures,)),
+        ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
+        ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
+        ("od65 extraction canary", od65_extraction_canary, (failures,)),
+        ("APP_OWNED buffer ownership", app_owned_buffer_ownership_check, (failures,)),
+        # Runs last by design: its knob-change legs wipe build/*.o via the
+        # Makefile stamp, and the final default-build leg restores only the
+        # object it exercises.
+        ("knob staleness + §6.2 ZP override", defines_staleness_check, (failures,)),
+    ]
+    registered = {fn.__name__ for _, fn, _ in legs} | {"leg_registry_check"}
+    legs.insert(0, ("leg registry", leg_registry_check, (failures, registered)))
+    ran, crashed = 0, []
+    for label, fn, args in legs:
+        if run_leg(failures, label, fn, *args):
+            ran += 1
         else:
-            declared = 0
-            have_both = True
-            for sym in ("LIB_NISTCURVES_RESIDENT_BYTES", "LIB_NISTCURVES_COLD_BYTES"):
-                v = od65_value(obj_paths, sym)
-                if v is None:
-                    have_both = False
-                else:
-                    declared += v
-            if not have_both:
-                failures.append(f"{name}: §5 footprint equates missing")
-                print("  FOOTPRINT FAIL: RESIDENT/COLD not both exported")
-            resident = od65_value(obj_paths, "LIB_NISTCURVES_RESIDENT_BYTES")
-            cold = od65_value(obj_paths, "LIB_NISTCURVES_COLD_BYTES")
-            if resident is not None and cold is not None and resident < measured - cold:
-                # RESIDENT alone is what a consumer sizing a resident-only
-                # region binds to; pinning only the sum leaves it unchecked.
-                failures.append(
-                    f"{name}: §5 RESIDENT_BYTES understates -- {resident} declared, "
-                    f"but measured {measured} minus COLD {cold} needs {measured - cold}")
-                print(f"  FOOTPRINT FAIL: RESIDENT {resident} < measured-minus-COLD {measured - cold}")
-            elif declared < measured:
-                failures.append(
-                    f"{name}: §5 footprint understates -- RESIDENT+COLD = {declared} "
-                    f"but the archive's code+rodata measures {measured} "
-                    f"(short by {measured - declared}; §5 requires safe-direction)")
-                print(f"  FOOTPRINT FAIL: declared {declared} < measured {measured}")
-            else:
-                slack = declared - measured
-                pct = (slack / measured * 100) if measured else 0.0
-                print(f"  footprint OK (RESIDENT+COLD {declared} >= measured "
-                      f"{measured}, +{slack} B / {pct:.1f}%)")
-
-        # (b) dummy-link smoke tests.
-        for label, imps, expect_link in SMOKE.get(name, []):
-            ok, unres, raw = link_test(archive_path, imps)
-            if expect_link:
-                if ok:
-                    print(f"  link OK   [{label}]")
-                else:
-                    failures.append(f"{name}: '{label}' should link but failed: {sorted(unres)}")
-                    print(f"  LINK FAIL [{label}] expected clean, got unresolved {sorted(unres)}")
-            else:
-                if ok:
-                    failures.append(f"{name}: '{label}' should FAIL to link (documented gap) but linked clean -- update docs")
-                    print(f"  LINK FAIL [{label}] expected documented-broken, but it linked")
-                elif not unres:
-                    failures.append(f"{name}: '{label}' failed for a non-symbol reason:\n{raw}")
-                    print(f"  LINK FAIL [{label}] failed but not on unresolved symbols")
-                elif not unres <= allow:
-                    extra = sorted(unres - allow)
-                    failures.append(f"{name}: '{label}' unresolved beyond allowlist: {extra}")
-                    print(f"  LINK FAIL [{label}] unresolved beyond allowlist: {extra}")
-                else:
-                    print(f"  link gap OK [{label}] unresolved (documented): {sorted(unres)}")
-        print()
-
-    # Runs last by design: its knob-change legs wipe build/*.o via the
-    # Makefile stamp, and the final default-build leg restores only the
-    # object it exercises.
-    gate_tus_derivation_check(failures)
-    zp_roster_reconciliation_check(failures)
-    footprint_basis_check(failures)
-    sibling_bare_collision_check(failures)
-    sibling_sqtab_collision_check(failures)
-    od65_extraction_canary(failures)
-    app_owned_buffer_ownership_check(failures)
-    defines_staleness_check(failures)
+            crashed.append(label)
+    print(f"\nlegs: {ran} of {len(legs)} ran to completion"
+          + (f"; CRASHED: {crashed}" if crashed else "")
+          + f" ({len(archives)} of them per-archive, from the Makefile)")
+    if ran != len(legs):
+        failures.append(f"only {ran} of {len(legs)} guarded legs ran to "
+                        f"completion; crashed: {crashed}")
+    # Run-log assertion, deliberately OUTSIDE every leg: every @leg function
+    # (top-level legs and sub-legs alike) must have been entered. Catches a
+    # sub-leg dropped from its caller (re-review A) and a deleted registration
+    # -- including the registry leg's own (re-review C).
+    never = sorted(set(LEG_FUNCS) - LEG_ENTERED)
+    print(f"run log: {len(LEG_ENTERED & set(LEG_FUNCS))} of {len(LEG_FUNCS)} "
+          "@leg functions entered" + (f"; NEVER RAN: {never}" if never else ""))
+    if never:
+        failures.append(f"run log: @leg functions {never} never ran -- a "
+                        "registration or a sub-leg call was dropped")
+    # Zero-examination guard (re-review E2).
+    zero = sorted(set(LEG_ZERO_EXAMINED) - set(LEGS_MAY_EXAMINE_NONE))
+    stale_none = sorted(n for n in LEGS_MAY_EXAMINE_NONE
+                        if any(any(c.values()) for c in LEG_EXAMINED.get(n, [])))
+    total = {}
+    for runs in LEG_EXAMINED.values():
+        for c in runs:
+            for u, k in c.items():
+                total[u] = total.get(u, 0) + k
+    print(f"examined: {sum(total.values())} items across "
+          f"{sum(len(r) for r in LEG_EXAMINED.values())} leg invocations"
+          + (f"; ZERO-EXAMINATION: {zero}" if zero else ""))
+    if zero:
+        failures.append(f"run log: legs {zero} completed having examined "
+                        "NOTHING -- an early return or an emptied population; "
+                        "a leg with a legitimately empty population must be "
+                        "listed in LEGS_MAY_EXAMINE_NONE")
+    if stale_none:
+        failures.append(f"run log: LEGS_MAY_EXAMINE_NONE lists {stale_none}, "
+                        "which examined something -- shrink the table")
 
     if failures:
         print("ARCHIVE CONTRACT RATCHET: FAIL")
