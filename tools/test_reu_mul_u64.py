@@ -188,7 +188,11 @@ def firmware_note_for_row(reported_fw, note):
     for the device in hand.  Exactly one of the two results is None.
     """
     rep = (str(reported_fw).strip() if reported_fw is not None else "")
-    rep_ok = bool(re.match(r"\d+\.\d+", rep))
+    # A leading V/v is part of how /v1/info spells versions ("V3.14d"); the
+    # harness's u64_capabilities strips it the same way.  It is ignored for
+    # the version check and the prefix compare, never for what is recorded.
+    rep_core = rep.lstrip("Vv")
+    rep_ok = bool(re.match(r"\d+\.\d+", rep_core))
     if note is None:
         if not rep_ok:
             return (f"{rep or '?'}(firmware_version_not_reported_by_/v1/info)",
@@ -202,8 +206,10 @@ def firmware_note_for_row(reported_fw, note):
                       f"the device reported.")
     # The note is an annotation ON the reported version, so it must begin with
     # it verbatim and not continue it (3.15 vs 3.150, 1.1.0 vs 1.1.05).
-    if not (note.lower().startswith(rep.lower())
-            and not re.match(r"[0-9A-Za-z]|\.\d", note[len(rep):])):
+    note_core = note.lstrip("Vv")
+    if not (note_core.lower().startswith(rep_core.lower())
+            and not re.match(r"[0-9A-Za-z]|\.\d",
+                             note_core[len(rep_core):])):
         return None, (f"--firmware-note {note!r} does not begin with the "
                       f"firmware this device reports ({rep!r} via /v1/info). "
                       f"Refusing to stamp a firmware this device is not "
@@ -1997,6 +2003,26 @@ def self_test() -> int:
     note, why = firmware_note_for_row("1.1.0", "1.15+x")
     check("major matches but minor does not (1.15 vs 1.1.0) -> REFUSED",
           note is None and bool(why), f"recorded {note!r}")
+    # V-prefixed versions are real /v1/info output (the harness's
+    # u64_capabilities strips "Vv" and its fixtures use these strings).
+    for rep in ("V3.14d", "V3.16", "V3.15", "V3.13"):
+        note, why = firmware_note_for_row(rep, None)
+        check(f"no note, reported {rep!r}: recorded as reported, not "
+              f"'not_reported'", why is None and note is not None
+              and note.startswith(rep) and "not_reported" not in note,
+              f"{note!r} {why!r}")
+    for rep, nt, ok_want in (("V3.14d", "V3.14d+patch", True),
+                             ("V3.14d", "3.14d+patch", True),
+                             ("3.14d", "V3.14d+patch", True),
+                             ("V3.15", "v3.15", True),
+                             ("V3.16", "3.15+patch814", False),
+                             ("V3.14d", "V3.14+patch", False),
+                             ("V3.15", "V3.150", False)):
+        note, why = firmware_note_for_row(rep, nt)
+        check(f"reported {rep!r}, note {nt!r} -> "
+              f"{'accepted' if ok_want else 'REFUSED'}",
+              (note == nt and why is None) if ok_want
+              else (note is None and bool(why)), f"{note!r} {why!r}")
     note, why = firmware_note_for_row("1.1.0", "1.1.5")
     check("a note claiming a different patch release (1.1.5 vs 1.1.0) -> "
           "REFUSED", note is None and bool(why), f"recorded {note!r}")
