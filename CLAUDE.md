@@ -227,17 +227,17 @@ object also depends on the Makefile. **A new ca65 recipe must use
 `$(ASSEMBLE)`**, not a raw `$(CA65)` line — a raw line silently drops that
 object's header edges (`make check-inc-deps` catches it). Before #178 no
 recipe named its `.include`d headers, so editing one left `make` / `make lib-*`
-saying "Nothing to be done" over a stale artifact. The `CONTRACT_DEFINES`
-knob-stamp wipe is skipped under `-n` / `-q` / `-t` and for goals that build
-nothing. The dry-run classifier reads `$(MFLAGS)` (make's own decoding),
-never MAKEFLAGS letters: under `make -e` an environment MAKEFLAGS such as
-`--t` reaches parse time raw, and misreading it shipped a 0-byte archive
-(issue #180). MFLAGS is trusted only with origin `environment` /
-`environment override` (make's own definition); a command-line, makefile or
-`override` MFLAGS is refused, and so is a command-line `MAKEFLAGS=` (3.81
-obeys it but leaves MFLAGS empty, which shipped a 0-byte archive). The classifier is
-unit-tested through the command-line-only `MFLAGS_UNDER_TEST` seam on
-`make print-dry-classify`. `make clean` removes
+saying "Nothing to be done" over a stale artifact. **The `CONTRACT_DEFINES`
+knob stamp is compared at parse time and never written there**: on a
+mismatch, every object, archive and PRG gets the phony prerequisite
+`knobs-changed`, whose recipe wipes the old outputs and then writes the new
+stamp. make therefore decides whether the wipe runs, whatever route its flags
+took: `-n` prints it, `-q` answers stale, `-t` touches but leaves the stamp
+old, and non-build goals never run it. **Do not move the wipe or the stamp
+write back to parse time, and do not try to detect -n/-q/-t from MAKEFLAGS or
+MFLAGS.** Every such classifier was defeated by another route: env MAKEFLAGS
+under `-e`, a command-line `MAKEFLAGS=`, or `MAKEFLAGS += -t` inside a
+makefile. Each one shipped a 0-byte archive (issue #180). `make clean` removes
 the variant PRGs, labels and `.d` files but keeps the knob stamp on purpose.
 **Hash note:** `od65 --dump-all` prints no segment bytes, so an od65-based
 hash of an archive cannot see a code-byte change; compare raw member bytes
@@ -293,7 +293,7 @@ make check-harness-routing           # every device write in tools/ routes throu
                                      #   managed layer (`transport.write_memory`) and never below it —
                                      #   see "Device traffic: the harness is the only route" below
                                      #   (no VICE, no device, no network)
-make check-inc-deps                  # every object reassembles when an .include'd header or the Makefile changes; clean/dry-run side effects (issue #178; no VICE, temp copy, opt-in)
+make check-inc-deps                  # every object reassembles when an .include'd header or the Makefile changes; clean/dry-run side effects; knob invalidation down every flag route (issues #178/#180; no VICE, temp copy, opt-in)
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
                                      #   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
                                      #   C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py

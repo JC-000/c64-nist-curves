@@ -26,50 +26,39 @@ contract).
   `-include`d, so all 33 header-to-object edges (every variant object) are
   tracked and a new `.include` needs no Makefile edit. Every object also
   depends on the Makefile, so a recipe-flag change reassembles too.
-- **`make -n` / `-q` / `-t` with changed `CONTRACT_DEFINES` no longer delete
-  build/.** The knob-staleness invalidation ran in a parse-time `$(shell)`
-  and fired on dry runs too, deleting every object and archive and rewriting
-  the stamp. A dry run now leaves build/ untouched while still reporting the
-  rebuild (`-n` prints it, `-q` answers "stale"); goals that build nothing
-  (`clean`, `dist`, `check-release-*`, `check-harness-routing`,
-  `check-inc-deps`) leave it alone as well. A real build with changed knobs
-  invalidates exactly as before (check-archives' staleness leg passes).
-- **`make -e` with an environment MAKEFLAGS such as `--t` or `-ntx` no longer
-  ships a 0-byte archive (issue #180, relayed from c64-x25519 #167/#168).**
-  Under `-e`, an environment MAKEFLAGS reaches parse time un-normalised, and
-  GNU make 3.81 still obeys long-option prefixes (`--t`, `--dr`, `--que`) and
-  getopt clusters in it. The dry-run test missed these. It then wiped and
-  restamped, `touch` re-created every target as 0 bytes, and the next real
-  build with the same knobs exited 0 with an empty `nistcurves.a`. With
-  `--dr` / `--que`, the dry run deleted the tree.
-  - The dry-run test now reads `$(MFLAGS)`, make's own decoding. Measured on
-    3.81: `MFLAGS=-te` for env `--t` under `-e`; `-tne` for `-ntx`; `-e` for
-    `-I -n`, which is a real build.
-  - It accepts only single-dash words made entirely of argument-less flag
-    letters. That rejects `-Otarget`, `-I/path` and `-j4` on GNU make 4.x,
-    where MFLAGS is documented as MAKEFLAGS without its variables, with a
-    leading dash.
-  - MFLAGS is trusted only as make's own definition, i.e. origin
-    `environment` or `environment override`. Any other origin is refused
-    with an error:
-    - a command-line `MFLAGS=`;
-    - `MFLAGS := -n` in a makefile or a MAKEFILES-loaded file;
-    - `override MFLAGS`.
+- **Changed `CONTRACT_DEFINES` no longer destroy or corrupt build/ under
+  `-n` / `-q` / `-t` (issues #178, #180; #180 relayed from c64-x25519
+  #167/#168).** The knob-staleness invalidation ran its wipe and stamp write
+  in a parse-time `$(shell)`. Two consequences:
+  - `make -n` / `-q` deleted the tree.
+  - `make -t` recorded the new knobs and then touched every artifact as a
+    0-byte file. The next real build with the same knobs exited 0 and
+    shipped an empty `nistcurves.a`.
 
-    make believes each of these while obeying different flags, so a real
-    build would be classified as dry and leave a stale archive.
-  - A command-line `MAKEFLAGS=` (e.g. `make lib MAKEFLAGS=t`) is refused.
-    3.81 obeys it but leaves MFLAGS empty, so the build would be treated as
-    real: it would wipe, restamp and then touch, shipping a 0-byte archive.
-    An intermediate revision of this branch did exactly that. Sub-makes,
-    `-C`, an environment MAKEFLAGS and `make -e` never give MAKEFLAGS that
-    origin, and the check pins that they still work.
-  - `make -q` on every archive and PRG path answers "stale" when the knobs
-    change. The packaging copies (`nistcurves.inc`, the example cfg) do not
-    depend on any knob, so they correctly answer "up to date".
-  - Known make behaviour, unchanged and out of scope: `make -t` on an
-    archive that does not exist yet creates it as a 0-byte file, even with
-    unchanged knobs. That is what `-t` means. Run a real build afterwards.
+  The flags can reach make by many routes: the command line, an environment
+  MAKEFLAGS under `make -e`, a MAKEFLAGS set inside a makefile, sub-makes,
+  or GNU make 4.x formats. Each of these was measured to defeat any
+  parse-time reading of the flags.
+
+  The Makefile now only compares at parse time: it reads the stamp and
+  writes nothing. When the knobs differ, every object, archive and PRG gets
+  the phony prerequisite `knobs-changed`. Its recipe deletes the old
+  outputs and then writes the new stamp. make itself decides whether that
+  recipe runs:
+  - `-n` prints the wipe and the full rebuild;
+  - `-q` answers "stale";
+  - `-t` touches outputs but leaves the stamp alone, so the next real build
+    still rebuilds everything;
+  - goals that build nothing never run it.
+
+  Under `-j` the wipe finishes before any assembly. A build that fails part
+  way leaves no old-knob object beside the new stamp. The archives and PRGs
+  are forced as well as the objects: 3.81 caches an artifact's mtime before
+  the wipe runs, so without that the archive is not rebuilt (issue #144).
+
+  Known make behaviour, unchanged and out of scope: `make -t` on an artifact
+  that does not exist yet creates it as a 0-byte file, even with unchanged
+  knobs. That is what `-t` means; run a real build afterwards.
 - **`make clean` removes the variant test PRGs** (`nist-curves-{nocomb,onchip,
   onchip-nocomb}.prg`), their `labels_*` / `labels_*_raw` files and the `.d`
   files. It deliberately keeps the knob stamp, so `make clean all` followed
@@ -80,23 +69,29 @@ contract).
 
 - `make check-inc-deps` (`tools/check_inc_deps.py`): discovers the include
   set and the object set (never hard-coded), then proves in a throwaway copy
-  of the tree that touching each header reassembles every object including
-  it, that `make clean` leaves no artefact, and that dry runs are side-effect
-  free. It also feeds a table of 3.81 and 4.x MFLAGS strings to the
-  dry-run classifier through a `MFLAGS_UNDER_TEST` seam. It runs real
-  `make -e lib` builds under environment MAKEFLAGS `--t`, `--dr`, `--que`,
-  `-ntx`, `--touch` and `--just-print` (issue #180), and probes `-q` on
-  every artifact path. The classifier is exercised through
-  `make print-dry-classify`. The seam is honoured only when it is given
-  on the command line and `print-dry-classify` is the sole goal. A value
-  from the environment, or one given with a build goal, is ignored, so the
-  seam cannot turn a real build into a dry one or the reverse. When the
-  seam prints no classification at all, the check says so ("no
-  MAKE_DRY_RUN line printed") rather than reporting it as a REAL
-  classification. Opt-in; not a prerequisite of `all`. All four
-  PRGs are sha256-identical before and after this change. All twelve
-  archives have identical member bytes outside the Options/Files header
-  sections, which hold an assembly datetime.
+  of the tree that:
+  - touching each header reassembles every object that includes it;
+  - `make clean` leaves no artefact;
+  - dry runs are side-effect free;
+  - the knob invalidation behaves correctly down every route by which flags
+    reach make.
+
+  The routes it drives with real builds:
+  - an environment MAKEFLAGS under `make -e`;
+  - a command-line MAKEFLAGS;
+  - MAKEFLAGS set in a MAKEFILES file or an include wrapper;
+  - an MFLAGS defined by a makefile;
+  - `$(MAKE) -C` sub-makes;
+  - the `MAKEFLAGS=` clearing idiom;
+  - `-j4`;
+  - c64-https's `make -s -C <dir> lib-p256-verify`.
+
+  It also covers a build that fails part-way, the linked PRG flipping with
+  the knobs, and `make -q` on every artifact path. Opt-in; not a
+  prerequisite of `all`. All four PRGs are sha256-identical before and
+  after this change. All twelve archives have identical member bytes
+  outside the Options/Files header sections, which hold an assembly
+  datetime.
 
 ## [0.15.0] — 2026-09-11
 

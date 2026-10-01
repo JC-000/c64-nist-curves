@@ -109,120 +109,45 @@ LIB_DIR = $(BUILD_DIR)/lib
 # would reuse every stale object and exit 0 with an artifact other than the
 # one requested -- the v0.10.5 shape-3 "silent no-op" (measured here during
 # the issue #123 repro: `make lib-p256-verify-onchip CONTRACT_DEFINES=...`
-# answered "Nothing to be done"). The stamp records the flattened knob string
-# at parse time; when it changes, every object and archive is invalidated --
-# the knobs reach every TU, so every object genuinely is stale -- and the
-# requested configuration is built. Unchanged knobs leave the tree alone
-# (same-knob incremental builds stay incremental). Pinned by the
-# defines-staleness leg in tools/check_archives.py.
+# answered "Nothing to be done"). Pinned by the defines-staleness leg in
+# tools/check_archives.py and by tools/check_inc_deps.py.
+#
+# Design (issues #178 / #180). Parse time only COMPARES: a pure read of the
+# stamp, no writes, no deletes. When the knobs differ, every knob-dependent
+# output -- every object, archive and PRG, see the end of this file -- gets
+# the phony prerequisite `knobs-changed`, whose RECIPE deletes the old
+# objects, archives, PRGs, labels and dbg and then records the new knobs.
+# Because the actions live in a recipe, make itself decides whether they
+# run, whatever route its flags arrived by (command line, environment,
+# `make -e`, MAKEFLAGS set inside a makefile, sub-makes, 4.x formats):
+#   -n   prints the wipe and the full rebuild, executes nothing;
+#   -q   answers "stale" (a phony prerequisite is always out of date);
+#   -t   touches the outputs but never runs the recipe, so the stamp keeps
+#        the OLD knobs and the next real build still rebuilds everything;
+#   goals that do not depend on an output (clean, dist, check-release-*,
+#   check-harness-routing, check-inc-deps) never run it.
+# Every object depends on `knobs-changed` directly, so even under -j its
+# rm finishes before any recipe that writes an object.
+# The delete precedes the stamp write, so a build that fails part-way can
+# never leave stamp == new beside an object built with the old knobs.
+# Issue #144: the LINKED artifacts are forced too, not only the objects --
+# GNU make 3.81 compares mtimes at whole-second granularity, so a
+# same-second reassembly could otherwise leave make judging an existing
+# .prg up to date and exit 0 carrying the PREVIOUS knob's artifact.
 CONTRACT_STAMP := $(BUILD_DIR)/.contract-defines.stamp
 CURRENT_KNOBS := $(strip $(CONTRACT_DEFINES) @ $(CONTRACT_ZP_DEFINES))
 STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
-#
-# Issue #178: the invalidation runs at PARSE time via $(shell ...), so it used
-# to fire under `make -n` / `make -q` / `make -t` too -- a dry run with changed
-# knobs deleted every object and archive and rewrote the stamp. In those modes
-# nothing is deleted and the stamp is left alone; instead every existing
-# object gets a FORCE prerequisite, so `-n` prints the full rebuild a real run
-# would do and `-q` correctly answers "out of date".
-#
-# Finding the flags. A false DRY verdict on a real build is the dangerous
-# direction: it skips the wipe AND the stamp update, so the next build with
-# the old knobs answers "Nothing to be done" over objects built with the new
-# ones. A false REAL verdict on `-t` is worse still (issue #180): the stamp
-# records the new knobs, touch then re-creates every wiped target as a 0-byte
-# file, and the next real build exits 0 shipping an empty archive.
-#
-# Read $(MFLAGS), not MAKEFLAGS (issue #180, after c64-x25519 #168). MFLAGS
-# is make's OWN decoding of the flags it is obeying. MAKEFLAGS is not: under
-# `make -e` an environment MAKEFLAGS reaches parse time raw, and 3.81 still
-# obeys long-option prefixes and getopt clusters in it. Measured on 3.81:
-#     env MAKEFLAGS='--t'   make -e  ->  MAKEFLAGS=[--t]   MFLAGS=[-te]
-#     env MAKEFLAGS='-ntx'  make -e  ->  MAKEFLAGS=[-ntx]  MFLAGS=[-tne]
-#     env MAKEFLAGS='-I -n' make -e  ->  MAKEFLAGS=[-I -n] MFLAGS=[-e]  (real)
-#     --no-print-directory -n        ->  MFLAGS=[- --no-print-directory -n]
-#     sub-make under -n              ->  MFLAGS=[-n]
-#     env MFLAGS=-n (with or without -e) is overwritten by make: MFLAGS=[]
-# GNU make 4.x documents MFLAGS as MAKEFLAGS without the variable section
-# and always dash-led ("-kn -Otarget -I/x --no-print-directory", or
-# "- -Otarget" with no cluster). So on both: take the single-dash words,
-# drop `--long` ones, and accept a word only if it is made ENTIRELY of
-# argument-less flag letters; that rejects `-Otarget`, `-I/path`, `-j4`.
-#
-# MFLAGS is trusted only as make's OWN definition: origin `environment`
-# (or `environment override` under -e). Measured on 3.81, on a plain make,
-# under -n/-t/-k, in `$(MAKE)` sub-makes and with -C. Any other origin is a
-# forgery the classifier would believe while make obeys the real flags:
-# a command-line `MFLAGS=-n` (`command line`), `MFLAGS := -n` in a makefile
-# or a MAKEFILES-loaded file (`file`), `override MFLAGS := -n` (`override`).
-# Each would classify a real build as DRY: no wipe, no restamp, a stale
-# archive. All refused. `undefined` is allowed (nothing to forge).
-#
-# A command-line MAKEFLAGS (`make lib MAKEFLAGS=t`, origin `command line`)
-# is OBEYED by 3.81 but leaves MFLAGS EMPTY. That reads as REAL, so the
-# build would wipe, restamp, then touch, leaving a 0-byte archive that the
-# next real build ships with exit 0 (measured on b9bb55d). Refused too.
-# Legitimate routes never produce that origin: MAKEFLAGS is `file` on a
-# plain make, in sub-makes, with -C and with an env MAKEFLAGS, and
-# `environment override` under -e (all measured on 3.81).
-MFLAGS_ORIGIN := $(origin MFLAGS)
-ifeq ($(MFLAGS_ORIGIN),environment)
-else ifeq ($(MFLAGS_ORIGIN),environment override)
-else ifeq ($(MFLAGS_ORIGIN),undefined)
-else
-$(error MFLAGS has origin '$(MFLAGS_ORIGIN)'; only make's own definition is accepted. This Makefile reads MFLAGS to tell a dry run (-n/-q/-t) from a real build, and a forged value would skip or force the CONTRACT_DEFINES invalidation (issue #180). Do not set MFLAGS on the command line or in a makefile)
-endif
-ifeq ($(origin MAKEFLAGS),command line)
-$(error MAKEFLAGS may not be set on the command line: make obeys it but does not reflect it in MFLAGS, so a dry run (-n/-q/-t) would be treated as a real build and could ship a 0-byte archive (issue #180). Pass the flags directly, e.g. `make -t lib`)
-endif
-#
-# MFLAGS_UNDER_TEST is a test seam for tools/check_inc_deps.py's classifier
-# table (MFLAGS-shaped strings). It is honoured ONLY when given on the
-# command line AND the sole goal is `print-dry-classify`, which builds
-# nothing. An env value (inherited, or set but empty) or a command-line
-# value on a build goal is ignored: steering a real build to "dry" skips the
-# wipe and the stamp update, and steering `make -n` to "real" makes a dry run
-# destructive.
-MFLAGS_FOR_CLASSIFIER := $(if $(and $(filter command line,$(origin MFLAGS_UNDER_TEST)),$(filter print-dry-classify,$(MAKECMDGOALS)),$(if $(filter-out print-dry-classify,$(MAKECMDGOALS)),,yes)),$(MFLAGS_UNDER_TEST),$(MFLAGS))
-_mf_strip_noarg = $(subst B,,$(subst L,,$(subst R,,$(subst S,,$(subst b,,$(subst d,,$(subst e,,$(subst i,,$(subst k,,$(subst n,,$(subst p,,$(subst q,,$(subst r,,$(subst s,,$(subst t,,$(subst w,,$1))))))))))))))))
-_mf_cluster = $(if $1,$(if $(call _mf_strip_noarg,$1),,$1))
-MAKE_FLAG_WORD := $(strip $(foreach w,$(filter-out --%,$(filter -%,$(MFLAGS_FOR_CLASSIFIER))),$(call _mf_cluster,$(patsubst -%,%,$(w)))))
-MAKE_DRY_RUN := $(findstring n,$(MAKE_FLAG_WORD))$(findstring q,$(MAKE_FLAG_WORD))$(findstring t,$(MAKE_FLAG_WORD))
-#
-# Goals that build nothing from src/ must not invalidate build/ either: a
-# `make check-release-notes CONTRACT_DEFINES=...` used to wipe every object.
-# The stamp is left as it was, so the next BUILD with these knobs still sees
-# the mismatch and invalidates then -- the guarantee is unchanged.
-NON_BUILD_GOALS := clean dist check-harness-routing check-release-notes \
-                   check-release-state check-inc-deps print-dry-classify
-ifneq ($(filter print-dry-classify,$(MAKECMDGOALS)),)
-$(info MAKE_DRY_RUN=[$(MAKE_DRY_RUN)])
-endif
-NON_BUILD_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS)),,yes))
 ifneq ($(CURRENT_KNOBS),$(STORED_KNOBS))
-ifneq ($(MAKE_DRY_RUN),)
-$(info make: CONTRACT knobs changed -- a real run deletes every object, archive and PRG and rebuilds; dry run leaves build/ untouched)
-KNOB_FORCE := FORCE
-else ifneq ($(NON_BUILD_ONLY),)
-# Non-build goal: leave build/ and the stamp alone (see above).
-else
-# Issue #144: the LINKED artifacts must be invalidated too, not only the
-# objects. Objects are deleted and reassembled in well under a second, and
-# GNU make 3.81 (macOS system make) compares mtimes at whole-second
-# granularity -- so a same-second reassembly frequently leaves make judging
-# the existing .prg up to date, and ld65 never runs. The build then exits 0
-# carrying the PREVIOUS knob's artifact. Measured: three consecutive knob
-# values, one link, one PRG hash. That is precisely the SPEC v0.11.1 §6.3
-# property this stamp exists to provide ("assert the artifact flipped, not
-# that something rebuilt"), so the PRG, its label files and the dbg file go
-# with the objects.
-$(shell mkdir -p $(BUILD_DIR); rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a \
-        $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg; \
-        printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP))
-endif
+KNOB_FORCE := knobs-changed
 endif
 
-.PHONY: all clean bench-u64 dist \
+# Goals that build nothing. Used ONLY to skip the `.d` include below, so that
+# `make clean` still parses (and so recovers) when a .d file is corrupt.
+NON_BUILD_GOALS := clean dist check-harness-routing check-release-notes \
+                   check-release-state check-inc-deps
+NON_BUILD_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS)),,yes))
+
+.PHONY: all clean bench-u64 dist knobs-changed \
         lib lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve \
         lib-app-owned lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip \
         lib-p384-curve-onchip lib-p256-comb lib-p256-comb-onchip \
@@ -230,18 +155,10 @@ endif
 
 all: $(PRG)
 
-# Prints the dry-run classifier's verdict (at parse time, see above) and does
-# nothing else. Used by tools/check_inc_deps.py; a non-build goal.
-.PHONY: print-dry-classify
-print-dry-classify: ;@:
-
-# Dry-run arm of the knob stamp above (issue #178). Placed after `all:` so it
-# can never become the default goal.
-ifdef KNOB_FORCE
-$(wildcard $(BUILD_DIR)/*.o): FORCE
-endif
-.PHONY: FORCE
-FORCE:
+knobs-changed:
+	@mkdir -p $(BUILD_DIR)
+	rm -f $(BUILD_DIR)/*.o $(LIB_DIR)/*.a $(BUILD_DIR)/*.prg $(BUILD_DIR)/labels*.txt $(BUILD_DIR)/*.dbg
+	@printf '%s' "$(CURRENT_KNOBS)" > $(CONTRACT_STAMP)
 
 # Every object also depends on this Makefile: the recipe flags live here, so
 # a flag edit (or a checkout that touches only the Makefile) must reassemble
@@ -949,3 +866,20 @@ dist:
 	  exit 1; \
 	fi
 	@tools/build_release.sh $(VERSION)
+
+# --- knob-dependent outputs (see the knob-staleness guard near the top) ------
+# Must stay at the END of the file: a rule's target list is expanded when it
+# is read, so every *_OBJS / *_OBJECTS list must already be defined. The
+# object set is DERIVED from those lists (every variable whose name ends in
+# _OBJS or _OBJECTS), so a new variant object that ships in any list is
+# covered without editing this block. Empty when the knobs are unchanged.
+KNOB_OBJECTS  := $(sort $(filter $(BUILD_DIR)/%.o,$(foreach v,$(filter %_OBJS %_OBJECTS,$(.VARIABLES)),$($(v)))))
+LIB_ARCHIVES  := $(addprefix $(LIB_DIR)/,nistcurves.a nistcurves-app-owned.a \
+                 nistcurves-p256-comb.a nistcurves-p256-comb-onchip.a \
+                 nistcurves-p256-verify.a nistcurves-p384-verify.a \
+                 nistcurves-p384-sha384.a nistcurves-p384-curve.a \
+                 nistcurves-onchip.a nistcurves-p256-verify-onchip.a \
+                 nistcurves-p384-verify-onchip.a nistcurves-p384-curve-onchip.a)
+ifdef KNOB_FORCE
+$(KNOB_OBJECTS) $(LIB_ARCHIVES) $(PRG) $(PRG_NOCOMB) $(PRG_ONCHIP) $(PRG_ONCHIP_NOCOMB): $(KNOB_FORCE)
+endif
