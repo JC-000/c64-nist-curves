@@ -236,9 +236,13 @@ def main():
 
     blocks = []
     for name in docs:
-        p = ROOT / name
+        # The live set is repo-relative; a --doc path is the operator's, so it
+        # resolves against the cwd like any other CLI path (issue #168 review
+        # item 9: `cd docs && ... --doc x.md` used to look for ROOT/x.md).
+        p = Path(name) if args.doc else ROOT / name
         if not p.exists():
-            print(f"ERROR: live doc {name} not found")
+            kind = "--doc" if args.doc else "live doc"
+            print(f"ERROR: {kind} {name} not found (looked at {p.resolve()})")
             return 2
         blocks += extract(p, name)
 
