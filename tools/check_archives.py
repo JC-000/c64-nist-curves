@@ -53,7 +53,32 @@ import re
 import subprocess
 import sys
 import tempfile
+import functools
 from pathlib import Path
+
+# --- Leg run log (issue #167 re-review A/B/C) --------------------------------
+# Every leg AND sub-leg carries @leg. The wrapper records entry and completion;
+# _run_all_legs then requires every decorated function to have been ENTERED,
+# so a sub-leg dropped from its caller, a deleted registration (including the
+# registry leg's own) or a leg nobody calls fails the run instead of quietly
+# shrinking "N of N". leg_registry_check separately scans this file's AST for
+# leg-shaped functions that lack the decorator.
+LEG_FUNCS = {}
+LEG_ENTERED = set()
+LEG_COMPLETED = set()
+
+
+def leg(fn):
+    LEG_FUNCS[fn.__name__] = fn
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        LEG_ENTERED.add(fn.__name__)
+        result = fn(*args, **kwargs)
+        LEG_COMPLETED.add(fn.__name__)
+        return result
+    return wrapper
+
 
 REPO = Path(__file__).resolve().parent.parent
 BUILD = REPO / "build"
@@ -1306,6 +1331,7 @@ def od65_export_records(obj):
     return recs
 
 
+@leg
 def zp_alias_audit(failures):
     """Issue #113 + #154: per variant arm --
 
@@ -1514,6 +1540,7 @@ def zp_alias_audit(failures):
         print(f"  alias surface present: {sorted(alias_seen)}")
 
 
+@leg
 def zp_alias_link_identity(failures):
     """Issue #154: drive every bare alias through a REAL ld65 link against the
     archive that is supposed to carry it, and require it to resolve to its
@@ -1612,6 +1639,7 @@ def zp_alias_link_identity(failures):
                     print(f"  {name:34s} {', '.join(shown)} (each == its canonical slot)")
 
 
+@leg
 def version_identity_check(failures):
     """§1 identity: the VERSION file and the lib_version.o equates MUST agree.
     v0.10.0 shipped self-misreporting as 0.10.1 -- PATCH carried over from the
@@ -1636,6 +1664,7 @@ def version_identity_check(failures):
         print(f"  identity OK ({'.'.join(got)})")
 
 
+@leg
 def gated_surface_check(failures, archives):
     """§6.5 window ratchet: a -D LIB_NO_BARE_EXPORTS=1 build of every
     gate-owning TU must export zero deprecated bare names. This is the whole
@@ -1883,6 +1912,7 @@ APP_OWNED_DEFINE_ARGS = ["-D", "SHARED_SQTAB_INIT", "-D", "SHARED_REU_MUL_INIT",
                          "-D", "SHARED_REU_MUL_FETCH", "-D", "SHARED_CT_MUL_8X8"]
 
 
+@leg
 def app_owned_reachability_check(failures):
     """Reachability of APP_OWNED x profile (issue #123). §6.3 was RETIRED at
     contract 1.0.0 and the citations here are history, not a live obligation --
@@ -2035,8 +2065,11 @@ _HDR_UNMODELLED_RE = re.compile(
 # fails too. NISTCURVES_PIN_OVERRIDE's `.import sym` sits in a private .scope
 # and is referenced by the macro's own link-time assert, so ca65 keeps it and
 # the guard rows drive it with a real -D; it needs no stub reference.
+# Value: the ONLY import line the macro body may contain, whitespace-normalised
+# (issue #170 re-review D: allowlisting the whole body let a second
+# `.import bogus` inside the macro's .scope pass unexamined).
 HEADER_IMPORT_MACROS_ALLOWED = {
-    "NISTCURVES_PIN_OVERRIDE": "scoped pin import, referenced by its own assert",
+    "NISTCURVES_PIN_OVERRIDE": ".import sym",
 }
 
 
@@ -2062,21 +2095,30 @@ def header_declared_imports(td, incdir, defines):
     text = (Path(incdir) / "nistcurves.inc").read_text()
     out_lines, text_names, unmodelled = [], set(), []
     macro = None
+    macro_imports = []
     macros_importing = set()
     for ln in text.splitlines():
         out_lines.append(ln)
         code = ln.split(";", 1)[0]
         mm = re.match(r"^\s*\.macro\s+(\w+)", code, re.I)
         if mm:
-            macro = mm.group(1)
+            macro, macro_imports = mm.group(1), []
             continue
         if re.match(r"^\s*\.endmacro\b", code, re.I):
+            allowed = HEADER_IMPORT_MACROS_ALLOWED.get(macro)
+            if allowed is not None and macro_imports:
+                macros_importing.add(macro)
+                if macro_imports != [allowed]:
+                    unmodelled.append(
+                        f"macro {macro} may contain exactly one import line, "
+                        f"'{allowed}'; found {macro_imports}")
             macro = None
             continue
         if macro is not None:
             if _HDR_ANY_IMPORT_RE.search(code) or _HDR_UNMODELLED_RE.search(code):
-                macros_importing.add(macro)
-                if macro not in HEADER_IMPORT_MACROS_ALLOWED:
+                if macro in HEADER_IMPORT_MACROS_ALLOWED:
+                    macro_imports.append(" ".join(code.split()))
+                else:
                     unmodelled.append(f"import inside macro {macro}: {ln.strip()}")
             continue
         if _HDR_UNMODELLED_RE.search(code):
@@ -2194,6 +2236,7 @@ def _header_link(td, incdir, cfg, archive, defines):
     return arc, aout, lrc, lout, None
 
 
+@leg
 def packaging_check(failures, archives):
     """SPEC §6.1 packaging artifacts + SPEC §3 header-import guard rule.
 
@@ -2438,6 +2481,7 @@ def packaging_check(failures, archives):
                 print(f"  bare OK [{sym}]: -D collides loudly, as a derived equate must")
 
 
+@leg
 def gated_link_check(failures, archives):
     """§6.5 at the level a consumer meets it: an ld65 LINK of a GATED archive.
 
@@ -2837,6 +2881,7 @@ def gated_link_check(failures, archives):
               "gate-defined header declares)")
 
 
+@leg
 def gate_tus_derivation_check(failures):
     """GATE_TUS is a roster. Derive the same set from the sources and compare.
 
@@ -2917,6 +2962,7 @@ def gate_tus_derivation_check(failures):
               f"source arms, roster matches exactly)")
 
 
+@leg
 def zp_roster_reconciliation_check(failures):
     """The ZP legs iterate over hand-maintained rosters. Reconcile them against
     the Makefile, or a seventh variant is silently unaudited by all four.
@@ -2964,6 +3010,7 @@ def zp_roster_reconciliation_check(failures):
               f"archives, all three rosters agree)")
 
 
+@leg
 def footprint_basis_check(failures):
     """The §5 measurement basis is od65 segment sums. Pin that it equals a real
     link, because if it stops doing so the footprint leg understates SILENTLY.
@@ -3143,6 +3190,7 @@ def footprint_basis_check(failures):
               f"the sum-based §5 measurand equals the placed span)")
 
 
+@leg
 def sibling_sqtab_collision_check(failures):
     """§6.1 + §8.1: the MANDATORY boot call must not drag a bare sqtab name in.
 
@@ -3282,6 +3330,7 @@ def sibling_sqtab_collision_check(failures):
               f"{pinned} value-pinned against sqtab_base.inc")
 
 
+@leg
 def sibling_bare_collision_check(failures):
     """§6.1: importing a §8.2 output equate must not drag a bare `mul_` name in.
 
@@ -3351,6 +3400,7 @@ def sibling_bare_collision_check(failures):
             print(f"  sibling OK [{name}] (§8.2 output equate pulls no bare name)")
 
 
+@leg
 def od65_extraction_canary(failures):
     r"""Pin the assumption every other leg here rests on: that we see every name
     od65 prints.
@@ -3487,6 +3537,7 @@ def od65_extraction_canary(failures):
         print(f"  canary OK ({seen} no-space name occurrences, all extracted)")
 
 
+@leg
 def app_owned_buffer_ownership_check(failures):
     """Issue #149: resolving the §8.2 settle state must not drag an APP_OWNED
     buffer definition into the link.
@@ -3573,6 +3624,7 @@ def app_owned_buffer_ownership_check(failures):
               f"duplicating the APP_OWNED buffers)")
 
 
+@leg
 def defines_staleness_check(failures):
     """Knob-staleness guard. §6.3 was RETIRED at contract 1.0.0; what survives
     is §6.2's define-scoping rule, and the artifact-flipped property below is
@@ -3605,6 +3657,7 @@ def defines_staleness_check(failures):
             shutil.rmtree(kb, ignore_errors=True)
 
 
+@leg
 def _knob_staleness_legs(failures, kb):
     mk = ["make", "-C", str(REPO), f"BUILD_DIR={kb}"]
     print("\n=== knob-staleness guard (defines change must rebuild; was §6.3) ===")
@@ -3757,6 +3810,7 @@ def _knob_staleness_legs(failures, kb):
           "no-change is incremental)")
 
 
+@leg
 def _zp_override_leg(failures, kb):
     # --- §6.2 CONTRACT_ZP_DEFINES scoping across the #154 TU split -----------
     # zp_config.s DEFINES the slots and takes the ZP overrides; zp_aliases.s
@@ -3877,6 +3931,7 @@ def run_leg(failures, label, fn, *args):
         return False
 
 
+@leg
 def archive_contract_check(failures, archives, name):
     """Per-archive legs: (a) closure, (a2) provider pins, (a3) manifest
     values, (a4) footprint measurement, (b) dummy-link smoke rows."""
@@ -4053,6 +4108,7 @@ def archive_contract_check(failures, archives, name):
     print()
 
 
+@leg
 def archive_population_check(failures, archives):
     """The per-archive legs iterate the archives the MAKEFILE builds. Every
     per-archive table must cover exactly that population (CONSUMER_GAPS: a
@@ -4095,48 +4151,79 @@ def archive_population_check(failures, archives):
               "per-archive tables cover exactly them, CONSUMER_GAPS a subset)")
 
 
-# Module-level functions that take `failures` first but are NOT legs.
-LEG_REGISTRY_EXEMPT = {"run_leg"}
+# Leg-shaped functions that are deliberately NOT legs. Ratcheted both ways by
+# leg_registry_check: an undecorated leg-shaped function not listed here fails,
+# and an entry here that is no longer leg-shaped (or no longer exists) fails.
+LEG_REGISTRY_EXEMPT = {
+    "run_leg": "the crash guard itself",
+    "_run_all_legs": "the runner that calls every leg and checks the run log",
+    "_zp_arm_ragged": "per-arm roster helper called by two ZP legs",
+    "_zp_override_probe": "per-arm probe called by _zp_override_leg",
+}
+_LEG_NAME_RE = re.compile(r".*_(check|canary|leg|legs|audit|identity)")
 
 
+def _leg_shaped_functions():
+    """{name: decorated?} for every function in this file that LOOKS like a
+    leg: leg-like name, a parameter whose name contains "fail", or an
+    `.append(...)` on one of its own parameters or on any name containing
+    "fail" (catches a renamed `failures` and a `_`-prefixed leg, issue #167
+    re-review B). Read from the AST, so a `_` prefix or a renamed parameter
+    does not hide a function the way the old inspect-based discovery let it."""
+    import ast
+    tree = ast.parse(Path(__file__).read_text())
+    found = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        params = {a.arg for a in node.args.args}
+        appends_param = any(
+            isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+            and c.func.attr == "append" and isinstance(c.func.value, ast.Name)
+            and (c.func.value.id in params or "fail" in c.func.value.id)
+            for c in ast.walk(node))
+        if (_LEG_NAME_RE.fullmatch(node.name)
+                or any("fail" in p for p in params) or appends_param):
+            decorated = any(isinstance(d, ast.Name) and d.id == "leg"
+                            for d in node.decorator_list)
+            found[node.name] = decorated
+    return found
+
+
+@leg
 def leg_registry_check(failures, registered):
-    """Every leg function must be registered in _run_all_legs.
+    """Every leg-shaped function must carry @leg (or be an explicit, ratcheted
+    exemption), and every registered top-level leg must carry it too.
 
-    Issue #167 review F1: "legs: N of N" counted the registration list against
-    itself, so deleting a registration (e.g. the §6.5 gated link) printed
-    "27 of 27", PASS. A leg is discovered by shape -- a public module-level
-    function whose first parameter is `failures` -- not by the list under
-    test; LEG_REGISTRY_EXEMPT names the helpers that share the shape."""
-    import inspect
-    print("\n=== leg registry (discovered leg functions vs registered) ===")
-    discovered = set()
-    for n, f in globals().items():
-        if (inspect.isfunction(f) and f.__module__ == __name__
-                and not n.startswith("_")):
-            params = list(inspect.signature(f).parameters)
-            if params[:1] == ["failures"]:
-                discovered.add(n)
-    stale_exempt = sorted(LEG_REGISTRY_EXEMPT - discovered)
-    discovered -= LEG_REGISTRY_EXEMPT
-    unregistered = sorted(discovered - registered)
-    unknown = sorted(registered - discovered)
-    if unregistered:
-        failures.append(f"leg registry: {unregistered} look like legs but are "
-                        "not registered -- they never run")
-        print(f"  REGISTRY FAIL: unregistered legs {unregistered}")
-    if unknown:
-        failures.append(f"leg registry: registered {unknown} are not "
-                        "discoverable legs")
-        print(f"  REGISTRY FAIL: registered but not discovered {unknown}")
+    Whether each decorated leg actually RAN is asserted at the end of
+    _run_all_legs from the run log, outside any leg, so deleting this leg's
+    own registration is caught as well (re-review C)."""
+    print("\n=== leg registry (leg-shaped functions vs @leg vs registered) ===")
+    shaped = _leg_shaped_functions()
+    undecorated = {n for n, d in shaped.items() if not d}
+    missing = sorted(undecorated - set(LEG_REGISTRY_EXEMPT))
+    stale_exempt = sorted(set(LEG_REGISTRY_EXEMPT) - undecorated)
+    not_leg = sorted(n for n in registered if n not in LEG_FUNCS)
+    if missing:
+        failures.append(f"leg registry: {missing} look like legs but carry no "
+                        "@leg -- the run log cannot prove they ran")
+        print(f"  REGISTRY FAIL: leg-shaped but undecorated {missing}")
     if stale_exempt:
         failures.append(f"leg registry: LEG_REGISTRY_EXEMPT names {stale_exempt}, "
-                        "which no longer exist")
+                        "which are no longer undecorated leg-shaped functions")
         print(f"  REGISTRY FAIL: stale exemptions {stale_exempt}")
-    if not (unregistered or unknown or stale_exempt):
-        print(f"  registry OK ({len(discovered)} leg functions discovered, "
-              "all registered)")
+    if not_leg:
+        failures.append(f"leg registry: registered {not_leg} carry no @leg")
+        print(f"  REGISTRY FAIL: registered but undecorated {not_leg}")
+    if not (missing or stale_exempt or not_leg):
+        print(f"  registry OK ({len(LEG_FUNCS)} @leg functions, "
+              f"{len(LEG_REGISTRY_EXEMPT)} ratcheted exemptions, "
+              f"{len(shaped)} leg-shaped functions scanned)")
 
 
+
+
+@leg
 def cfg_placement_check(failures):
     """(c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting."""
     m, offenders = cfg_bss_before_emitting()
@@ -4214,6 +4301,16 @@ def _run_all_legs():
     if ran != len(legs):
         failures.append(f"only {ran} of {len(legs)} guarded legs ran to "
                         f"completion; crashed: {crashed}")
+    # Run-log assertion, deliberately OUTSIDE every leg: every @leg function
+    # (top-level legs and sub-legs alike) must have been entered. Catches a
+    # sub-leg dropped from its caller (re-review A) and a deleted registration
+    # -- including the registry leg's own (re-review C).
+    never = sorted(set(LEG_FUNCS) - LEG_ENTERED)
+    print(f"run log: {len(LEG_ENTERED & set(LEG_FUNCS))} of {len(LEG_FUNCS)} "
+          "@leg functions entered" + (f"; NEVER RAN: {never}" if never else ""))
+    if never:
+        failures.append(f"run log: @leg functions {never} never ran -- a "
+                        "registration or a sub-leg call was dropped")
 
     if failures:
         print("ARCHIVE CONTRACT RATCHET: FAIL")
