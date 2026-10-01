@@ -14,6 +14,10 @@ the next release is compared against the one consumers actually pin:
 
     python3 tools/gen_abi_baseline.py v0.16.0
 
+`make check-release-state` (leg 5) fails until this has been done for the
+newest release tag. It reads the "tag" and "commit" this generator records,
+and it checks that the commit is still what the tag resolves to.
+
 The generator builds the TAG, not the working tree. It checks the tag out in a
 throwaway git worktree, runs the `make` targets that tag's own
 `check-archives` rule lists, and reads every member of every built archive

@@ -841,6 +841,9 @@ check-release-notes:
 # master, and `[Unreleased]` then accumulated tooling work on top of it.
 # Every artifact was self-consistent, so nothing caught it: the defect is in
 # the relationship between the tree and the TAG namespace.
+# Leg 5 also fails while tools/abi_baseline.json (check-archives' ABI pin) was
+# generated from an older tag than the newest release: after tagging vX.Y.Z,
+# run `python3 tools/gen_abi_baseline.py vX.Y.Z` and commit the result.
 # Static: no VICE, no device, no network, no build prerequisite. Opt-in like
 # check-docs / check-harness-routing; deliberately NOT wired into `all`.
 .PHONY: check-release-state

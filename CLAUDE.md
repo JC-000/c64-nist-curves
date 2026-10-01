@@ -84,11 +84,20 @@ Three later releases matter here:
     `.assert LIB_NISTCURVES_ABI_VERSION = N, lderror` in API.md,
     `src/nistcurves.inc` and `src/lib_version.s` equal the built value.
 
-  **Release checklist:** after tagging, run
-  `python3 tools/gen_abi_baseline.py <new-tag>` and commit the result. The
-  generator builds the tag in a throwaway worktree; it does not read this
-  tree. A stale baseline compares against an older release, which is still
-  sound but looser.
+  **Release checklist:** right after tagging `vX.Y.Z`, run
+  `python3 tools/gen_abi_baseline.py vX.Y.Z` and commit the result. The
+  generator builds the tag in a throwaway worktree, not this tree, and
+  records the tag name and its commit. **`make check-release-state` enforces
+  this** (leg 5):
+  - it fails while the baseline's tag is older than the newest `vX.Y.Z` tag,
+    and the message names the command to run;
+  - it fails closed on a baseline that is missing, unreadable, or records no
+    tag, no commit, or a commit its tag no longer resolves to;
+  - in the pre-tag state (VERSION bumped, tag not cut) it passes and prints
+    which tag the baseline reflects, because the previous release's baseline
+    is the right comparand until the new tag exists.
+  It runs in the git tree only; in a release tarball, which has no tag
+  namespace, it SKIPs.
 - **1.1.1** — withdrew the §6.1 requirement that `make lib` also ship a `.inc`
   header and an example `.cfg`. We ship both anyway (`src/nistcurves.inc`,
   `cfg/nistcurves-example.cfg`) because consumers were otherwise transcribing
@@ -334,6 +343,9 @@ make check-archives                  # archive linkability contract ratchet (no 
 make check-docs                      # assemble the copy-pasteable snippets in API.md / README.md /
                                      #   CLAUDE.md and resolve their imports against real exports
                                      #   (no VICE; opt-in, never a prerequisite of `all`)
+make check-release-state             # VERSION / CHANGELOG / release notes / equates agree with the
+                                     #   tag namespace, and tools/abi_baseline.json reflects the newest
+                                     #   release tag (run after tagging; no VICE, no build)
 make check-harness-routing           # every device write in tools/ routes through the harness's
                                      #   managed layer (`transport.write_memory`) and never below it —
                                      #   see "Device traffic: the harness is the only route" below
