@@ -55,7 +55,10 @@ contract).
   it, that `make clean` leaves no artefact, and that dry runs are side-effect
   free. It also feeds a table of 3.81 and 4.x MAKEFLAGS strings to the
   dry-run classifier through a `MAKEFLAGS_UNDER_TEST` seam
-  (`make print-dry-classify`). Opt-in; not a prerequisite of `all`. All four
+  (`make print-dry-classify`). The seam is honoured only when it is given
+  on the command line and `print-dry-classify` is the sole goal. A value
+  from the environment, or one given with a build goal, is ignored, so the
+  seam cannot turn a real build into a dry one or the reverse. Opt-in; not a prerequisite of `all`. All four
   PRGs are sha256-identical before and after this change. All twelve
   archives have identical member bytes outside the Options/Files header
   sections, which hold an assembly datetime.

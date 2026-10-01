@@ -142,9 +142,15 @@ STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
 # a dash-less first word is the cluster; otherwise accept only single-dash
 # words made ENTIRELY of argument-less flag letters, which rejects
 # `-Otarget`, `-I/path`, `-j4` and every `--long` option. Every word is held
-# to that letter set either way. MAKEFLAGS_UNDER_TEST is a test seam for
-# tools/check_inc_deps.py's classifier table; nothing else sets it.
-MAKEFLAGS_FOR_CLASSIFIER := $(if $(filter undefined,$(origin MAKEFLAGS_UNDER_TEST)),$(MAKEFLAGS),$(MAKEFLAGS_UNDER_TEST))
+# to that letter set either way.
+#
+# MAKEFLAGS_UNDER_TEST is a test seam for tools/check_inc_deps.py's
+# classifier table. It is honoured ONLY when given on the command line AND
+# the sole goal is `print-dry-classify`, which builds nothing. An env value
+# (inherited, or set but empty) or a command-line value on a build goal is
+# ignored: steering a real build to "dry" skips the wipe and the stamp
+# update, and steering `make -n` to "real" makes a dry run destructive.
+MAKEFLAGS_FOR_CLASSIFIER := $(if $(and $(filter command line,$(origin MAKEFLAGS_UNDER_TEST)),$(filter print-dry-classify,$(MAKECMDGOALS)),$(if $(filter-out print-dry-classify,$(MAKECMDGOALS)),,yes)),$(MAKEFLAGS_UNDER_TEST),$(MAKEFLAGS))
 _mf_upto_dd = $(if $(strip $1),$(if $(filter --,$(firstword $1)),,$(firstword $1) $(call _mf_upto_dd,$(wordlist 2,$(words $1),$1))))
 _mf_strip_noarg = $(subst B,,$(subst L,,$(subst R,,$(subst S,,$(subst b,,$(subst d,,$(subst e,,$(subst i,,$(subst k,,$(subst n,,$(subst p,,$(subst q,,$(subst r,,$(subst s,,$(subst t,,$(subst w,,$1))))))))))))))))
 _mf_cluster = $(if $1,$(if $(call _mf_strip_noarg,$1),,$1))

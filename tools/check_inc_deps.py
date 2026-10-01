@@ -69,6 +69,10 @@ Legs
    nonbuild     -- every goal in NON_BUILD_PINNED (pinned here, not read
                    from the Makefile) leaves build/ untouched under
                    changed knobs.
+5b. seam-scope  -- MAKEFLAGS_UNDER_TEST from the environment (set, or set
+                   but empty) or on the command line of a BUILD goal is
+                   ignored: real builds still wipe and restamp, dry runs
+                   stay side-effect free.
 6. real-run     -- a real `make lib` with changed knobs still reassembles
                    and records the new knobs (legs 5 must not be bought by
                    disabling the invalidation).
@@ -115,6 +119,7 @@ CLASSIFIER_ROWS = [
     ("", False),                                        # no flags at all
     ("n", True), ("q", True), ("t", True),              # 3.81 / 4.x cluster
     ("kn", True), ("ks", False), ("k", False), ("s", False),
+    ("pq", True),                                       # `make -qp`: completion db dump
     (" --no-print-directory", False),                   # 3.81: long option only
     (" --no-print-directory -n", True),                 # 3.81: long options FIRST
     (" --no-print-directory -kn", True),
@@ -136,7 +141,9 @@ CLASSIFIER_ROWS = [
 # The same classifier reached through REAL flags (no seam): proves the
 # Makefile reads MAKEFLAGS itself when the seam is absent.
 CLASSIFIER_REAL = [([], False), (["-n"], True), (["-q"], True), (["-t"], True),
-                   (["-k"], False), (["-s", "-k"], False)]
+                   (["-k"], False), (["-s", "-k"], False),
+                   # shell completion's database-dump idiom: must not wipe
+                   (["-p", "-q"], True), (["-qp"], True)]
 DRY_RE = re.compile(r"^MAKE_DRY_RUN=\[(.*)\]$", re.M)
 
 INCLUDE_RE =re.compile(r'^\s*\.include\s+"([^"]+)"', re.IGNORECASE)
@@ -161,14 +168,18 @@ def clean_env() -> dict[str, str]:
     """
     env = dict(os.environ)
     for k in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEFILES",
-              "CONTRACT_DEFINES", "CONTRACT_ZP_DEFINES", "CA65FLAGS"):
+              "CONTRACT_DEFINES", "CONTRACT_ZP_DEFINES", "CA65FLAGS",
+              "MAKEFLAGS_UNDER_TEST"):
         env.pop(k, None)
     return env
 
 
-def make(work: Path, *args: str) -> subprocess.CompletedProcess:
+def make(work: Path, *args: str, env_extra: dict[str, str] | None = None,
+         ) -> subprocess.CompletedProcess:
+    env = clean_env()
+    env.update(env_extra or {})
     return subprocess.run(["make", "--no-print-directory", *args], cwd=work,
-                          env=clean_env(), capture_output=True, text=True)
+                          env=env, capture_output=True, text=True)
 
 
 def ca65_objects(output: str) -> dict[str, str]:
@@ -507,6 +518,54 @@ def run(work: Path) -> int:
             before = after
         else:
             print(f"[nonbuild] PASS: `make {goal}` with changed knobs left build/ untouched")
+
+    # ---- leg 5b: the classifier seam is scoped ---------------------------
+    # MAKEFLAGS_UNDER_TEST may steer the classifier ONLY from the command
+    # line AND only for `print-dry-classify`. An environment value -- or a
+    # command-line one on a build goal -- that steered a real build to
+    # "dry" would skip the wipe and the stamp update (stale objects on the
+    # next build); an EMPTY env value steering `make -n` to "real" would
+    # make a dry run destructive.
+    def classify(*args, env_extra=None):
+        m = DRY_RE.search(make(work, *args, env_extra=env_extra).stdout)
+        return None if not m else bool(m.group(1))
+
+    seam_bad = 0
+    got = classify("print-dry-classify", env_extra={"MAKEFLAGS_UNDER_TEST": "n"})
+    if got is not False:
+        seam_bad += 1
+        fail("seam-scope", f"env MAKEFLAGS_UNDER_TEST=n steered a plain `make` "
+             f"(classified {'DRY' if got else got})")
+    got = classify("-n", "print-dry-classify", env_extra={"MAKEFLAGS_UNDER_TEST": ""})
+    if got is not True:
+        seam_bad += 1
+        fail("seam-scope", f"empty env MAKEFLAGS_UNDER_TEST steered `make -n` "
+             f"(classified {'REAL' if got is False else got})")
+    before = snapshot(bdir)
+    make(work, "-n", "lib", "CONTRACT_DEFINES=-D LIB_SEAM_PROBE_Z=1",
+         env_extra={"MAKEFLAGS_UNDER_TEST": ""})
+    if snapshot(bdir) != before:
+        seam_bad += 1
+        fail("seam-scope", "`make -n lib` with changed knobs and an empty env "
+             "MAKEFLAGS_UNDER_TEST mutated build/ -- the dry run became destructive")
+    for how, knob_name in (("env", "LIB_SEAM_PROBE_X"), ("command-line", "LIB_SEAM_PROBE_Y")):
+        knob = f"CONTRACT_DEFINES=-D {knob_name}=1"
+        if how == "env":
+            r = make(work, "lib", knob, env_extra={"MAKEFLAGS_UNDER_TEST": "n"})
+        else:
+            r = make(work, "lib", knob, "MAKEFLAGS_UNDER_TEST=n")
+        rebuilt = set(ca65_objects(r.stdout))
+        st = stamp_text() or ""
+        missing = sorted(need_lib - rebuilt)
+        if r.returncode != 0 or missing or knob_name not in st:
+            seam_bad += 1
+            fail("seam-scope", f"{how} MAKEFLAGS_UNDER_TEST=n on a real `make lib` with "
+                 f"changed knobs: exit {r.returncode}, {len(missing)}/{len(need_lib)} "
+                 f"object(s) not reassembled, stamp {st!r} -- the seam turned a real "
+                 f"build into a dry one")
+    if not seam_bad:
+        print("[seam-scope] PASS: env / build-goal MAKEFLAGS_UNDER_TEST ignored; "
+              "real builds still wipe and restamp")
 
     # ---- leg 6: a REAL build with changed knobs still invalidates --------
     # Legs 5 must not be bought by disabling the stamp: the real run must
