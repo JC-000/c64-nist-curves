@@ -66,6 +66,24 @@ from pathlib import Path
 LEG_FUNCS = {}
 LEG_ENTERED = set()
 LEG_COMPLETED = set()
+# "Entered" is not "examined" (issue #167 re-review E2): a leg whose first
+# statement is `return` was entered, completed, and checked nothing. Each leg
+# reports what it examined, in real units, via note_examined(); a completed
+# invocation that examined nothing is a zero-examination failure, collected
+# here and asserted by _run_all_legs. A leg that may LEGITIMATELY examine
+# nothing must be listed in LEGS_MAY_EXAMINE_NONE (ratcheted: a listed leg that
+# did examine something fails as stale). Empty today.
+LEGS_MAY_EXAMINE_NONE = {}
+LEG_EXAMINED = {}          # leg name -> list of per-invocation {unit: count}
+LEG_ZERO_EXAMINED = []     # leg names whose invocation examined nothing
+_LEG_STACK = []
+
+
+def note_examined(n, unit):
+    """Record that the innermost running leg examined `n` items of `unit`."""
+    if _LEG_STACK:
+        counts = _LEG_STACK[-1][1]
+        counts[unit] = counts.get(unit, 0) + n
 
 
 def leg(fn):
@@ -74,8 +92,16 @@ def leg(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         LEG_ENTERED.add(fn.__name__)
-        result = fn(*args, **kwargs)
+        counts = {}
+        _LEG_STACK.append((fn.__name__, counts))
+        try:
+            result = fn(*args, **kwargs)
+        finally:
+            _LEG_STACK.pop()
         LEG_COMPLETED.add(fn.__name__)
+        LEG_EXAMINED.setdefault(fn.__name__, []).append(counts)
+        if not any(counts.values()):
+            LEG_ZERO_EXAMINED.append(fn.__name__)
         return result
     return wrapper
 
@@ -1374,6 +1400,7 @@ def zp_alias_audit(failures):
                   "refusing to conclude anything from what is missing")
             continue
         bad = False
+        note_examined(len(exports), "zp export")
         # (0) PARTITION RECONCILIATION. The sentinel above proves the dump has
         # something in it; this proves we have accounted for ALL of it. Every
         # name in the member must land in exactly one known bucket -- bare
@@ -1592,6 +1619,7 @@ def zp_alias_link_identity(failures):
                     continue
                 rc, out = sh(["ld65", "-C", str(td / "cfg"), "-Ln", str(td / "lbl"),
                               "-o", str(td / "o.prg"), str(td / "p.o"), str(archive)])
+                note_examined(len(pairs), "alias link")
                 unresolved = set(re.findall(r"Unresolved external '([^']+)'", out))
                 if not want_bare:
                     # SHA arm: the bare name must be absent from this archive.
@@ -1657,6 +1685,7 @@ def version_identity_check(failures):
         m = re.search(r'Name:\s*"LIB_NISTCURVES_VERSION_' + part
                       + r'"(?:.|\n)*?Value:\s*0x([0-9A-Fa-f]+)', out)
         got.append(str(int(m.group(1), 16)) if m else "?")
+        note_examined(1, "version component")
     if got != want:
         failures.append(f"version identity: VERSION file {'.'.join(want)} != equates {'.'.join(got)}")
         print(f"  IDENTITY FAIL: VERSION file says {'.'.join(want)}, built equates say {'.'.join(got)}")
@@ -1774,6 +1803,7 @@ def gated_surface_check(failures, archives):
                 print(f"  GATE FAIL [{arm}]: ungated dump unreadable")
                 continue
             owns = bare_gated(unames)
+            note_examined(1, "shipped arm")
             owned[obj] = sorted(owns)
 
             gobj = Path(td) / (obj + "_gated.o")
@@ -1937,6 +1967,7 @@ def app_owned_reachability_check(failures):
                 continue
             imports = od65_names(obj, "--dump-imports")
             exports = od65_names(obj, "--dump-exports")
+            note_examined(1, "deferring profile")
             leaked = sorted(exports & CT_MUL_PROVIDER_SYMS)
             if leaked:
                 failures.append(f"app-owned x {label}: deferring TU re-exports provider surface {leaked}")
@@ -2374,6 +2405,7 @@ def packaging_check(failures, archives):
             for d in adefs:
                 dargs += ["-D", d]
             arc, aout, lrc, lout, perr = _header_link(td, LIBDIR, src_cfg, apath, dargs)
+            note_examined(1, "header archive row")
             declared = header_declared_imports(td, LIBDIR, dargs)[0] or set()
             driven |= declared
             warns = _ld65_warnings(lout)
@@ -2566,6 +2598,7 @@ def gated_link_check(failures, archives):
             print(f"  GATED LINK FAIL [{aname}]: ar65 t failed")
             continue
         real = {Path(ln.strip()).stem for ln in out.splitlines() if ln.strip().endswith(".o")}
+        note_examined(1, "archive member list")
         if not real:
             failures.append(f"gated link [{aname}]: `ar65 t` listed no members, "
                             "so the reconciliation would be vacuous")
@@ -2869,6 +2902,7 @@ def gated_link_check(failures, archives):
                       f"externals reported:\n{glout.strip()}")
                 continue
             done.append((aname, len(ubare)))
+            note_examined(1, "gated archive link")
     # Issue #167: the success line used to print whenever all twelve gated
     # links completed, even directly beneath twelve "archive missing" /
     # member-reconciliation failures from this same leg.
@@ -2936,6 +2970,7 @@ def gate_tus_derivation_check(failures):
                 unreadable.append(label)
                 continue
             a, b = od65_export_names(ung), od65_export_names(gat)
+            note_examined(1, "source arm")
             if a is None or b is None or a is COUNT_MISMATCH or b is COUNT_MISMATCH:
                 unreadable.append(label)
                 continue
@@ -2987,6 +3022,7 @@ def zp_roster_reconciliation_check(failures):
         print("  ROSTER FAIL: no archives parsed")
         return
     covered = {a for arms in ZP_ARM_OBJECTS.values() for a in arms}
+    note_examined(len(archives), "archive")
     missing = sorted(archives - covered)
     phantom = sorted(covered - archives)
     keys = set(ZP_ARM_OBJECTS) | set(ZP_ARM_DEFINES) | set(ZP_ALIAS_ARMS)
@@ -3143,6 +3179,7 @@ def footprint_basis_check(failures):
                      line.strip())
         if m:
             starts[m.group(1)] = (int(m.group(2), 16), int(m.group(3), 16))
+            note_examined(1, "placed segment")
     real_fill = 0
     for seg in FOOTPRINT_ALIGNED & set(starts):
         if seg not in FOOTPRINT_SEGMENTS:
@@ -3257,6 +3294,7 @@ def sibling_sqtab_collision_check(failures):
     checked = pinned = 0
     for archive in archives:
         name = archive.name
+        note_examined(1, "archive")
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             (td / "cfg").write_text(CONSUMER_CFG)
@@ -3376,6 +3414,7 @@ def sibling_bare_collision_check(failures):
             failures.append(f"sibling collision: {name} not built")
             print(f"  SIBLING FAIL [{name}]: archive missing")
             continue
+        note_examined(1, "archive")
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             (td / "cfg").write_text(cfg)
@@ -3463,6 +3502,7 @@ def od65_extraction_canary(failures):
         objp = Path(obj)
         for mode in ("--dump-exports", "--dump-imports"):
             raw = sh(["od65", mode, obj])[1]
+            note_examined(1, "object dump")
             # Substring, never tokenised: immune to the padding by construction.
             nospace = set(re.findall(r'Name:"([^"]+)"', raw))
             if not nospace:
@@ -3610,6 +3650,7 @@ def app_owned_buffer_ownership_check(failures):
                 continue
             rc, out = sh(["ld65", "-C", str(td / "cfg"), "-o", str(td / "o.prg"),
                           str(td / "c.o"), str(archive)])
+            note_examined(1, "ownership link")
         if "Duplicate external identifier" in out:
             dup = sorted(set(re.findall(
                 r"Duplicate external identifier: '([^']+)'", out)))
@@ -3650,6 +3691,7 @@ def defines_staleness_check(failures):
     to skip it entirely)."""
     import shutil
     for sub in (_knob_staleness_legs, _zp_override_leg):
+        note_examined(1, "sub-leg")
         kb = Path(tempfile.mkdtemp(prefix="check_archives_knobs_"))
         try:
             sub(failures, kb)
@@ -3704,6 +3746,7 @@ def _knob_staleness_legs(failures, kb):
     for cmd, label in art_legs:
         rc, _ = sh(cmd)
         h = prg_sha()
+        note_examined(1, "PRG build")
         art_hashes.append(h)
         if label == "default" and h is not None:
             # DETERMINISTIC red (issue #167 review item 8). The skipped-link
@@ -3773,6 +3816,7 @@ def _knob_staleness_legs(failures, kb):
     ]
     for cmd, want, label in defines_legs:
         rc, out = sh(cmd)
+        note_examined(1, "object build")
         got = bare_version_exported()
         if rc or got != want:
             failures.append(
@@ -3793,6 +3837,7 @@ def _knob_staleness_legs(failures, kb):
     ]
     for cmd, want, label in legs:
         rc, out = sh(cmd)
+        note_examined(1, "object build")
         got = fp_src1_value()
         if rc or got != want:
             failures.append(f"knob-staleness: {label}: fp_src1={got if got is not None else '?'}, want {hex(want)} (rc={rc})")
@@ -3859,6 +3904,7 @@ def _zp_override_leg(failures, kb):
             print(f"  override SKIP [{arm}]: arm exports no bare zp_ptr2")
             continue
         _zp_override_probe(failures, arm, alias_obj, kb)
+        note_examined(1, "zp arm probed")
     print("  (each arm driven with a real -D through make, both spellings read "
           "from an ld65 map)")
 
@@ -3961,6 +4007,7 @@ def archive_contract_check(failures, archives, name):
         imports |= od65_names(o, "--dump-imports")
         exports |= od65_names(o, "--dump-exports")
     unresolved = imports - exports
+    note_examined(len(mods), "archive member")
     unexpected = sorted(unresolved - allow)
     stale = sorted(allow - unresolved)
     if unexpected:
@@ -4121,6 +4168,7 @@ def archive_population_check(failures, archives):
     "legs: 27 of 27", PASS."""
     print("\n=== per-archive population (Makefile vs every per-archive table) ===")
     built = set(archives)
+    note_examined(len(built), "archive")
     if not built:
         failures.append("archive population: no archive parsed from the Makefile")
         print("  POPULATION FAIL: no archives parsed")
@@ -4160,6 +4208,8 @@ LEG_REGISTRY_EXEMPT = {
     "_zp_arm_ragged": "per-arm roster helper called by two ZP legs",
     "_zp_override_probe": "per-arm probe called by _zp_override_leg",
 }
+_MUTATING_METHODS = {"append", "extend", "insert", "add", "update",
+                     "setdefault", "__setitem__", "__iadd__"}
 _LEG_NAME_RE = re.compile(r".*_(check|canary|leg|legs|audit|identity)")
 
 
@@ -4177,11 +4227,27 @@ def _leg_shaped_functions():
         if not isinstance(node, ast.FunctionDef):
             continue
         params = {a.arg for a in node.args.args}
-        appends_param = any(
-            isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
-            and c.func.attr == "append" and isinstance(c.func.value, ast.Name)
-            and (c.func.value.id in params or "fail" in c.func.value.id)
-            for c in ast.walk(node))
+        def hit(name_node):
+            return (isinstance(name_node, ast.Name)
+                    and (name_node.id in params or "fail" in name_node.id))
+
+        # Any MUTATION of a parameter (or of a name containing "fail"), not
+        # only .append (issue #167 re-review E1: `errs.extend([...])` in an
+        # unregistered function passed): a mutating method call, an augmented
+        # assignment, or a subscript assignment.
+        appends_param = False
+        for c in ast.walk(node):
+            if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                    and c.func.attr in _MUTATING_METHODS and hit(c.func.value)):
+                appends_param = True
+            elif isinstance(c, ast.AugAssign) and (
+                    hit(c.target) or (isinstance(c.target, ast.Subscript)
+                                      and hit(c.target.value))):
+                appends_param = True
+            elif isinstance(c, ast.Assign) and any(
+                    isinstance(t, ast.Subscript) and hit(t.value)
+                    for t in c.targets):
+                appends_param = True
         if (_LEG_NAME_RE.fullmatch(node.name)
                 or any("fail" in p for p in params) or appends_param):
             decorated = any(isinstance(d, ast.Name) and d.id == "leg"
@@ -4200,6 +4266,7 @@ def leg_registry_check(failures, registered):
     own registration is caught as well (re-review C)."""
     print("\n=== leg registry (leg-shaped functions vs @leg vs registered) ===")
     shaped = _leg_shaped_functions()
+    note_examined(len(shaped), "leg-shaped function")
     undecorated = {n for n, d in shaped.items() if not d}
     missing = sorted(undecorated - set(LEG_REGISTRY_EXEMPT))
     stale_exempt = sorted(set(LEG_REGISTRY_EXEMPT) - undecorated)
@@ -4227,6 +4294,9 @@ def leg_registry_check(failures, registered):
 def cfg_placement_check(failures):
     """(c) src/c64.cfg placement invariant -- see cfg_bss_before_emitting."""
     m, offenders = cfg_bss_before_emitting()
+    if m is not None:
+        note_examined(len(re.findall(r"^\s*[A-Za-z_]\w*\s*:.*load\s*=\s*MAIN",
+                                     m.group(1), re.M)), "MAIN segment")
     print("\n=== src/c64.cfg placement ===")
     if m is None:
         failures.append("c64.cfg: could not parse SEGMENTS block")
@@ -4311,6 +4381,26 @@ def _run_all_legs():
     if never:
         failures.append(f"run log: @leg functions {never} never ran -- a "
                         "registration or a sub-leg call was dropped")
+    # Zero-examination guard (re-review E2).
+    zero = sorted(set(LEG_ZERO_EXAMINED) - set(LEGS_MAY_EXAMINE_NONE))
+    stale_none = sorted(n for n in LEGS_MAY_EXAMINE_NONE
+                        if any(any(c.values()) for c in LEG_EXAMINED.get(n, [])))
+    total = {}
+    for runs in LEG_EXAMINED.values():
+        for c in runs:
+            for u, k in c.items():
+                total[u] = total.get(u, 0) + k
+    print(f"examined: {sum(total.values())} items across "
+          f"{sum(len(r) for r in LEG_EXAMINED.values())} leg invocations"
+          + (f"; ZERO-EXAMINATION: {zero}" if zero else ""))
+    if zero:
+        failures.append(f"run log: legs {zero} completed having examined "
+                        "NOTHING -- an early return or an emptied population; "
+                        "a leg with a legitimately empty population must be "
+                        "listed in LEGS_MAY_EXAMINE_NONE")
+    if stale_none:
+        failures.append(f"run log: LEGS_MAY_EXAMINE_NONE lists {stale_none}, "
+                        "which examined something -- shrink the table")
 
     if failures:
         print("ARCHIVE CONTRACT RATCHET: FAIL")
