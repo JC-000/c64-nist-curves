@@ -229,8 +229,12 @@ object's header edges (`make check-inc-deps` catches it). Before #178 no
 recipe named its `.include`d headers, so editing one left `make` / `make lib-*`
 saying "Nothing to be done" over a stale artifact. The `CONTRACT_DEFINES`
 knob-stamp wipe is skipped under `-n` / `-q` / `-t` and for goals that build
-nothing; the dry-run classifier is unit-tested through the command-line-only
-`MAKEFLAGS_UNDER_TEST` seam on `make print-dry-classify`. `make clean` removes
+nothing. The dry-run classifier reads `$(MFLAGS)` (make's own decoding),
+never MAKEFLAGS letters: under `make -e` an environment MAKEFLAGS such as
+`--t` reaches parse time raw, and misreading it shipped a 0-byte archive
+(issue #180). A command-line `MFLAGS=` is refused. The classifier is
+unit-tested through the command-line-only `MFLAGS_UNDER_TEST` seam on
+`make print-dry-classify`. `make clean` removes
 the variant PRGs, labels and `.d` files but keeps the knob stamp on purpose.
 **Hash note:** `od65 --dump-all` prints no segment bytes, so an od65-based
 hash of an archive cannot see a code-byte change; compare raw member bytes

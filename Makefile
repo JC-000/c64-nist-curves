@@ -129,34 +129,43 @@ STORED_KNOBS  := $(strip $(shell cat $(CONTRACT_STAMP) 2>/dev/null))
 # Finding the flags. A false DRY verdict on a real build is the dangerous
 # direction: it skips the wipe AND the stamp update, so the next build with
 # the old knobs answers "Nothing to be done" over objects built with the new
-# ones. MAKEFLAGS differs by make version:
-#   3.81 (macOS /usr/bin/make, measured): "n", or with a long option
-#        " --no-print-directory -n" -- long options FIRST, cluster dash-led,
-#        so the common `$(firstword -$(MAKEFLAGS))` idiom misses `-n`.
-#   4.x: the single-letter cluster, if any, is the FIRST word and carries no
-#        dash ("kn -Otarget -I/path --no-print-directory -- VAR=val"). With
-#        no cluster the first word is an option such as `-Otarget` or `-I/x`,
-#        whose argument can hold an n/q/t.
-# So: stop at the `--` that opens the command-line-variable section (its
-# escaped-space fragments, e.g. `../shared/include`, are values, not flags);
-# a dash-less first word is the cluster; otherwise accept only single-dash
-# words made ENTIRELY of argument-less flag letters, which rejects
-# `-Otarget`, `-I/path`, `-j4` and every `--long` option. Every word is held
-# to that letter set either way.
+# ones. A false REAL verdict on `-t` is worse still (issue #180): the stamp
+# records the new knobs, touch then re-creates every wiped target as a 0-byte
+# file, and the next real build exits 0 shipping an empty archive.
 #
-# MAKEFLAGS_UNDER_TEST is a test seam for tools/check_inc_deps.py's
-# classifier table. It is honoured ONLY when given on the command line AND
-# the sole goal is `print-dry-classify`, which builds nothing. An env value
-# (inherited, or set but empty) or a command-line value on a build goal is
-# ignored: steering a real build to "dry" skips the wipe and the stamp
-# update, and steering `make -n` to "real" makes a dry run destructive.
-MAKEFLAGS_FOR_CLASSIFIER := $(if $(and $(filter command line,$(origin MAKEFLAGS_UNDER_TEST)),$(filter print-dry-classify,$(MAKECMDGOALS)),$(if $(filter-out print-dry-classify,$(MAKECMDGOALS)),,yes)),$(MAKEFLAGS_UNDER_TEST),$(MAKEFLAGS))
-_mf_upto_dd = $(if $(strip $1),$(if $(filter --,$(firstword $1)),,$(firstword $1) $(call _mf_upto_dd,$(wordlist 2,$(words $1),$1))))
+# Read $(MFLAGS), not MAKEFLAGS (issue #180, after c64-x25519 #168). MFLAGS
+# is make's OWN decoding of the flags it is obeying. MAKEFLAGS is not: under
+# `make -e` an environment MAKEFLAGS reaches parse time raw, and 3.81 still
+# obeys long-option prefixes and getopt clusters in it. Measured on 3.81:
+#     env MAKEFLAGS='--t'   make -e  ->  MAKEFLAGS=[--t]   MFLAGS=[-te]
+#     env MAKEFLAGS='-ntx'  make -e  ->  MAKEFLAGS=[-ntx]  MFLAGS=[-tne]
+#     env MAKEFLAGS='-I -n' make -e  ->  MAKEFLAGS=[-I -n] MFLAGS=[-e]  (real)
+#     --no-print-directory -n        ->  MFLAGS=[- --no-print-directory -n]
+#     sub-make under -n              ->  MFLAGS=[-n]
+#     env MFLAGS=-n (with or without -e) is overwritten by make: MFLAGS=[]
+# GNU make 4.x documents MFLAGS as MAKEFLAGS without the variable section
+# and always dash-led ("-kn -Otarget -I/x --no-print-directory", or
+# "- -Otarget" with no cluster). So on both: take the single-dash words,
+# drop `--long` ones, and accept a word only if it is made ENTIRELY of
+# argument-less flag letters; that rejects `-Otarget`, `-I/path`, `-j4`.
+#
+# A command-line `MFLAGS=` is believed by make (origin `command line`) while
+# the real flags are something else, so it is refused outright.
+ifeq ($(origin MFLAGS),command line)
+$(error MFLAGS may not be set on the command line: this Makefile reads it to tell a dry run (-n/-q/-t) from a real build, and a forged value would skip or force the CONTRACT_DEFINES invalidation (issue #180))
+endif
+#
+# MFLAGS_UNDER_TEST is a test seam for tools/check_inc_deps.py's classifier
+# table (MFLAGS-shaped strings). It is honoured ONLY when given on the
+# command line AND the sole goal is `print-dry-classify`, which builds
+# nothing. An env value (inherited, or set but empty) or a command-line
+# value on a build goal is ignored: steering a real build to "dry" skips the
+# wipe and the stamp update, and steering `make -n` to "real" makes a dry run
+# destructive.
+MFLAGS_FOR_CLASSIFIER := $(if $(and $(filter command line,$(origin MFLAGS_UNDER_TEST)),$(filter print-dry-classify,$(MAKECMDGOALS)),$(if $(filter-out print-dry-classify,$(MAKECMDGOALS)),,yes)),$(MFLAGS_UNDER_TEST),$(MFLAGS))
 _mf_strip_noarg = $(subst B,,$(subst L,,$(subst R,,$(subst S,,$(subst b,,$(subst d,,$(subst e,,$(subst i,,$(subst k,,$(subst n,,$(subst p,,$(subst q,,$(subst r,,$(subst s,,$(subst t,,$(subst w,,$1))))))))))))))))
 _mf_cluster = $(if $1,$(if $(call _mf_strip_noarg,$1),,$1))
-MF_WORDS := $(strip $(call _mf_upto_dd,$(MAKEFLAGS_FOR_CLASSIFIER)))
-MF_FIRST := $(firstword $(MF_WORDS))
-MAKE_FLAG_WORD := $(if $(filter -%,$(MF_FIRST)),$(foreach w,$(filter-out --%,$(filter -%,$(MF_WORDS))),$(call _mf_cluster,$(patsubst -%,%,$(w)))),$(call _mf_cluster,$(MF_FIRST)))
+MAKE_FLAG_WORD := $(strip $(foreach w,$(filter-out --%,$(filter -%,$(MFLAGS_FOR_CLASSIFIER))),$(call _mf_cluster,$(patsubst -%,%,$(w)))))
 MAKE_DRY_RUN := $(findstring n,$(MAKE_FLAG_WORD))$(findstring q,$(MAKE_FLAG_WORD))$(findstring t,$(MAKE_FLAG_WORD))
 #
 # Goals that build nothing from src/ must not invalidate build/ either: a

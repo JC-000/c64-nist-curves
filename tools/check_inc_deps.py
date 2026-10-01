@@ -40,10 +40,13 @@ Legs
 0. population   -- includes, objects and the include->object map are all
                    non-empty; every discovered header and every including
                    source reaches >= 1 built object.
-1b. classifier  -- the Makefile's dry-run classifier, fed realistic GNU make
-                   3.81 and 4.x MAKEFLAGS strings through the
-                   MAKEFLAGS_UNDER_TEST seam (`make print-dry-classify`),
-                   plus real -n/-q/-t/-k invocations with no seam.
+1b. classifier  -- the Makefile's dry-run classifier (reads $(MFLAGS)), fed
+                   realistic GNU make 3.81 and 4.x MFLAGS strings through
+                   the MFLAGS_UNDER_TEST seam (`make print-dry-classify`),
+                   plus real invocations (-n/-q/-t/-k, long-option
+                   prefixes, getopt clusters) and environment MAKEFLAGS
+                   with and without `-e` (issue #180).
+1c. mflags-refuse -- a command-line `MFLAGS=` is refused, for any goal.
 1. precondition -- after a full build, `make -q <every object>` reports
                    up to date.  Without this, leg 3 could pass because
                    objects were stale for some unrelated reason.
@@ -69,10 +72,17 @@ Legs
    nonbuild     -- every goal in NON_BUILD_PINNED (pinned here, not read
                    from the Makefile) leaves build/ untouched under
                    changed knobs.
-5b. seam-scope  -- MAKEFLAGS_UNDER_TEST from the environment (set, or set
+5b. seam-scope  -- MFLAGS_UNDER_TEST from the environment (set, or set
                    but empty) or on the command line of a BUILD goal is
                    ignored: real builds still wipe and restamp, dry runs
                    stay side-effect free.
+5c. env-e       -- real `make -e lib` under env MAKEFLAGS --t/--dr/--que/
+                   -ntx/--touch/--just-print with changed knobs: nothing
+                   deleted or resized, stamp unchanged; the next real build
+                   with the same knobs reassembles all of lib and produces a
+                   non-empty archive (issue #180's 0-byte archive).
+5d. q-paths     -- `make -q` on all 12 archives and 4 PRGs: 0 with
+                   unchanged knobs, 1 with changed knobs.
 6. real-run     -- a real `make lib` with changed knobs still reassembles
                    and records the new knobs (legs 5 must not be bought by
                    disabling the invalidation).
@@ -109,41 +119,55 @@ PUBLIC_TARGETS = [
 NON_BUILD_PINNED = {"clean", "dist", "check-harness-routing", "check-release-notes",
                     "check-release-state", "check-inc-deps", "print-dry-classify"}
 
-# Dry-run classifier table (leg 1b). Each row is a MAKEFLAGS string as GNU
-# make 3.81 or 4.x would present it at parse time, fed to the Makefile's
-# classifier through the MAKEFLAGS_UNDER_TEST seam, and whether it means a
-# dry run (-n / -q / -t). The dangerous direction is a REAL build classified
-# as dry: it skips the knob wipe AND the stamp update, so the next build with
-# the old knobs answers "Nothing to be done" over objects built with the new.
+# Dry-run classifier table (leg 1b). The classifier reads $(MFLAGS) -- make's
+# OWN decoding of its flags, always dash-led, never carrying command-line
+# variables -- not MAKEFLAGS letters (issue #180: under `make -e` an
+# environment MAKEFLAGS reaches parse time un-normalised, e.g. `--t` or
+# `-ntx`, while MFLAGS reads `-te` / `-tne`). Each row is an MFLAGS string as
+# GNU make 3.81 (measured) or 4.x (documented: MAKEFLAGS minus variables,
+# with a leading dash) presents it, fed through the MFLAGS_UNDER_TEST seam.
+# The dangerous direction is a REAL build classified as dry: it skips the
+# knob wipe AND the stamp update, so the next build with the old knobs
+# answers "Nothing to be done" over objects built with the new ones.
 CLASSIFIER_ROWS = [
     ("", False),                                        # no flags at all
-    ("n", True), ("q", True), ("t", True),              # 3.81 / 4.x cluster
-    ("kn", True), ("ks", False), ("k", False), ("s", False),
-    ("pq", True),                                       # `make -qp`: completion db dump
-    (" --no-print-directory", False),                   # 3.81: long option only
-    (" --no-print-directory -n", True),                 # 3.81: long options FIRST
-    (" --no-print-directory -kn", True),
-    (" --no-print-directory -s", False),
-    ("n --no-print-directory -- CONTRACT_DEFINES=-D\\ X", True),   # 4.x
-    ("k -Otarget -I../inc -- CONTRACT_DEFINES=-I\\ ../shared/include", False),
-    ("kt -Otarget", True),
-    (" -Otarget", False),                               # 4.x: -O arg holds a 't'
-    (" -j4 -Otarget --no-print-directory", False),
-    (" -I/usr/include -- X=1", False),                  # 4.x: -I path holds an 'n'
-    (" -- CONTRACT_DEFINES=-I\\ ../shared/include", False),  # var fragment holds an 'n'
-    (" -- CONTRACT_DEFINES=-Dnone\\ -Dq", False),       # dash-led var fragment
-    (" --no-print-directory -- X=n", False),
-    # A variable fragment that is itself a valid flag cluster: only the
-    # stop-at-`--` rule can tell it from a real `-t` / `-n`.
-    (" --no-print-directory -- CONTRACT_DEFINES=-D\\ X\\ -t", False),
-    (" -- EXTRA=x\\ -n", False),
+    ("-n", True), ("-q", True), ("-t", True),
+    ("-kn", True), ("-sk", False), ("-k", False), ("-s", False),
+    ("-qp", True),                                      # `make -qp`: completion db dump
+    ("-te", True), ("-tne", True), ("-ne", True),       # 3.81 under -e (measured)
+    ("-e", False), ("-ke", False),
+    ("- --no-print-directory", False),                  # 3.81: long options first
+    ("- --no-print-directory -n", True),
+    ("- --no-print-directory -kn", True),
+    ("- --no-print-directory -s", False),
+    ("-kn -Otarget -I../inc --no-print-directory", True),   # 4.x shapes
+    ("-kt -Otarget", True),
+    ("- -Otarget", False),                              # 4.x: -O arg holds a 't'
+    ("- -j4 -Otarget --no-print-directory", False),
+    ("- -I/usr/include", False),                        # 4.x: -I path holds an 'n'
+    ("-k -I/n/q/t", False),
+    ("-ks --jobserver-auth=3,4", False),
+    ("- --debug=n", False),                             # long option value
 ]
 # The same classifier reached through REAL flags (no seam): proves the
-# Makefile reads MAKEFLAGS itself when the seam is absent.
+# Makefile reads make's own flags when the seam is absent. Long-option
+# prefixes and getopt clusters are decoded by make, not by us.
 CLASSIFIER_REAL = [([], False), (["-n"], True), (["-q"], True), (["-t"], True),
                    (["-k"], False), (["-s", "-k"], False),
                    # shell completion's database-dump idiom: must not wipe
-                   (["-p", "-q"], True), (["-qp"], True)]
+                   (["-p", "-q"], True), (["-qp"], True),
+                   (["--t"], True), (["--dr"], True), (["--que"], True),
+                   (["--just"], True), (["--recon"], True), (["--touch"], True),
+                   (["-nI", "/tmp"], True), (["-I", "-n"], False),
+                   (["-I", "/tmp/nnn"], False), (["-W", "foo", "-n"], True)]
+# Environment MAKEFLAGS, with and without `-e` (issue #180). Without -e make
+# normalises it; with -e it reaches parse time raw, and only MFLAGS shows
+# what make will actually do.
+CLASSIFIER_ENV = [("--t", True), ("--dr", True), ("--que", True), ("-ntx", True),
+                  ("--touch", True), ("--just-print", True), ("-I -n", False),
+                  ("k", False), ("n", True)]
+# Real `make -e lib` invocations under these env MAKEFLAGS (leg 5c).
+ENV_E_PROBES = ["--t", "--dr", "--que", "-ntx", "--touch", "--just-print"]
 DRY_RE = re.compile(r"^MAKE_DRY_RUN=\[(.*)\]$", re.M)
 
 INCLUDE_RE =re.compile(r'^\s*\.include\s+"([^"]+)"', re.IGNORECASE)
@@ -169,7 +193,7 @@ def clean_env() -> dict[str, str]:
     env = dict(os.environ)
     for k in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEFILES",
               "CONTRACT_DEFINES", "CONTRACT_ZP_DEFINES", "CA65FLAGS",
-              "MAKEFLAGS_UNDER_TEST"):
+              "MFLAGS_UNDER_TEST"):
         env.pop(k, None)
     return env
 
@@ -311,17 +335,17 @@ def run(work: Path) -> int:
     # ---- leg 1b: dry-run classifier -------------------------------------
     cls_bad = 0
     for mf, want in CLASSIFIER_ROWS:
-        r = make(work, "print-dry-classify", f"MAKEFLAGS_UNDER_TEST={mf}")
+        r = make(work, "print-dry-classify", f"MFLAGS_UNDER_TEST={mf}")
         m = DRY_RE.search(r.stdout)
         if not m:
             cls_bad += 1
-            fail("classifier", f"MAKEFLAGS={mf!r}: no MAKE_DRY_RUN line printed -- "
+            fail("classifier", f"MFLAGS={mf!r}: no MAKE_DRY_RUN line printed -- "
                  f"the print-dry-classify seam is missing")
             continue
         got = bool(m.group(1))
         if got != want:
             cls_bad += 1
-            fail("classifier", f"MAKEFLAGS={mf!r} classified "
+            fail("classifier", f"MFLAGS={mf!r} classified "
                  f"{'DRY' if got else 'REAL'} (MAKE_DRY_RUN=[{m.group(1)}]), "
                  f"expected {'DRY' if want else 'REAL'}")
     for flags, want in CLASSIFIER_REAL:
@@ -340,9 +364,41 @@ def run(work: Path) -> int:
                 fail("classifier", f"real `make {' '.join(extra + flags)}` classified "
                      f"{'DRY' if got else 'REAL'} (line: {m.group(0) if m else None}), "
                      f"expected {'DRY' if want else 'REAL'}")
+    for envmf, want in CLASSIFIER_ENV:
+        for e_flag in (["-e"], []):
+            env = clean_env()
+            env["MAKEFLAGS"] = envmf
+            r = subprocess.run(["make", *e_flag, "print-dry-classify"], cwd=work,
+                               env=env, capture_output=True, text=True)
+            m = DRY_RE.search(r.stdout)
+            what = f"env MAKEFLAGS={envmf!r} `make {' '.join(e_flag)}`"
+            if not m:
+                cls_bad += 1
+                fail("classifier", f"{what}: no MAKE_DRY_RUN line printed "
+                     f"(exit {r.returncode}: {r.stderr.strip()[-200:]})")
+                continue
+            got = bool(m.group(1))
+            if got != want:
+                cls_bad += 1
+                fail("classifier", f"{what} classified {'DRY' if got else 'REAL'} "
+                     f"({m.group(0)}), expected {'DRY' if want else 'REAL'}")
     if not cls_bad:
         print(f"[classifier] PASS: {len(CLASSIFIER_ROWS)} seam row(s) + "
-              f"{2 * len(CLASSIFIER_REAL)} real-flag row(s) classified correctly")
+              f"{2 * len(CLASSIFIER_REAL)} real-flag row(s) + "
+              f"{2 * len(CLASSIFIER_ENV)} env-MAKEFLAGS row(s) classified correctly")
+
+    # ---- leg 1c: a command-line MFLAGS= is refused ------------------------
+    # make BELIEVES a command-line `MFLAGS=-n` (origin `command line`) while
+    # actually running a real build, so a classifier reading MFLAGS could be
+    # lied to. The Makefile must refuse it outright, for any goal.
+    for goal in ("print-dry-classify", "lib"):
+        r = make(work, goal, "MFLAGS=-n")
+        if r.returncode == 0 or "MFLAGS" not in r.stderr:
+            fail("mflags-refuse", f"`make {goal} MFLAGS=-n` was accepted (exit "
+                 f"{r.returncode}); stderr: {r.stderr.strip()[-200:]!r}")
+        else:
+            print(f"[mflags-refuse] PASS: `make {goal} MFLAGS=-n` refused: "
+                  f"{r.stderr.strip().splitlines()[-1][:120]}")
 
     # ---- leg 1: precondition --------------------------------------------
     build = make(work, *PUBLIC_TARGETS, *objs)
@@ -525,7 +581,7 @@ def run(work: Path) -> int:
             print(f"[nonbuild] PASS: `make {goal}` with changed knobs left build/ untouched")
 
     # ---- leg 5b: the classifier seam is scoped ---------------------------
-    # MAKEFLAGS_UNDER_TEST may steer the classifier ONLY from the command
+    # MFLAGS_UNDER_TEST may steer the classifier ONLY from the command
     # line AND only for `print-dry-classify`. An environment value -- or a
     # command-line one on a build goal -- that steered a real build to
     # "dry" would skip the wipe and the stamp update (stale objects on the
@@ -536,47 +592,120 @@ def run(work: Path) -> int:
         return None if not m else bool(m.group(1))
 
     seam_bad = 0
-    got = classify("print-dry-classify", env_extra={"MAKEFLAGS_UNDER_TEST": "n"})
+    got = classify("print-dry-classify", env_extra={"MFLAGS_UNDER_TEST": "-n"})
     if got is None:
         seam_bad += 1
-        fail("seam-scope", "env MAKEFLAGS_UNDER_TEST=n on a plain `make`: no MAKE_DRY_RUN "
+        fail("seam-scope", "env MFLAGS_UNDER_TEST=-n on a plain `make`: no MAKE_DRY_RUN "
              "line printed -- the print-dry-classify seam is missing")
     elif got:
         seam_bad += 1
-        fail("seam-scope", "env MAKEFLAGS_UNDER_TEST=n steered a plain `make` (classified DRY)")
-    got = classify("-n", "print-dry-classify", env_extra={"MAKEFLAGS_UNDER_TEST": ""})
+        fail("seam-scope", "env MFLAGS_UNDER_TEST=-n steered a plain `make` (classified DRY)")
+    got = classify("-n", "print-dry-classify", env_extra={"MFLAGS_UNDER_TEST": ""})
     if got is None:
         seam_bad += 1
-        fail("seam-scope", "empty env MAKEFLAGS_UNDER_TEST with `make -n`: no MAKE_DRY_RUN "
+        fail("seam-scope", "empty env MFLAGS_UNDER_TEST with `make -n`: no MAKE_DRY_RUN "
              "line printed -- the print-dry-classify seam is missing")
     elif not got:
         seam_bad += 1
-        fail("seam-scope", "empty env MAKEFLAGS_UNDER_TEST steered `make -n` (classified REAL)")
+        fail("seam-scope", "empty env MFLAGS_UNDER_TEST steered `make -n` (classified REAL)")
     before = snapshot(bdir)
     make(work, "-n", "lib", "CONTRACT_DEFINES=-D LIB_SEAM_PROBE_Z=1",
-         env_extra={"MAKEFLAGS_UNDER_TEST": ""})
+         env_extra={"MFLAGS_UNDER_TEST": ""})
     if snapshot(bdir) != before:
         seam_bad += 1
         fail("seam-scope", "`make -n lib` with changed knobs and an empty env "
-             "MAKEFLAGS_UNDER_TEST mutated build/ -- the dry run became destructive")
+             "MFLAGS_UNDER_TEST mutated build/ -- the dry run became destructive")
     for how, knob_name in (("env", "LIB_SEAM_PROBE_X"), ("command-line", "LIB_SEAM_PROBE_Y")):
         knob = f"CONTRACT_DEFINES=-D {knob_name}=1"
         if how == "env":
-            r = make(work, "lib", knob, env_extra={"MAKEFLAGS_UNDER_TEST": "n"})
+            r = make(work, "lib", knob, env_extra={"MFLAGS_UNDER_TEST": "-n"})
         else:
-            r = make(work, "lib", knob, "MAKEFLAGS_UNDER_TEST=n")
+            r = make(work, "lib", knob, "MFLAGS_UNDER_TEST=-n")
         rebuilt = set(ca65_objects(r.stdout))
         st = stamp_text() or ""
         missing = sorted(need_lib - rebuilt)
         if r.returncode != 0 or missing or knob_name not in st:
             seam_bad += 1
-            fail("seam-scope", f"{how} MAKEFLAGS_UNDER_TEST=n on a real `make lib` with "
+            fail("seam-scope", f"{how} MFLAGS_UNDER_TEST=-n on a real `make lib` with "
                  f"changed knobs: exit {r.returncode}, {len(missing)}/{len(need_lib)} "
                  f"object(s) not reassembled, stamp {st!r} -- the seam turned a real "
                  f"build into a dry one")
     if not seam_bad:
-        print("[seam-scope] PASS: env / build-goal MAKEFLAGS_UNDER_TEST ignored; "
+        print("[seam-scope] PASS: env / build-goal MFLAGS_UNDER_TEST ignored; "
               "real builds still wipe and restamp")
+
+    # ---- leg 5c: environment MAKEFLAGS under `make -e` (issue #180) ------
+    # Under -e an env MAKEFLAGS reaches parse time un-normalised (`--t`,
+    # `-ntx`), and make still obeys it. Measured on the pre-#180 Makefile:
+    # `MAKEFLAGS='--t' make -e lib CONTRACT_DEFINES=...` wiped, restamped and
+    # touched -> 0-byte archive, and the next real build with the same knobs
+    # said "Nothing to be done" and shipped it. Each probe: nothing deleted,
+    # nothing emptied, stamp unchanged; then a REAL build with the same knobs
+    # must reassemble everything and produce a non-empty archive.
+    archive = bdir / "lib" / "nistcurves.a"
+    for i, envmf in enumerate(ENV_E_PROBES):
+        knob_name = f"LIB_ENV_E_PROBE_{i}"
+        knob = f"CONTRACT_DEFINES=-D {knob_name}=1"
+        before = snapshot(bdir)
+        s0 = stamp_text()
+        env = clean_env()
+        env["MAKEFLAGS"] = envmf
+        subprocess.run(["make", "-e", "lib", knob], cwd=work, env=env,
+                       capture_output=True, text=True)
+        after = snapshot(bdir)
+        gone = sorted(set(before) - set(after))
+        emptied = sorted(k for k in set(before) & set(after)
+                         if before[k][0] != after[k][0])
+        bad = False
+        if gone or emptied or stamp_text() != s0:
+            bad = True
+            fail("env-e", f"env MAKEFLAGS={envmf!r} `make -e lib` with changed knobs: "
+                 f"{len(gone)} deleted (e.g. {gone[:3]}), {len(emptied)} resized "
+                 f"(e.g. {emptied[:3]}), stamp {s0!r} -> {stamp_text()!r}")
+        r = make(work, "lib", knob)
+        rebuilt = set(ca65_objects(r.stdout))
+        missing = sorted(need_lib - rebuilt)
+        size = archive.stat().st_size if archive.is_file() else -1
+        if r.returncode != 0 or missing or size <= 0 or knob_name not in (stamp_text() or ""):
+            bad = True
+            fail("env-e", f"after env MAKEFLAGS={envmf!r} `make -e`, a real `make lib` with "
+                 f"the same knobs: exit {r.returncode}, {len(missing)}/{len(need_lib)} "
+                 f"object(s) not reassembled, nistcurves.a {size} B, stamp "
+                 f"{stamp_text()!r}")
+        if not bad:
+            print(f"[env-e] PASS: env MAKEFLAGS={envmf!r} `make -e lib` left build/ intact; "
+                  f"next real build reassembled {len(rebuilt)}, archive {size} B")
+
+    # ---- leg 5d: -q on every shipped artifact path (issue #180 point 3) --
+    # With changed knobs, `make -q <artifact>` must answer "stale" (exit 1)
+    # for every archive and PRG, so a consumer's `make -q x || make lib`
+    # cannot keep a stale archive. Control: unchanged knobs answer 0.
+    full = make(work, *PUBLIC_TARGETS)
+    if full.returncode != 0:
+        fail("q-paths", f"full build before -q probe failed: {full.stderr[-500:]}")
+    arts = sorted((bdir / "lib").glob("*.a")) + sorted(bdir.glob("*.prg"))
+    n_a = sum(1 for a in arts if a.suffix == ".a")
+    n_p = sum(1 for a in arts if a.suffix == ".prg")
+    if n_a != 12 or n_p != 4:
+        fail("q-paths", f"expected 12 archives + 4 PRGs, found {n_a} + {n_p}")
+    q_bad = 0
+    for a in arts:
+        rel = str(a.relative_to(work))
+        c = make(work, "-q", rel).returncode
+        s = make(work, "-q", rel, "CONTRACT_DEFINES=-D LIB_Q_PATH_PROBE=1").returncode
+        if c != 0 or s != 1:
+            q_bad += 1
+            fail("q-paths", f"`make -q {rel}`: unchanged knobs exit {c} (want 0), "
+                 f"changed knobs exit {s} (want 1)")
+    pkg = [p for p in (bdir / "lib" / "nistcurves.inc",
+                       bdir / "lib" / "cfg" / "nistcurves-example.cfg") if p.is_file()]
+    pkg_q = {str(p.relative_to(work)):
+             make(work, "-q", str(p.relative_to(work)),
+                  "CONTRACT_DEFINES=-D LIB_Q_PATH_PROBE=1").returncode for p in pkg}
+    if not q_bad and arts:
+        print(f"[q-paths] PASS: {n_a} archive(s) + {n_p} PRG(s) answer -q 0 unchanged / "
+              f"1 with changed knobs; packaging copies (knob-independent, verbatim) "
+              f"answer {pkg_q}")
 
     # ---- leg 6: a REAL build with changed knobs still invalidates --------
     # Legs 5 must not be bought by disabling the stamp: the real run must

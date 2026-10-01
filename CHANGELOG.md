@@ -33,14 +33,27 @@ contract).
   rebuild (`-n` prints it, `-q` answers "stale"); goals that build nothing
   (`clean`, `dist`, `check-release-*`, `check-harness-routing`,
   `check-inc-deps`) leave it alone as well. A real build with changed knobs
-  invalidates exactly as before (check-archives' staleness leg passes). The
-  dry-run test reads MAKEFLAGS in both the GNU make 3.81 form (long options
-  first, then a dash-led cluster) and the 4.x form (a dash-less cluster
-  first). It stops at the `--` that opens the command-line-variable section,
-  and it accepts only words made entirely of argument-less flag letters, so
-  `-Otarget`, `-I/path` and variable fragments such as `../shared/include`
-  cannot pass for `-n`/`-q`/`-t`. That mistake would turn a real build into
-  a dry one and leave a stale stamp.
+  invalidates exactly as before (check-archives' staleness leg passes).
+- **`make -e` with an environment MAKEFLAGS such as `--t` or `-ntx` no longer
+  ships a 0-byte archive (issue #180, relayed from c64-x25519 #167/#168).**
+  Under `-e`, an environment MAKEFLAGS reaches parse time un-normalised, and
+  GNU make 3.81 still obeys long-option prefixes (`--t`, `--dr`, `--que`) and
+  getopt clusters in it. The dry-run test missed these. It then wiped and
+  restamped, `touch` re-created every target as 0 bytes, and the next real
+  build with the same knobs exited 0 with an empty `nistcurves.a`. With
+  `--dr` / `--que`, the dry run deleted the tree.
+  - The dry-run test now reads `$(MFLAGS)`, make's own decoding. Measured on
+    3.81: `MFLAGS=-te` for env `--t` under `-e`; `-tne` for `-ntx`; `-e` for
+    `-I -n`, which is a real build.
+  - It accepts only single-dash words made entirely of argument-less flag
+    letters. That rejects `-Otarget`, `-I/path` and `-j4` on GNU make 4.x,
+    where MFLAGS is documented as MAKEFLAGS without its variables, with a
+    leading dash.
+  - A command-line `MFLAGS=` is believed by make, so it is refused with an
+    error.
+  - `make -q` on every archive and PRG path answers "stale" when the knobs
+    change. The packaging copies (`nistcurves.inc`, the example cfg) do not
+    depend on any knob, so they correctly answer "up to date".
 - **`make clean` removes the variant test PRGs** (`nist-curves-{nocomb,onchip,
   onchip-nocomb}.prg`), their `labels_*` / `labels_*_raw` files and the `.d`
   files. It deliberately keeps the knob stamp, so `make clean all` followed
@@ -53,9 +66,12 @@ contract).
   set and the object set (never hard-coded), then proves in a throwaway copy
   of the tree that touching each header reassembles every object including
   it, that `make clean` leaves no artefact, and that dry runs are side-effect
-  free. It also feeds a table of 3.81 and 4.x MAKEFLAGS strings to the
-  dry-run classifier through a `MAKEFLAGS_UNDER_TEST` seam
-  (`make print-dry-classify`). The seam is honoured only when it is given
+  free. It also feeds a table of 3.81 and 4.x MFLAGS strings to the
+  dry-run classifier through a `MFLAGS_UNDER_TEST` seam. It runs real
+  `make -e lib` builds under environment MAKEFLAGS `--t`, `--dr`, `--que`,
+  `-ntx`, `--touch` and `--just-print` (issue #180), and probes `-q` on
+  every artifact path. The classifier is exercised through
+  `make print-dry-classify`. The seam is honoured only when it is given
   on the command line and `print-dry-classify` is the sole goal. A value
   from the environment, or one given with a build goal, is ignored, so the
   seam cannot turn a real build into a dry one or the reverse. When the
