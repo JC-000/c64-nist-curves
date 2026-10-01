@@ -98,7 +98,7 @@ not happen, or did not finish, for a measurement.
   2    refused to start: device lock not acquired (no --wait, or --wait
        timed out), or --firmware-note rejected against /v1/info; also
        argparse's own status for a command-line usage error, including an
-       unimplemented --only stage (sqr)
+       unimplemented --only stage (sqr) or crosscheck without fetch
   3    no real verdict: every cell NOT_RUN / ERROR / CONTAMINATED, or none
   4    partial: some declared cells NOT_RUN / ERROR / CONTAMINATED (e.g.
        a clock leg 4 discarded), the rest PASS / FAIL
@@ -2388,23 +2388,25 @@ def self_test() -> int:
           not lbl_bad, "; ".join(lbl_bad[:4]))
 
     # -- declared cells follow --only; the exit status follows declared ------
-    def _run(argv_, ran_if, extra_emitted=0):
+    def _run(argv_, ran_if, extra_emitted=0, discard=()):
         """A synthetic run: every declared cell for which ran_if(d) holds
         PASSes, plus `extra_emitted` undeclared PASS rows (e.g. a stage whose
         cells are not declared); the rest get main()'s NOT_RUN rows."""
         o_ = parse_args(argv_ + ["--seed", "1"])
         dec_ = declared_cells(o_)
-
-        def _main_runs(d_):
-            # What main() actually executes: a stage's cells run only when
-            # the stage is selected (crosscheck also needs fetch).  Without
-            # this the fixture would "run" deselected stages and hide the
-            # defect it is here to catch.
-            s_ = d_[0].split("_")[0]
-            if s_ == "crosscheck":
-                return "crosscheck" in o_.only and "fetch" in o_.only
-            return s_ in o_.only
-        ran_ = {d_ for d_ in dec_ if _main_runs(d_) and ran_if(d_)}
+        # The keys main() records come from stage_cells(), the same function
+        # main() iterates -- not from the declared set and not from a copy
+        # of main()'s stage gates.  `discard` models leg 4 dropping clocks;
+        # the arbiter runs before leg 4, on the full speed list, as in main().
+        usable_ = [m_ for m_ in o_.speeds if m_ not in discard]
+        ran_ = set()
+        for size_ in o_.reu_sizes:
+            for stage_ in STAGES:
+                for rc_ in stage_cells(o_, stage_, size_,
+                                       o_.speeds if stage_ == "arbiter"
+                                       else usable_):
+                    if ran_if(rc_.key):
+                        ran_.add(rc_.key)
         lines_ = []
         for i_, d_ in enumerate(sorted(ran_, key=str)):
             c_ = CellResult(f"{d_[0]}_{i_}", 48, 12, "512 KB", "cpu", "fetch")
@@ -2432,7 +2434,7 @@ def self_test() -> int:
         dc_bad.append(f"--only arbiter,fetch, all ran -> {rc_} (declared "
                       f"{sorted({d[0] for d in dec_})})")
     rc_, dec_, _o = _run(["--only", "fetch", "--speeds", "64,16"],
-                         lambda d: not (d[0] == "fetch" and d[1] == 64))
+                         lambda d: True, discard=(64,))
     if rc_ != 4:
         dc_bad.append(f"--only fetch, 64 MHz discarded -> {rc_}, want 4")
     rc_, dec_, _o = _run([], lambda d: d[0] != "stash")
@@ -2472,18 +2474,25 @@ def self_test() -> int:
             st_bad.append(f"--only {spec_} -> {st_} {err_!r}, want {want_}")
     if not parse_stages("bogus")[1]:
         st_bad.append("--only bogus accepted")
+    for spec_ in ("crosscheck", "arbiter,crosscheck", "stash,crosscheck"):
+        st_, err_ = parse_stages(spec_)
+        if not err_ or "crosscheck" not in err_ or "fetch" not in err_:
+            st_bad.append(f"--only {spec_} (crosscheck without fetch) "
+                          f"accepted as {st_}")
     # Process level: argparse's usage error is exit 2.  --dry-run touches
     # no device (U64_HOST is not needed and not set here).
     env_ = {k_: v_ for k_, v_ in os.environ.items() if k_ != "U64_HOST"}
-    for spec_ in ("sqr", "fetch,sqr"):
+    for spec_, word_ in (("sqr", "sqr"), ("fetch,sqr", "sqr"),
+                         ("crosscheck", "crosscheck")):
         r_ = subprocess.run([sys.executable, os.path.abspath(__file__),
                              "--dry-run", "--only", spec_],
                             capture_output=True, text=True, env=env_)
-        if r_.returncode != 2 or "sqr" not in r_.stderr:
+        if r_.returncode != 2 or word_ not in r_.stderr:
             st_bad.append(f"process --only {spec_}: exit {r_.returncode}, "
                           f"stderr {r_.stderr.strip()[-80:]!r}")
-    check("--only: an unimplemented stage (sqr) is refused with exit 2, "
-          "alone or combined, naming it and listing the implemented stages",
+    check("--only: an unimplemented stage (sqr), or crosscheck without "
+          "fetch, is refused with exit 2, alone or combined, naming it and "
+          "listing the implemented stages",
           not st_bad, "; ".join(st_bad))
 
     # -- leg 5 prose: a control build cannot report a settle floor ----------
@@ -2845,6 +2854,13 @@ def parse_stages(spec: str) -> tuple[list[str], str | None]:
                     f"{','.join(STAGES)}")
     if not only:
         return [], f"--only is empty; implemented stages: {','.join(STAGES)}"
+    if "crosscheck" in only and "fetch" not in only:
+        # crosscheck re-runs FETCH cells after a reboot and compares them
+        # with leg 5's; without fetch it can never run, so it would only
+        # ever be declared and come out NOT_RUN (exit 4).
+        return [], ("stage 'crosscheck' requires 'fetch' (it re-runs fetch "
+                    "cells after a reboot and compares them with leg 5); add "
+                    f"fetch to --only. Implemented stages: {','.join(STAGES)}")
     return [s for s in STAGES if s in only], None
 
 
@@ -3002,7 +3018,7 @@ def parse_args(argv):
                    help=f"stages, in order: {','.join(STAGES)} "
                         f"(default arbiter,fetch,stash). 'sqr' (fp_sqr "
                         f"diagonal site) is NOT implemented and is refused "
-                        f"with exit 2")
+                        f"with exit 2; so is crosscheck without fetch")
     p.add_argument("--speeds", default="48,16",
                    help="clocks to measure, highest first (default 48,16)")
     p.add_argument("--ladder", default="nop0,nop2,nop6,nop16,orig",
@@ -3078,6 +3094,47 @@ def crosscheck_key(tag: str, settle: tuple[str, int], size: str) -> tuple:
     return (f"crosscheck_{tag}", None, stub_cycles(*settle), size)
 
 
+class RunCell(tuple):
+    """One cell main() executes: (tag, mhz, settle, key).  `key` is what
+    main() records in `ran` -- it must match a declared_cells() entry."""
+    __slots__ = ()
+
+    def __new__(cls, tag, mhz, settle, key):
+        return super().__new__(cls, (tag, mhz, settle, key))
+
+    tag = property(lambda s: s[0])
+    mhz = property(lambda s: s[1])
+    settle = property(lambda s: s[2])
+    key = property(lambda s: s[3])
+
+
+def stage_cells(opts, stage: str, size: str, usable: list[int]) -> list:
+    """The cells main() runs for one stage at one REU size, in execution
+    order, given the clocks leg 4 kept.  main() iterates exactly this list
+    and records each entry's `key`, so the self-test's view of "what ran"
+    comes from the code under test rather than from a copy of it."""
+    ladder = parse_ladder(opts.ladder)
+    if stage not in opts.only or not usable:
+        return []
+    if stage == "arbiter":
+        mhz = opts.speeds[0]
+        return [RunCell("arbiter", mhz, None, ("arbiter", mhz, 4, size))]
+    if stage in ("fetch", "stash"):
+        return [RunCell(stage, mhz, (f, k),
+                        (stage, mhz, stub_cycles(f, k), size))
+                for mhz in usable for f, k in ladder]
+    if stage == "crosscheck":
+        if "fetch" not in opts.only:
+            return []
+        short = ladder[0]
+        return [RunCell(tag, mhz, settle, crosscheck_key(tag, settle, size))
+                for tag, mhz, settle in (
+                    ("most_likely_fail", usable[0], short),
+                    ("after_clock_change", usable[-1], short),
+                    ("clean", usable[0], ("orig", 0)))]
+    return []
+
+
 def declared_cells(opts) -> list[tuple]:
     """Every cell the run intends to produce, for the SELECTED stages only:
     (surface, mhz, cy, size).  A deselected stage is not a cell that failed
@@ -3096,8 +3153,8 @@ def declared_cells(opts) -> list[tuple]:
                 if "stash" in only:
                     declared.append(("stash", mhz, stub_cycles(f, k), size))
         if "crosscheck" in only:
-            # Declared even without fetch (which crosscheck needs): the
-            # operator asked for it, and it cannot run -- NOT_RUN, honestly.
+            # parse_stages() refuses crosscheck without fetch, so a declared
+            # crosscheck cell is always one main() can run.
             for tag in CROSSCHECK_TAGS:
                 settle = ("orig", 0) if tag == "clean" else ladder[0]
                 declared.append(crosscheck_key(tag, settle, size))
@@ -3329,9 +3386,9 @@ def main(argv=None):
 
             # ---- LEG 2: THE ARBITER -----------------------------------
             arb = None
-            if "arbiter" in opts.only:
+            for arb_cell in stage_cells(opts, "arbiter", size, opts.speeds):
                 t0 = time.monotonic()
-                mhz = opts.speeds[0]
+                mhz = arb_cell.mhz
                 set_turbo_mhz(client, mhz); time.sleep(0.5)
                 m = dev.measure_mhz(mhz)
                 print(f"\n  [leg 2] THE ARBITER: bare-metal minimal-shape "
@@ -3344,7 +3401,7 @@ def main(argv=None):
                 arb = arbiter_cell(dev, mhz, size, rows, opts.arbiter_n)
                 print_cell_detail(arb)
                 emit(arb.line(devstr, m, prg_sha))
-                ran.add(("arbiter", mhz, 4, size))
+                ran.add(arb_cell.key)
                 for ln in arbiter_verdict(arb, fw_label=fw_note):
                     print(ln); prose.append(ln)
                 stage_times.append((f"arbiter/{size}", time.monotonic() - t0))
@@ -3403,14 +3460,17 @@ def main(argv=None):
 
             # ---- LEG 5: FETCH path ------------------------------------
             thresholds: dict[int, int | None] = {}
-            if "fetch" in opts.only:
+            fetch_cells = stage_cells(opts, "fetch", size, usable)
+            if fetch_cells:
                 t0 = time.monotonic()
                 print(f"\n  [leg 5] FETCH-path cells (the observed surface) "
                       f"— settle {opts.ladder}")
-                for mhz in usable:
+                for mhz in dict.fromkeys(c_.mhz for c_ in fetch_cells):
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
                     th = None
-                    for form, k in ladder:
+                    for run_cell in [c_ for c_ in fetch_cells
+                                     if c_.mhz == mhz]:
+                        form, k = run_cell.settle
                         cy = stub_cycles(form, k)
                         name = cell_name("fetch", mhz, cy, dev.mitigated)
                         c = fetch_cell(dev, mhz, size, rows, opts.n,
@@ -3418,7 +3478,7 @@ def main(argv=None):
                                        host_read=opts.host_read)
                         print_cell_detail(c)
                         emit(c.line(devstr, measured[mhz], prg_sha))
-                        ran.add(("fetch", mhz, cy, size))
+                        ran.add(run_cell.key)
                         if c.verdict == "PASS" and th is None:
                             th = cy
                         if c.verdict == "FAIL":
@@ -3428,24 +3488,28 @@ def main(argv=None):
                 stage_times.append((f"fetch/{size}", time.monotonic() - t0))
 
             # ---- LEG 6: STASH path ------------------------------------
-            if "stash" in opts.only:
+            stash_cells = stage_cells(opts, "stash", size, usable)
+            if stash_cells:
                 t0 = time.monotonic()
                 print(f"\n  [leg 6] STASH-path cells (the hypothesised "
                       f"surface; poisoned before every rebuild)")
-                for mhz in usable:
+                for mhz in dict.fromkeys(c_.mhz for c_ in stash_cells):
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
-                    for form, k in ladder:
+                    for run_cell in [c_ for c_ in stash_cells
+                                     if c_.mhz == mhz]:
+                        form, k = run_cell.settle
                         cy = stub_cycles(form, k)
                         name = cell_name("stash", mhz, cy, dev.mitigated)
                         c = stash_cell(dev, mhz, size, rows, opts.n,
                                        (form, k), name)
                         print_cell_detail(c)
                         emit(c.line(devstr, measured[mhz], prg_sha))
-                        ran.add(("stash", mhz, cy, size))
+                        ran.add(run_cell.key)
                 stage_times.append((f"stash/{size}", time.monotonic() - t0))
 
             # ---- LEG 7: reboot-per-cell cross-check -------------------
-            if "crosscheck" in opts.only and "fetch" in opts.only:
+            cross_cells = stage_cells(opts, "crosscheck", size, usable)
+            if cross_cells:
                 t0 = time.monotonic()
                 print("\n  [leg 7] reboot-per-cell cross-check, compared as "
                       "RATES not verdicts")
@@ -3457,18 +3521,16 @@ def main(argv=None):
                       "FAILs + reboot PASS = carry-over artifact; cheap PASS "
                       "+ reboot FAIL = HALT, something a reboot clears is "
                       "masking the defect.")
-                short = ladder[0]
-                for tag, mhz, settle in (
-                        ("most_likely_fail", usable[0], short),
-                        ("after_clock_change", usable[-1], short),
-                        ("clean", usable[0], ("orig", 0))):
+                for run_cell in cross_cells:
+                    tag, mhz, settle = (run_cell.tag, run_cell.mhz,
+                                        run_cell.settle)
                     boot_and_reconfirm(size)
                     set_turbo_mhz(client, mhz); time.sleep(0.5)
                     c = fetch_cell(dev, mhz, size, rows, opts.n, settle,
                                    f"crosscheck_{tag}_{mhz}MHz",
                                    host_read=opts.host_read)
                     emit(c.line(devstr, measured.get(mhz), prg_sha))
-                    ran.add(crosscheck_key(tag, settle, size))
+                    ran.add(run_cell.key)
                 stage_times.append((f"crosscheck/{size}",
                                     time.monotonic() - t0))
 

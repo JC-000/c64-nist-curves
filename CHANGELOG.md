@@ -58,7 +58,8 @@ contract).
     `--only` stages are declared, so a narrowed run that completes exits 0.
     The unimplemented `sqr` stage (the fp_sqr diagonal site) is now refused
     as a usage error (exit 2), alone or combined. Before, `--only sqr`
-    exited 3 and `--only fetch,sqr` silently ignored it.
+    exited 3 and `--only fetch,sqr` silently ignored it. `crosscheck`
+    without `fetch`, which can never run, is refused the same way.
   - **`--verify-builds`.** It builds in a temporary `BUILD_DIR` and no
     longer wipes the user's `build/`.
 
