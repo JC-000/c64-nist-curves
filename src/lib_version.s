@@ -94,10 +94,13 @@ LIB_NISTCURVES_VERSION_PATCH = 0
 ; removed symbol is the textbook counter event (§1: "a removed or renamed
 ; symbol"), and the export had been documented as present for the window, so
 ; a consumer importing it conformed to our documented contract and now breaks
-; at link. Shipped on a MINOR under §1's "a library may break its surface on a
-; MINOR bump while pre-1.0", after §7's one-MINOR deprecation cycle (five
-; MINORs) -- NOT at the next MAJOR, which is what this file and the CHANGELOG
-; had promised; the CHANGELOG entry owns that change of plan.
+; at link. §7's MAJOR bullet makes a removed symbol a MAJOR-class change; at
+; 0.y.z we read the MINOR position as the breaking one (the semver pre-1.0
+; reading this file's versioning policy states, and which §1's "a library may
+; break its surface on a MINOR bump while pre-1.0" describes), and §7's
+; one-MINOR deprecation cycle had run since v0.10.0. So it shipped on a MINOR,
+; NOT "at the next MAJOR" as this file and the CHANGELOG had promised; the
+; CHANGELOG entry owns that change of plan.
 ;
 ; Bumped in the commit that causes it rather than at the release, so the
 ; source is never in a state where the surface has changed and the counter
@@ -112,7 +115,7 @@ LIB_NISTCURVES_ABI_VERSION   = 5
 
 
 ; -----------------------------------------------------------------------------
-; Deprecated bare forms (SPEC §1; removed at contract v1.0)
+; Deprecated bare forms (SPEC §1; removal deferred by contract 1.0.0 to a future MAJOR)
 ; -----------------------------------------------------------------------------
 ; These names are identical across every adopter of the contract, so a
 ; consumer that links two sibling libraries and imports both manifests

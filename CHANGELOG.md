@@ -30,12 +30,24 @@ update it (see Removed below).
   **This is a change of plan, and we own it.** v0.10.0 through v0.15.0 —
   this CHANGELOG, `src/mul_8x8.s`, `src/sqtab_aliases.s` and CLAUDE.md —
   said the pair would be "removed at the next MAJOR". It is removed on a
-  MINOR instead, on these grounds:
-  - SPEC §1 (SPEC.md:39): "a library may break its surface on a MINOR bump
-    while pre-1.0". This library is 0.x.
+  MINOR instead. The reading this relies on, stated plainly because the
+  contract does not grant it in so many words:
+  - SPEC §7's MAJOR bullet (SPEC.md:246) reads "MAJOR — breaking change to
+    the exported surface (removed or renamed symbols, changed calling
+    conventions, changed memory model)". So a removed symbol is a
+    MAJOR-class change. The question is what "MAJOR" means for a library
+    still at 0.y.z.
+  - We read it the semver way: while MAJOR is 0, the MINOR position is the
+    breaking position, and a 0.y bump is this library's MAJOR-class release.
+    `src/lib_version.s` has documented that policy since v0.9.0, and v0.9.0
+    and v0.10.0 shipped removals under it. SPEC §1 (SPEC.md:39) describes
+    the same pre-1.0 reality ("a library may break its surface on a MINOR
+    bump while pre-1.0"). That sentence explains why the ABI counter cannot
+    track MAJOR; it is a description, not a grant, and we do not rest on it
+    alone.
   - SPEC §7 (SPEC.md:253): "Breaking changes go through a one-MINOR-release
-    deprecation cycle." The window opened at v0.10.0, and five MINORs
-    (0.11–0.15) have shipped since.
+    deprecation cycle." That cycle has been satisfied since v0.10.0: the
+    window opened there, and five MINORs (0.11–0.15) have shipped since.
   - §6.5's "drop the old form at its next MAJOR" (SPEC.md:240) governs
     *renames*. Nothing is renamed here: the canonical names are unchanged,
     and §8.1 forbids exporting them under any name.

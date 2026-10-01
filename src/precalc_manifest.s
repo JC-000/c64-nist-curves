@@ -27,8 +27,10 @@
 ; both manifests hits `ld65: Duplicate external identifier` -- measured
 ; upstream between c64-x25519 v0.8.0 and c64-ChaCha20-Poly1305 v0.6.0 on
 ; `LIB_PRECALC_sqtab_*`. The bare triple stays emitted by default so
-; existing single-library consumers are unaffected; it is deprecated and
-; removed at contract v1.0. A composing consumer suppresses it build-wide
+; existing single-library consumers are unaffected; it is deprecated. Its
+; once-scheduled removal "at contract v1.0" was dropped at contract 1.0.0, which
+; deferred §1's bare forms to a future MAJOR, and SPEC §8.4 schedules none for
+; the triple. A composing consumer suppresses it build-wide
 ; with `ca65 -D LIB_NO_BARE_EXPORTS=1` and imports the prefixed forms.
 ;
 ; Note the table NAME stays unprefixed and normative -- the prefix

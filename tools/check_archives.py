@@ -196,8 +196,9 @@ CT_MUL_PROVIDER_SYMS = {"ct_mul_8x8", "smc_sum_a_imm", "smc_diff_a_imm",
 # across every adopter, so a consumer linking two sibling libraries and
 # importing both manifests hits `ld65: Duplicate external identifier`. The
 # bare forms stay emitted by default for back-compat and are suppressed
-# build-wide with `ca65 -D LIB_NO_BARE_EXPORTS=1`; they are removed at
-# contract v1.0. Pinning the prefixed set guards against a regression that
+# build-wide with `ca65 -D LIB_NO_BARE_EXPORTS=1`. Their once-scheduled removal
+# at contract v1.0 was deferred by contract 1.0.0 to a future MAJOR (SPEC §1;
+# §8.4 schedules none). Pinning the prefixed set guards against a regression that
 # drops the fifth "NISTCURVES" LIB_PRECALC_TABLE argument or reverts
 # src/lib_version.s to bare-only.
 MANIFEST_VERSION_SYMS = {

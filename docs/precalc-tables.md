@@ -100,6 +100,7 @@ real one.
   **Grep `_PRECALC_`, not `LIB_PRECALC_`.** Since contract v0.7.0 each
   invocation emits *two* triples — the library-prefixed
   `LIB_NISTCURVES_PRECALC_<name>_*` (canonical) and the deprecated bare
-  `LIB_PRECALC_<name>_*` (suppressed by `-D LIB_NO_BARE_EXPORTS=1`,
-  removed at contract v1.0). The `_PRECALC_` infix matches both forms
+  `LIB_PRECALC_<name>_*` (suppressed by `-D LIB_NO_BARE_EXPORTS=1`;
+  deprecated, with no removal scheduled since contract 1.0.0 dropped the old
+  v1.0 date, SPEC §1/§8.4). The `_PRECALC_` infix matches both forms
   regardless of which a given adopter still emits.

@@ -1217,8 +1217,9 @@ directly rather than inferring it from MAJOR.
 canonical as of c64-lib-contract v0.7.0. The library additionally exports
 the unprefixed `LIB_VERSION_MAJOR` / `_MINOR` / `_PATCH` /
 `LIB_ABI_VERSION` as aliases, so consumers written against v0.8.0 and
-earlier keep working with no change. Those bare names are **deprecated
-and removed at contract v1.0**: they are identical across every library
+earlier keep working with no change. Those bare names are **deprecated**.
+Their removal was once scheduled for contract v1.0; contract 1.0.0 deferred it
+to a future contract MAJOR (SPEC §1). They are identical across every library
 adopting the contract, so a consumer that links two sibling libraries and
 imports both manifests gets
 
@@ -1249,8 +1250,9 @@ The library is currently in the v0.x pre-stable series. Version policy:
   `LIB_ABI_VERSION` unchanged.
 - **MINOR** bumps (v0.6.x → v0.7.0) add public symbols (new entry
   points, new constants, new SPEC §3/§5/§8 manifest equates) and — while
-  the library is pre-1.0 — **may also remove or rename them**, as SPEC §1
-  permits. That is not hypothetical: v0.9.0 removed 17 exports, v0.10.0
+  the library is pre-1.0 — **may also remove or rename them**. SPEC §7 makes
+  a removal MAJOR-class, and at 0.y.z the MINOR position is the breaking one
+  (the semver pre-1.0 reading; SPEC §1 describes the same). That is not hypothetical: v0.9.0 removed 17 exports, v0.10.0
   removed the three unprefixed §8.2 `LIB_SHARED_REU_MUL_*` equates, and
   v0.16.0 removed the bare `sqtab_lo` / `sqtab_hi`. A removal is preceded
   by at least one MINOR release in which the name is documented as
@@ -1543,7 +1545,7 @@ Each invocation exports **two** equate triples since contract v0.7.0
 | Form | Symbols | Status |
 |---|---|---|
 | prefixed | `LIB_NISTCURVES_PRECALC_<name>_{SIZE,REGION,SHARED}` | canonical |
-| bare | `LIB_PRECALC_<name>_{SIZE,REGION,SHARED}` | deprecated, removed at contract v1.0 |
+| bare | `LIB_PRECALC_<name>_{SIZE,REGION,SHARED}` | deprecated; no removal scheduled (the old contract-v1.0 date was dropped at contract 1.0.0; SPEC §1/§8.4) |
 
 The bare triple is what collides when two adopters describe the same
 shared table — measured upstream between `c64-x25519` v0.8.0 and
