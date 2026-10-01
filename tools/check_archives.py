@@ -3586,8 +3586,27 @@ def defines_staleness_check(failures):
     flow six ways -- three per knob, CONTRACT_DEFINES then
     CONTRACT_ZP_DEFINES -- and reads the built object's exported surface each
     time, which is SPEC v0.11.1's "assert the artifact flipped, not that
-    something rebuilt". Runs LAST: a knob change wipes build/*.o by design;
-    the final leg restores the default configuration."""
+    something rebuilt".
+
+    Runs in a THROWAWAY build directory (`make BUILD_DIR=<tmp>`; LIB_DIR and
+    the knob stamp derive from BUILD_DIR), never in build/ (issue #167
+    review item 7). A knob change wipes the directory's objects, archives and
+    PRG by design; in build/ that wiped the operator's build mid-run, raced
+    any concurrent make, and a SIGKILL left it wiped. The two sub-legs below
+    each get their own directory, and the §6.2 override sub-leg runs whatever
+    the knob sub-leg concluded (review item 12: an early `return` there used
+    to skip it entirely)."""
+    import shutil
+    for sub in (_knob_staleness_legs, _zp_override_leg):
+        kb = Path(tempfile.mkdtemp(prefix="check_archives_knobs_"))
+        try:
+            sub(failures, kb)
+        finally:
+            shutil.rmtree(kb, ignore_errors=True)
+
+
+def _knob_staleness_legs(failures, kb):
+    mk = ["make", "-C", str(REPO), f"BUILD_DIR={kb}"]
     print("\n=== knob-staleness guard (defines change must rebuild; was §6.3) ===")
 
     # --- Linked-artifact leg (issue #144) ------------------------------------
@@ -3606,26 +3625,45 @@ def defines_staleness_check(failures):
     # the object IS the evidence. So this leg deliberately picks a knob whose
     # failure path is longest -- downstream of the link.
     #
-    # Negative-tested by reverting the Makefile fix (dropping *.prg from the
-    # stamp's rm list): this leg goes red on the second build while every
-    # object-level leg above stays green.
+    # Negative test (issue #167 review item 8). Since #178/#180 the PRG is
+    # forced by TWO mechanisms: the stamp recipe's `rm $(BUILD_DIR)/*.prg`
+    # and the `$(PRG): $(KNOB_FORCE)` prerequisite. Dropping only the rm --
+    # the negative test this comment used to cite -- leaves the second one
+    # relinking and is correctly green. Drop BOTH and this leg goes red:
+    #   ARTIFACT FAIL: changed knob did not flip the PRG
+    # deterministically, because the PRG is future-dated below. Before that,
+    # the red depended on the rebuild landing in the PRG's own mtime second:
+    # with a 2 s delay between builds (a slower host) the same double
+    # mutation reported "artifact leg OK".
     def prg_sha():
-        prg = BUILD / "nist-curves.prg"
+        prg = kb / "nist-curves.prg"
         if not prg.exists():
             return None
         return hashlib.sha256(prg.read_bytes()).hexdigest()
 
     art_legs = [
-        (["make", "-C", str(REPO)], "default"),
-        (["make", "-C", str(REPO),
+        ([*mk], "default"),
+        ([*mk,
           "CONTRACT_DEFINES=-D LIB_NISTCURVES_REU_SETTLE_ITER=4"], "ITER=4"),
-        (["make", "-C", str(REPO)], "revert to default"),
+        ([*mk], "revert to default"),
     ]
     art_hashes = []
     for cmd, label in art_legs:
         rc, _ = sh(cmd)
         h = prg_sha()
         art_hashes.append(h)
+        if label == "default" and h is not None:
+            # DETERMINISTIC red (issue #167 review item 8). The skipped-link
+            # failure needs the old PRG to look newer than the rebuilt
+            # objects; left to the clock that only happens when the rebuild
+            # lands in the PRG's own second, so the documented negative test
+            # did not go red on a fast host. Future-dating the PRG makes it
+            # always look newer: if the knob change does not DELETE it, make
+            # skips the link every time. Same technique as check_inc_deps.
+            import os
+            import time
+            future = time.time() + 86400
+            os.utime(kb / "nist-curves.prg", (future, future))
         if rc or h is None:
             failures.append(
                 f"knob-staleness(artifact): {label}: build failed (rc={rc})")
@@ -3650,7 +3688,7 @@ def defines_staleness_check(failures):
 
 
     def fp_src1_value():
-        return od65_value([BUILD / "zp_config.o"], "fp_src1")
+        return od65_value([kb / "zp_config.o"], "fp_src1")
 
     # SPEC v0.11.1 states the two properties an invalidation guard must have:
     # unchanged knobs must not rebuild (the mtime leg at the bottom), and the
@@ -3668,16 +3706,16 @@ def defines_staleness_check(failures):
     # change wipes build/*.o, and the ZP legs' final default-build leg is what
     # leaves zp_config.o current for the incrementality assertion.
     def bare_version_exported():
-        return "LIB_VERSION_MAJOR" in od65_names(BUILD / "lib_version.o",
+        return "LIB_VERSION_MAJOR" in od65_names(kb / "lib_version.o",
                                                  "--dump-exports")
 
     defines_legs = [
-        (["make", "-C", str(REPO), "build/lib_version.o"], True,
+        ([*mk, f"{kb}/lib_version.o"], True,
          "default build (bare §1 aliases exported)"),
-        (["make", "-C", str(REPO), "build/lib_version.o",
+        ([*mk, f"{kb}/lib_version.o",
           "CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1"], False,
          "changed CONTRACT_DEFINES must take effect (stale reuse would keep the bare exports)"),
-        (["make", "-C", str(REPO), "build/lib_version.o"], True,
+        ([*mk, f"{kb}/lib_version.o"], True,
          "revert to default"),
     ]
     for cmd, want, label in defines_legs:
@@ -3694,11 +3732,11 @@ def defines_staleness_check(failures):
             return
 
     legs = [
-        (["make", "-C", str(REPO), "build/zp_config.o"], 0x22, "default build"),
-        (["make", "-C", str(REPO), "build/zp_config.o",
+        ([*mk, f"{kb}/zp_config.o"], 0x22, "default build"),
+        ([*mk, f"{kb}/zp_config.o",
           "CONTRACT_ZP_DEFINES=-D fp_src1=0x50"],
          0x50, "changed knob must take effect (stale-reuse would keep 0x22)"),
-        (["make", "-C", str(REPO), "build/zp_config.o"], 0x22, "revert to default"),
+        ([*mk, f"{kb}/zp_config.o"], 0x22, "revert to default"),
     ]
     for cmd, want, label in legs:
         rc, out = sh(cmd)
@@ -3708,9 +3746,9 @@ def defines_staleness_check(failures):
             print(f"  STALENESS FAIL [{label}]: fp_src1 = {hex(got) if got is not None else '?'}, expected {hex(want)}")
             return
     # incremental sanity: an unchanged-knob re-run must NOT rebuild
-    before = (BUILD / "zp_config.o").stat().st_mtime_ns
-    sh(["make", "-C", str(REPO), "build/zp_config.o"])
-    after = (BUILD / "zp_config.o").stat().st_mtime_ns
+    before = (kb / "zp_config.o").stat().st_mtime_ns
+    sh([*mk, f"{kb}/zp_config.o"])
+    after = (kb / "zp_config.o").stat().st_mtime_ns
     if before != after:
         failures.append("knob-staleness: unchanged knobs re-ran the assembler (stamp churns)")
         print("  STALENESS FAIL: unchanged knobs rebuilt the object -- stamp not stable")
@@ -3718,6 +3756,8 @@ def defines_staleness_check(failures):
     print("  staleness guard OK (both knobs flip the artifact; revert restores; "
           "no-change is incremental)")
 
+
+def _zp_override_leg(failures, kb):
     # --- §6.2 CONTRACT_ZP_DEFINES scoping across the #154 TU split -----------
     # zp_config.s DEFINES the slots and takes the ZP overrides; zp_aliases.s
     # IMPORTS them and must not (`-D` of an imported name is a hard ca65
@@ -3764,17 +3804,18 @@ def defines_staleness_check(failures):
         if "zp_ptr2" not in bare:
             print(f"  override SKIP [{arm}]: arm exports no bare zp_ptr2")
             continue
-        _zp_override_probe(failures, arm, alias_obj)
+        _zp_override_probe(failures, arm, alias_obj, kb)
     print("  (each arm driven with a real -D through make, both spellings read "
           "from an ld65 map)")
 
 
-def _zp_override_probe(failures, arm, alias_obj):
+def _zp_override_probe(failures, arm, alias_obj, kb):
+    mk = ["make", "-C", str(REPO), f"BUILD_DIR={kb}"]
     import tempfile
     for knob, want in ((["CONTRACT_ZP_DEFINES=-D nistcurves_zp_ptr2=0x60"], 0x60),
                        ([], 0xfd)):
-        rc, out = sh(["make", "-C", str(REPO), f"build/{arm}.o",
-                      f"build/{alias_obj}.o", *knob])
+        rc, out = sh([*mk, f"{kb}/{arm}.o",
+                      f"{kb}/{alias_obj}.o", *knob])
         if rc:
             failures.append(f"zp-override {arm}: build failed with {knob or ['(default)']}")
             print(f"  OVERRIDE FAIL [{arm}]: make failed for {knob or ['(default)']}:\n{out}")
@@ -3794,7 +3835,7 @@ def _zp_override_probe(failures, arm, alias_obj):
                 return
             rc, out = sh(["ld65", "-C", str(td / "cfg"), "-Ln", str(td / "lbl"),
                           "-o", str(td / "o.prg"), str(td / "p.o"),
-                          str(BUILD / f"{arm}.o"), str(BUILD / f"{alias_obj}.o")])
+                          str(kb / f"{arm}.o"), str(kb / f"{alias_obj}.o")])
             if rc:
                 failures.append(f"zp-override: link failed at {hex(want)}")
                 print(f"  OVERRIDE FAIL: link failed:\n{out}")
@@ -4113,31 +4154,14 @@ def cfg_placement_check(failures):
 
 
 def main():
-    """Run the ratchet without leaving build/ different from how it found it.
-
-    The knob-staleness and §6.2 override legs drive real `make` invocations
-    with changed CONTRACT_DEFINES, and the Makefile's knob stamp then wipes
-    every object, archive and PRG (that is the behaviour under test). A
-    passing run used to leave build/ with 2 objects and build/lib with no
-    archive at all, so a second, direct `python3 tools/check_archives.py`
-    failed "archive not built" everywhere and `make` had to rebuild from
-    scratch. build/ is snapshotted (contents and mtimes) before any leg runs
-    and restored afterwards, whatever the legs did or raised."""
-    import shutil
-    snap_root = Path(tempfile.mkdtemp(prefix="check_archives_build_"))
-    snap = snap_root / "build"
-    had_build = BUILD.exists()
-    if had_build:
-        shutil.copytree(BUILD, snap, symlinks=True, copy_function=shutil.copy2)
-    try:
-        return _run_all_legs()
-    finally:
-        if had_build:
-            if BUILD.exists():
-                shutil.rmtree(BUILD)
-            shutil.copytree(snap, BUILD, symlinks=True,
-                            copy_function=shutil.copy2)
-        shutil.rmtree(snap_root, ignore_errors=True)
+    """Run the ratchet. No leg writes to build/: the knob-staleness and §6.2
+    override legs, which drive real `make` invocations whose knob stamp wipes
+    objects, archives and PRG by design, run in their own throwaway
+    BUILD_DIR (defines_staleness_check). A passing run used to leave build/
+    with 2 objects and no archive (issue #167 extras); a snapshot/restore
+    stopped that but still wiped build/ mid-run, which item 7 of the review
+    removed at the source."""
+    return _run_all_legs()
 
 
 def _run_all_legs():
