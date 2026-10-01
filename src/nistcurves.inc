@@ -561,8 +561,11 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 .import mul_cached_a, mul_src2_buf
 .endif
 
-; Operand widths (src/constants.s).
-.import FP256_SIZE, FP384_SIZE
+; Operand widths (src/constants.s). `.importzp`, not `.import`: constants.s
+; exports both as zeropage-sized constants (32 and 48), so an absolute import
+; drew ld65 "Address size mismatch" in every consumer build that used them
+; (found by check-archives' header leg once it referenced every name, #170).
+.importzp FP256_SIZE, FP384_SIZE
 
 .endif ; _NC_FIELD
 
