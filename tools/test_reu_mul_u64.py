@@ -87,6 +87,18 @@ WHAT THIS RUN IS NOT ENTITLED TO CLAIM
     handshake cannot separate "tables correct" from "tables wrong but the
     protocol survived", so it is not commensurable with a row check.
 
+WHAT clock_measured IS
+----------------------
+The effective CPU rate with the display on, as the cells themselves run:
+leg 4 times a loop with DEN=1 and the KERNAL IRQ live, so the reading
+includes badlines (~5.85% of PHI2 cycles on NTSC, ~5.09% on PAL), the
+one-PHI2-multiple shortfall at the top two speed indices that
+GideonZ/1541ultimate#874 documents, and the small KERNAL jiffy-IRQ cost.
+It is not a delivered clock. That would need $D011=$0B, $D015=0, SEI and a
+free-running CIA timer, which this tool does not set up. OP_CLOCK reads
+$D011 and $D015 on the C64 side, and every row records them as `vic_den=`
+and `sprites=`.
+
 EXIT STATUS
 -----------
 A wrapper that reads only the exit status must never mistake a run that did
@@ -123,7 +135,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import os
 import random
 import pathlib
@@ -285,6 +299,7 @@ TRAMPOLINE_ADDR = 0xC000
 TRAMPOLINE_LIMIT = 0xC400
 SNAP_LO, SNAP_HI = 0xC400, 0xC500  # 6502-side copy of a fetched row
 ARG_ADDR = 0xC600                 # 8 argument bytes
+VIC_CTRL1, VIC_SPRITE_EN = 0xD011, 0xD015
 OP_ADDR = 0xC60F
 SHIM_ADDR = 0x0800                # dead BASIC-stub bytes; JMP $C000 lives here
 INIT_SENTINEL_ADDR = 0x02A7
@@ -825,6 +840,14 @@ def build_trampoline(labels, symbols: bool = False):
     a.rel(BNE, "couter")
     a.label("cdone")
     a.absl(JSR, "_bench_stop")
+    # Display state the window ran under, captured on the C64 side (outside
+    # the timed window): $D011 (DEN = bit 4 -> badlines) to ARG+3, $D015
+    # (sprite enable -> sprite DMA) to ARG+7.  clock_measured is the
+    # effective CPU rate UNDER these conditions, so they ride on every row.
+    a.label("cvic")
+    a.abs(LDA_ABS, VIC_CTRL1); a.abs(STA_ABS, ARG_ADDR + 3)
+    a.abs(LDA_ABS, VIC_SPRITE_EN); a.abs(STA_ABS, ARG_ADDR + 7)
+    a.label("cvicend")
     a.absl(JMP, "done")
 
     # -- OP_DMA: one arbitrary transfer from the 8 argument bytes (REU
@@ -1078,6 +1101,29 @@ CLOCK_MAX_PASSES = (1 << (8 * CLOCK_COUNTER_BYTES)) - 1
 # per second.  That is time-proportional, ~60H/f of the reading -- material
 # at 1 MHz (a few hundred cycles per tick is a ~1-2% low reading),
 # negligible at turbo.  Sizing it needs hardware.
+#
+# WHAT IS MEASURED (hardware run at 1e17794, U64E fw 3.15 / core 1.4F, NTSC:
+# 48 set -> 45.00 +-0.15, intercept 0.0 +-18.4 ms; 16 set -> 15.30 +-0.05,
+# intercept -6.0 +-18.4 ms).  clock_measured is the EFFECTIVE CPU rate under
+# the conditions OP_CLOCK runs in -- display on, KERNAL IRQ on -- which are
+# also the conditions every fetch/stash cell runs in, so the measurement is
+# deliberately left as is and labelled instead.  Its known biases:
+#   * badlines: with DEN=1 the VIC steals 40 cycles on each of 25 badlines
+#     per frame: 1000/(263*65) = 5.85% of PHI2 cycles on NTSC,
+#     1000/(312*63) = 5.09% on PAL;
+#   * GideonZ/1541ultimate#874: with the VIC blanked, speed indices 0-13
+#     deliver exactly label x PHI2, but the top two indices are one PHI2
+#     multiple short (U64E 40 -> 38.99, 48 -> 47.00), because the VIC always
+#     keeps one slot;
+#   * the KERNAL jiffy IRQ (small; see below).
+# Prediction 47 x 1.0227 x 0.9415 = 45.25 (measured 45.00) and
+# 16 x 1.0227 x 0.9415 = 15.41 (15.30); the remaining ~1% is loop alignment
+# against badline rows.  A DELIVERED-clock reading needs $D011=$0B (display
+# off), $D015=0 (no sprites), SEI and a free-running CIA timer; this tool
+# does none of that.  $D011/$D015 are read by OP_CLOCK on the C64 side and
+# carried on every row (vic_den=, sprites=).
+BADLINE_STEAL_NTSC = 25 * 40 / (263 * 65)
+BADLINE_STEAL_PAL = 25 * 40 / (312 * 63)
 CLOCK_SHORT_S = 0.5
 CLOCK_LONG_S = 10.0
 
@@ -1179,6 +1225,7 @@ class Device:
         self.prg = None
         self.wait_orig = None
         self.zp: dict[str, int] = {}
+        self.clock_vic: tuple[int, int] | None = None   # ($D011, $D015)
 
     def _resume(self):
         try:
@@ -1343,8 +1390,14 @@ class Device:
 
     # -- in-band clock verification ----------------------------------------
     def measure_mhz(self, expect_mhz: int):
-        return run_clock_measurement(
+        self.clock_vic = None
+        est = run_clock_measurement(
             expect_mhz, lambda outer: self._clock_window(outer, expect_mhz))
+        if est is not None and self.clock_vic is not None:
+            d011, d015 = self.clock_vic
+            est.vic_den = (d011 >> 4) & 1
+            est.sprites = d015
+        return est
 
     def _clock_window(self, outer: int, expect_mhz: int) -> int | None:
         """One OP_CLOCK call: run `outer` loop passes, return jiffies."""
@@ -1355,6 +1408,10 @@ class Device:
                      poll_interval=0.05) is None:
             return None
         raw = self.read(self.labels["bench_ticks"], 3)
+        # $D011 / $D015 as OP_CLOCK read them on the C64 side (ARG+3/+7);
+        # the host reads plain RAM here, never I/O.
+        vic = self.read(ARG_ADDR + 3, 5)
+        self.clock_vic = (vic[0], vic[4])
         return (raw[0] << 16) | (raw[1] << 8) | raw[2]
 
 
@@ -1515,6 +1572,10 @@ class CellResult:
             # issue #173: the jiffy-quantisation bound travels with the value,
             # so a reader cannot take a 1-decimal figure for a 1% claim.
             f"clock_pm={'%.2f' % measured_mhz.pm if hasattr(measured_mhz, 'pm') else 'n/a'}",
+            # the display state the clock was measured under: it is the
+            # effective CPU rate with these on (badlines / sprite DMA)
+            f"vic_den={getattr(measured_mhz, 'vic_den', 'n/a')}",
+            f"sprites={'0x%02X' % measured_mhz.sprites if hasattr(measured_mhz, 'sprites') else 'n/a'}",
             f"settle_cy={'native(unmitigated)' if self.settle_cy < 0 else self.settle_cy}",
             f"reu={self.reu_size.replace(' ', '')}",
             f"read={self.read_kind}",
@@ -1687,6 +1748,34 @@ def not_run_line(surface: str, mhz: int, cy: int, size: str, poked: bool,
             f"settle_cy={settle} reu={size.replace(' ', '')} N=0 k=0 "
             f"verdict=NOT_RUN device={devstr} "
             f"prg=sha256:{prg_sha[:16]}")
+
+
+def leg4_line(mhz: int, m) -> str:
+    """Leg 4's per-clock line for a ClockEstimate `m`."""
+    off = abs(m - mhz) / mhz
+    den = getattr(m, "vic_den", None)
+    spr = getattr(m, "sprites", None)
+    state = (f"vic_den={den if den is not None else 'n/a'} sprites="
+             + (f"0x{spr:02X}" if spr is not None else "n/a"))
+    if den == 1:
+        cond = ("effective CPU rate with the display on: includes badlines "
+                f"(~{BADLINE_STEAL_NTSC:.2%} NTSC / {BADLINE_STEAL_PAL:.2%} "
+                "PAL of PHI2 cycles) and, at the top two speed indices, "
+                "GideonZ/1541ultimate#874's one-PHI2-multiple shortfall")
+    elif den == 0:
+        cond = ("effective CPU rate with the display blanked (no badlines); "
+                "#874's top-index shortfall still applies")
+    else:
+        cond = "display state not captured"
+    return (f"    set {mhz} MHz -> measured {m:.2f} "
+            f"+-{m.pm:.2f} MHz ({off * 100:.1f}% off) [{state}; {cond}; "
+            f"not a delivered-clock reading]; fixed "
+            f"overhead (fit intercept, as measured; may be "
+            f"~0) "
+            f"{m.overhead_s * 1000:.1f} +-"
+            f"{m.overhead_pm_s * 1000:.1f} ms; windows "
+            f"(passes, jiffies) {m.windows}"
+            + ("  <-- DISCARDED (>20%)" if off > 0.20 else ""))
 
 
 def leg5_summary(mhz: int, th: int | None, mitigated: bool) -> str:
@@ -2068,11 +2157,12 @@ def self_test() -> int:
     # on the assembled bytes, and the fake answers the way bench_stop does:
     # jiffy_clock $A0 (MSB), $A1, $A2 (LSB) copied in order to bench_ticks.
     class _FakeClockDev(Device):
-        def __init__(self, f_mhz):
+        def __init__(self, f_mhz, d011=0x1B, d015=0x00):
             super().__init__(None, None)
             self.labels = fake
             self.mem: dict[int, int] = {}
             self.f = f_mhz
+            self.d011, self.d015 = d011, d015
             self.code, self.syms = build_trampoline(fake, symbols=True)
             self.counters: list[int] = []
 
@@ -2097,8 +2187,60 @@ def self_test() -> int:
             j_ = int(clock_cycles(n_) / (self.f * 1e6) * 60.0 + 0.5)
             self.write(fake["bench_ticks"],
                        bytes([(j_ >> 16) & 0xFF, (j_ >> 8) & 0xFF, j_ & 0xFF]))
+            # The VIC registers as the C64 side would see them; whatever the
+            # trampoline does with them after bench_stop runs on its bytes.
+            self.mem[0xD011], self.mem[0xD015] = self.d011, self.d015
+            if "cvic" in self.syms:
+                simulate_6502(self.code, TRAMPOLINE_ADDR, self.syms["cvic"],
+                              {self.syms["cvicend"]}, self.mem)
             return 0.1
     fake["bench_ticks"] = 0x0890
+    # -- what clock_measured IS: the effective rate with the display on -----
+    vic_bad = []
+    try:
+        for d011_, d015_, den_, spr_ in ((0x1B, 0x00, 1, "0x00"),
+                                         (0x0B, 0x00, 0, "0x00"),
+                                         (0x9B, 0x05, 1, "0x05")):
+            fdv = _FakeClockDev(48, d011=d011_, d015=d015_)
+            est_v = fdv.measure_mhz(48)
+            ln_v = CellResult("x", 48, 12, "512 KB", "cpu", "fetch").line(
+                "d", est_v, "0" * 64)
+            l4_v = leg4_line(48, est_v) if est_v is not None else ""
+            for what_, s_ in (("CELL", ln_v), ("leg 4", l4_v)):
+                if (f"vic_den={den_}" not in s_
+                        or f"sprites={spr_}" not in s_):
+                    vic_bad.append(f"$D011=${d011_:02X} $D015=${d015_:02X}: "
+                                   f"{what_} lacks vic_den={den_} / "
+                                   f"sprites={spr_}: {s_.strip()[:100]!r}")
+            if "vic_den=" in ln_v and (ln_v.index("vic_den=")
+                                        < ln_v.index("clock_pm=")):
+                vic_bad.append("vic_den precedes the clock it qualifies")
+    except Exception as e:
+        vic_bad.append(f"{type(e).__name__}: {e}")
+    check("the clock reading carries the display state it was taken under "
+          "(vic_den from $D011 bit 4, sprites=$D015) on every CELL row and "
+          "the leg-4 line, read on the C64 side by OP_CLOCK",
+          not vic_bad, "; ".join(vic_bad[:3]))
+    txt_bad = []
+    try:
+        buf_ = io.StringIO()
+        with contextlib.redirect_stdout(buf_):
+            describe_plan(parse_args(["--seed", "1"]), sample_rows(20, 1))
+        plan_ = buf_.getvalue()
+        l4_ = leg4_line(48, _FakeClockDev(48).measure_mhz(48))
+        for name_, t_ in (("dry-run plan", plan_), ("leg-4 line", l4_),
+                          ("module docstring", __doc__ or "")):
+            low_ = t_.lower()
+            for need_ in ("badline", "#874", "display on"):
+                if need_ not in low_:
+                    txt_bad.append(f"{name_} does not name {need_!r}")
+            if re.search(r"(?<!not )(?<!not a )delivered clock", low_):
+                txt_bad.append(f"{name_} calls the reading a delivered clock")
+    except Exception as e:
+        txt_bad.append(f"{type(e).__name__}: {e}")
+    check("clock_measured is labelled the effective CPU rate with the display "
+          "on: dry-run, leg 4 and docstring name badlines and #874 and never "
+          "call it a delivered clock", not txt_bad, "; ".join(txt_bad[:4]))
     try:
         bad = []
         for f_, n_ in ((0.05, 0x012345), (0.2, 0x00FF01), (48, 0x0A0B0C),
@@ -2422,8 +2564,6 @@ def self_test() -> int:
             rc_ = run_exit_status(lines_, 0, mitigated=True,
                                   declared_n=len(dec_))
         return rc_, dec_, buf_.getvalue()
-    import io
-    import contextlib
     dc_bad = []
     rc_, dec_, _o = _run(["--only", "fetch"], lambda d: True)
     if rc_ != 0:
@@ -2511,8 +2651,6 @@ def self_test() -> int:
           not l5_bad, "; ".join(l5_bad))
 
     # -- verify-builds: the build/ guard reports even when a build raises ---
-    import io
-    import contextlib
     vb_bad = []
     with tempfile.TemporaryDirectory() as ub:
         open(os.path.join(ub, "keep.o"), "w").write("x")
@@ -2892,13 +3030,19 @@ def describe_plan(opts, rows) -> None:
           "our fix. Never dropped.")
     print("  3. detector positive control (skip-the-fetch -> all-poison) and "
           "poison-without-rebuild self-check")
-    print(f"  4. in-band clock verification at every clock used (CIA Timer A "
+    print(f"  4. in-band clock check at every clock used (CIA Timer A "
           f"jiffies, NOT the CIA1 TOD clock): a {CLOCK_SHORT_S:g} s window "
           f"plus a ~{CLOCK_LONG_S:g} s extension, clock = slope, so a fixed "
           f"overhead cancels and is reported; +- bound on every row "
-          f"(issue #173). The KERNAL jiffy IRQ's per-tick cost is NOT "
-          f"removed (time-proportional; ~1-2% low at 1 MHz, negligible "
-          f"at turbo)")
+          f"(issue #173). The reading is the EFFECTIVE CPU rate with the "
+          f"display on, the conditions the cells run in: it includes "
+          f"badlines (~{BADLINE_STEAL_NTSC:.2%} NTSC / "
+          f"{BADLINE_STEAL_PAL:.2%} PAL), GideonZ/1541ultimate#874's "
+          f"one-PHI2-multiple shortfall at the top two speed indices, and "
+          f"the KERNAL jiffy IRQ (~1-2% at 1 MHz, negligible at turbo). It "
+          f"is not a delivered-clock reading ($D011=$0B, $D015=0, SEI, "
+          f"free-running CIA timer are not set up). $D011/$D015 are read "
+          f"on the C64 side and carried as vic_den= / sprites=")
     print(f"  5. FETCH-path cells (the observed surface): settle "
           f"{opts.ladder} = {[stub_cycles(f, k) for f, k in lad]} cy, at "
           f"{opts.speeds} MHz, cpu-read, N={opts.n} each, index histogram "
@@ -3444,14 +3588,7 @@ def main(argv=None):
                           f"discarded")
                 else:
                     off = abs(m - mhz) / mhz
-                    print(f"    set {mhz} MHz -> measured {m:.2f} "
-                          f"+-{m.pm:.2f} MHz ({off * 100:.1f}% off); fixed "
-                          f"overhead (fit intercept, as measured; may be "
-                          f"~0) "
-                          f"{m.overhead_s * 1000:.1f} +-"
-                          f"{m.overhead_pm_s * 1000:.1f} ms; windows "
-                          f"(passes, jiffies) {m.windows}"
-                          + ("  <-- DISCARDED (>20%)" if off > 0.20 else ""))
+                    print(leg4_line(mhz, m))
                     if off > 0.20:
                         measured[mhz] = None
             usable = [m for m in opts.speeds if measured.get(m) is not None]

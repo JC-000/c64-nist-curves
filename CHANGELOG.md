@@ -30,7 +30,10 @@ contract).
       `device=Ultimate_64_Elite/601A96/fw3.15(patch_level_unverified_by_v1_info)/fpga11F/core1.4F`
       (was `device=Ultimate 64 Elite/...`);
     - the generated fw suffix says `_by_v1_info`, not `_by_/v1/info`;
-    - a `clock_pm=` field follows `clock_measured=`;
+    - `clock_measured=` is followed by `clock_pm=`, `vic_den=` ($D011
+      bit 4) and `sprites=` ($D015, hex). OP_CLOCK captures both
+      registers on the C64 side; they are the display conditions the clock
+      was measured under;
     - on an unmitigated control build, fetch, stash and NOT_RUN rows read
       `settle_cy=native(unmitigated)` and are named
       `<surface>_<mhz>MHz_native_unpoked-req<cy>`. Before, stash and
@@ -44,6 +47,21 @@ contract).
   - **Two-point fit.** The clock is now the slope of a 0.5 s window and a
     ~10 s extension. Any fixed overhead is the intercept, reported as
     measured. Each row carries the jiffy-quantisation bound as `clock_pm=`.
+  - **What the clock reading is.** `clock_measured` is the effective CPU
+    rate with the display on, the same conditions the fetch and stash
+    cells run in. It is not a delivered clock. It includes:
+    - badlines: ~5.85% of PHI2 cycles on NTSC, ~5.09% on PAL;
+    - GideonZ/1541ultimate#874: one PHI2 multiple short at the top two
+      speed indices (U64E 40 -> 38.99, 48 -> 47.00);
+    - the small KERNAL jiffy-IRQ cost.
+
+    U64E fw 3.15 / core 1.4F NTSC hardware measured 48 -> 45.00 +-0.15
+    with intercept 0.0 +-18.4 ms, and 16 -> 15.30 +-0.05 with intercept
+    -6.0 +-18.4 ms. So there is no fixed overhead, and badlines plus #874
+    predict 45.25 / 15.41. A delivered-clock reading would need
+    $D011=$0B, $D015=0, SEI and a free-running CIA timer, which the tool
+    does not set up. The measurement is unchanged; only its labelling and
+    recorded conditions are new.
   - **Exit status.** It now has a documented contract (module docstring
     and `--help`):
     - 0: complete run
