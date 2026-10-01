@@ -23,6 +23,19 @@ contract).
     must begin with that version and may hold only `[A-Za-z0-9._+()~-]`.
   - **Device field.** It is now a single row token. Before, the product
     name's spaces split it across three tokens.
+  - **CELL row format change.** Rows recorded before this release keep the
+    old spelling and are not rewritten. Nothing in this repo parses CELL
+    rows; external readers should accept both forms. In new rows:
+    - whitespace, `=` and `/` inside a device sub-field become `_`, e.g.
+      `device=Ultimate_64_Elite/601A96/fw3.15(patch_level_unverified_by_v1_info)/fpga11F/core1.4F`
+      (was `device=Ultimate 64 Elite/...`);
+    - the generated fw suffix says `_by_v1_info`, not `_by_/v1/info`;
+    - a `clock_pm=` field follows `clock_measured=`;
+    - on an unmitigated control build, fetch, stash and NOT_RUN rows read
+      `settle_cy=native(unmitigated)` and are named
+      `<surface>_<mhz>MHz_native_unpoked-req<cy>`. Before, stash and
+      NOT_RUN rows claimed the requested settle, which a control build
+      cannot apply.
   - **Identity re-check.** `/v1/info` is re-read after every reboot.
   - **Cycle model.** The clock check modelled its loop as 1279 cycles per
     pass, which is the inner loop only. The pass was really 1305 cycles
