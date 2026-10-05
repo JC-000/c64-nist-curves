@@ -171,6 +171,20 @@ def make(work: Path, *args: str, env_extra: dict[str, str] | None = None,
                           env=env, capture_output=True, text=True)
 
 
+def make_version() -> tuple[int, int]:
+    """(major, minor) of the `make` that will run these probes.
+
+    Which flag spellings reach a recipe is version-dependent (leg 5c), so
+    the probes ask this make what it accepts rather than hardcoding one
+    platform's answer. Unparseable output yields (0, 0), which selects the
+    pre-long-option spellings -- the ones #180 measured on 3.81.
+    """
+    out = subprocess.run(["make", "--version"], capture_output=True,
+                         text=True).stdout
+    m = re.search(r"GNU Make (\d+)\.(\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
 def ca65_objects(output: str) -> dict[str, str]:
     """Map object -> source from the ca65 lines in make's output."""
     out: dict[str, str] = {}
@@ -567,12 +581,34 @@ def run(work: Path) -> int:
             print(f"[{leg}] PASS: {desc} ({mode})")
 
     # env MAKEFLAGS under -e reaches parse time raw; make still obeys it.
-    for mf, mode in (("--t", "touch"), ("--dr", "dry"), ("--que", "dry"),
-                     ("-ntx", "touch"), ("--touch", "touch"), ("--just-print", "dry")):
+    # Two spellings are version-dependent and are asked of this make rather
+    # than hardcoded, because neither has one spelling that works on both:
+    #   --t    3.81 has no long options and reads it as `-t` (measured,
+    #          #180). 4.x parses it as a long-option prefix, where it is
+    #          ambiguous between --touch and --trace, and refuses it:
+    #          rc=2, "option '--t' is ambiguous". `--tou` is unambiguous on
+    #          4.x but must NOT be substituted unconditionally -- 3.81 would
+    #          read `--tou` as the short-option cluster -t -o -u, and -o
+    #          consumes an argument.
+    #   -ntx   the 3.81 getopt cluster measured in #180. 4.x rejects the -x
+    #          member outright ("invalid option -- x"); `-nt` is the 4.x
+    #          cluster.
+    # A refused flag exits during option parsing, before any recipe runs, so
+    # build/ is pristine -- which reads as a clean no-op to the tree-state
+    # judges unless route() also asserts an exit status. It does.
+    _mv = make_version()
+    TOUCH_ABBREV = "--t" if _mv < (4,) else "--tou"
+    TOUCH_CLUSTER = "-ntx" if _mv < (4,) else "-nt"
+    for mf, mode in ((TOUCH_ABBREV, "touch"), ("--dr", "dry"), ("--que", "dry"),
+                     (TOUCH_CLUSTER, "touch"), ("--touch", "touch"),
+                     ("--just-print", "dry")):
         route("env-e", f"env MAKEFLAGS={mf!r} `make -e lib`",
               ["make", "-e", "lib", "@KNOB@"], mode, env_extra={"MAKEFLAGS": mf})
-    # A command-line MAKEFLAGS is obeyed by 3.81.
-    for mf, mode in (("t", "touch"), ("-t", "touch"), ("--t", "touch"),
+    # A command-line MAKEFLAGS is obeyed by 3.81. TOUCH_ABBREV for the same
+    # reason as above: on the command-line route 4.x does not refuse `--t`
+    # but silently ignores it and runs a full real build, which was the one
+    # probe in this file that ever reddened on 4.x.
+    for mf, mode in (("t", "touch"), ("-t", "touch"), (TOUCH_ABBREV, "touch"),
                      ("kt", "touch"), ("n", "dry"), ("", "real")):
         route("cmdline-makeflags", f"`make lib MAKEFLAGS={mf}`",
               ["make", "lib", f"MAKEFLAGS={mf}", "@KNOB@"], mode)
