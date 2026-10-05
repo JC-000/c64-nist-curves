@@ -550,7 +550,7 @@ def run(work: Path) -> int:
             return False
         return True
 
-    def route(leg, desc, argv, mode, goal="lib", env_extra=None):
+    def route(leg, desc, argv, mode, goal="lib", env_extra=None, rcs=(0,)):
         i = next(knob_seq)
         knob_name = f"LIB_ROUTE_PROBE_{i}"
         knob = f"CONTRACT_DEFINES=-D {knob_name}=1"
@@ -565,6 +565,21 @@ def run(work: Path) -> int:
         if mode == "real":
             ok = judge_real(leg, desc, before, goal, knob_name, r.returncode, r.stderr)
         else:
+            # A "touch"/"dry" run that make REFUSED is not a clean no-op: it
+            # exits during option parsing, before any recipe runs, so build/
+            # is pristine and every tree-state test below passes vacuously.
+            # Only judge_real asserted an exit status, so an ambiguous or
+            # invalid flag spelling scored the same as a correct --touch.
+            # rcs carries the probe's own contract; only `-q` may answer 1.
+            if r.returncode not in rcs:
+                ok = False
+                # make prints the reason on the FIRST stderr line and then
+                # dumps its whole usage text, so take the head: the tail is
+                # "Report bugs to <bug-make@gnu.org>" on every rejection.
+                why = next((ln for ln in r.stderr.splitlines() if ln.strip()), "")
+                fail(leg, f"{desc} ({mode}): exit {r.returncode}, expected "
+                     f"{'/'.join(str(c) for c in rcs)} -- make refused the flag "
+                     f"instead of running it: {why.strip()[:160]!r}")
             gone = sorted(set(before) - set(after))
             resized = sorted(k for k in set(before) & set(after) if before[k][0] != after[k][0])
             moved = sorted(k for k in set(before) & set(after) if before[k] != after[k])
@@ -599,11 +614,14 @@ def run(work: Path) -> int:
     _mv = make_version()
     TOUCH_ABBREV = "--t" if _mv < (4,) else "--tou"
     TOUCH_CLUSTER = "-ntx" if _mv < (4,) else "-nt"
+    # `-q` is the one probe whose correct answer is nonzero: with changed
+    # knobs the target is out of date and `-q` reports that as exit 1.
     for mf, mode in ((TOUCH_ABBREV, "touch"), ("--dr", "dry"), ("--que", "dry"),
                      (TOUCH_CLUSTER, "touch"), ("--touch", "touch"),
                      ("--just-print", "dry")):
         route("env-e", f"env MAKEFLAGS={mf!r} `make -e lib`",
-              ["make", "-e", "lib", "@KNOB@"], mode, env_extra={"MAKEFLAGS": mf})
+              ["make", "-e", "lib", "@KNOB@"], mode, env_extra={"MAKEFLAGS": mf},
+              rcs=(0, 1) if mf == "--que" else (0,))
     # A command-line MAKEFLAGS is obeyed by 3.81. TOUCH_ABBREV for the same
     # reason as above: on the command-line route 4.x does not refuse `--t`
     # but silently ignores it and runs a full real build, which was the one
