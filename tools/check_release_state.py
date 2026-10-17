@@ -150,8 +150,8 @@ def baseline_verdict(newest: str | None, base_tag: str | None,
                      version: str, version_tagged: bool) -> tuple[bool, str]:
     """Leg 5's decision, kept pure so leg 0 can drive every branch.
 
-    Returns (ok, message). `newest` is the newest release tag in the
-    repository, `base_tag` the tag tools/abi_baseline.json records.
+    Returns (ok, message). `newest` is the newest release tag reachable from
+    HEAD (merged_tags), `base_tag` the tag tools/abi_baseline.json records.
     """
     if base_tag is None or not RE_RELEASE_TAG.match(base_tag):
         return False, (f"[baseline] tools/abi_baseline.json records no release "
@@ -163,13 +163,13 @@ def baseline_verdict(newest: str | None, base_tag: str | None,
     key = lambda t: tuple(map(int, RE_RELEASE_TAG.match(t).groups()))
     if key(base_tag) < key(newest):
         return False, (f"[baseline] tools/abi_baseline.json reflects {base_tag}, "
-                       f"but {newest} is the newest release tag. "
+                       f"but {newest} is the newest release tag reachable from HEAD. "
                        f"check-archives' ABI pin is comparing against an older "
                        f"release. Run `python3 tools/gen_abi_baseline.py "
                        f"{newest}` and commit the result.")
     if key(base_tag) > key(newest):
         return False, (f"[baseline] tools/abi_baseline.json claims {base_tag}, "
-                       f"newer than every release tag ({newest} is newest) -- "
+                       f"newer than every release tag reachable from HEAD ({newest} is newest) -- "
                        f"it was not generated from a real tag")
     if not version_tagged:
         return True, (f"baseline reflects {base_tag}, the newest release; "
@@ -223,8 +223,10 @@ class NoGitRepo(Exception):
     """
 
 
-def _git_tags(pattern: str | None = None) -> list[str]:
+def _git_tags(pattern: str | None = None, merged: bool = False) -> list[str]:
     cmd = ["git", "-C", str(REPO), "tag", "--list"]
+    if merged:
+        cmd += ["--merged", "HEAD"]
     if pattern is not None:
         cmd.append(pattern)
     out = subprocess.run(cmd, capture_output=True, text=True)
@@ -239,6 +241,15 @@ def tag_exists(tag: str) -> bool:
 
 def all_tags() -> list[str]:
     return _git_tags()
+
+
+def merged_tags() -> list[str]:
+    """Tags reachable from HEAD. Leg 5's comparand: a release tag on another
+    line of history (a newer tag cut from a side branch, or every later
+    release when an OLDER tag is checked out) is not a release this tree's
+    baseline could or should reflect. Using every tag made a checkout of
+    v0.15.0 fail forever once v0.16.0 existed (review F8 of #183)."""
+    return _git_tags(merged=True)
 
 
 # --------------------------------------------------------------------------
@@ -465,6 +476,13 @@ def _self_test() -> list[str]:
                 "tag probe self-test FAILED: tag_exists() returned True for a "
                 "tag that cannot exist -- leg 3 would never fire"
             )
+        merged = merged_tags()
+        if not set(merged) <= set(tags):
+            bad.append(
+                f"tag probe self-test FAILED: merged_tags() reported "
+                f"{sorted(set(merged) - set(tags))}, which `git tag --list` "
+                f"does not -- leg 5's comparand is not a subset of the tags"
+            )
     return bad
 
 
@@ -639,7 +657,7 @@ def main() -> int:
     if base is not None and not git_ok:
         print("  abi baseline   : tag comparison SKIPPED (no git)")
     elif base is not None:
-        newest = newest_release_tag(all_tags())
+        newest = newest_release_tag(merged_tags())
         ok, msg = baseline_verdict(newest, base_tag, version, tagged)
         if not ok:
             failures.append(msg)
