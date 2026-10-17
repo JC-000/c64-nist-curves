@@ -111,15 +111,21 @@ update it (see Removed below).
   `.if LIB_SHARED_SQTAB_BASE = $8000`, each guarding `.export sqtab_lo,
   sqtab_hi`. The second ships both names from `make lib
   CONTRACT_DEFINES='-D LIB_SHARED_SQTAB_BASE=0x8000'`. This leg reads the
-  text of every `src/*.s` and `*.inc` and fails any `.export` / `.exportzp`
-  / `.global` / `.globalzp` (comma lists, `:addrsize`, `name = expr` and
-  `name := expr` forms) of a forbidden name, whatever conditional gates it.
-  It expands `precalc_table.inc`'s `.ident(.sprintf(...))` exports against
-  every `LIB_PRECALC_TABLE` invocation, and reports any other `.ident`, a
-  non-literal macro argument, or `.linecont` as unmodelled, which fails. A
-  name reaching an export through `.define` or a bare macro parameter is
-  outside what it can read. Red: both mutants, with the built sweep still
-  printing `forbidden exports OK`.
+  text of every archived source, every `src/*.s` and `*.inc`, and the
+  transitive `.include` closure of all of them, whatever the path or
+  extension (`.include "../cfg/x.inc"` and `.include "x.h"` both escaped a
+  glob of `src/`); an include it cannot open fails. It fails any `.export`
+  / `.exportzp` / `.global` / `.globalzp` (comma lists, `:addrsize`,
+  `name = expr` and `name := expr` forms) of a forbidden name, whatever
+  conditional gates it, after expanding one-line `.define`s (`.define NCX
+  .export` / `NCX sqtab_lo` also escaped). Exports of a macro parameter,
+  bare or through `precalc_table.inc`'s `.ident(.sprintf(...))`, are
+  expanded against every invocation. A parameterised `.define` that
+  exports, any other `.ident`, an unreadable macro argument and `.linecont`
+  are reported as unmodelled, which fails. Files are read as latin-1, so a
+  stray high byte in a comment neither crashes the leg nor drops the file.
+  Red: both mutants, with the built sweep still printing `forbidden
+  exports OK`, and the three escapes above.
 - **`sibling_sqtab_collision_check`'s second half is now an absence
   assertion.** It was a value pin that passed by finding "nothing to pin"
   in any archive that exports nothing, and after this removal that would

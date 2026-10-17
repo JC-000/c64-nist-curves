@@ -38,13 +38,17 @@ precedent. The window existed only
 because `main.s` imported `sqtab_lo`; it no longer does. `make check-archives`'
 two legs keep either name (or any other §8.0/§8.1/§8.2 consumer-input equate)
 from coming back: `forbidden_export_source_scan` fails any `.export` /
-`.exportzp` / `.global` of one in the TEXT of `src/*.s` / `*.inc`, whatever
-`.if` gates it, and `forbidden_export_check` scans the BUILT objects of a
-sample of configurations (every shipped arm, ungated and under
-`LIB_NO_BARE_EXPORTS`, two derived-knob passes and a list of presence-switch
-builds). The built sweep alone missed an export keyed on an unbuilt switch
-combination or knob value; the source scan cannot read a name spelled
-through `.define` or a bare macro parameter. Consumers derive the pair from `build/lib/nistcurves_sqtab_base.inc`, which
+`.exportzp` / `.global` of one in the TEXT of every archived source and
+`src/*.s` / `*.inc` plus their whole `.include` closure (any path, any
+extension; an include it cannot open fails), whatever `.if` gates it, with
+one-line `.define`s and macro-parameter exports expanded, and
+`forbidden_export_check` scans the BUILT objects of a sample of
+configurations (every shipped arm, ungated and under `LIB_NO_BARE_EXPORTS`,
+two derived-knob passes and a list of presence-switch builds). The built
+sweep alone missed an export keyed on an unbuilt switch combination or knob
+value. Forms the source scan cannot read (a parameterised `.define` that
+exports, an `.ident` outside the modelled macro shape, `.linecont`) fail
+rather than pass. Consumers derive the pair from `build/lib/nistcurves_sqtab_base.inc`, which
 `make lib` ships for exactly that reason.
 
 **The contract was cut by seven eighths at 1.0.0** — 40,737 words to ~5,300 —

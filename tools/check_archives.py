@@ -3926,7 +3926,9 @@ def forbidden_export_check(failures, archives):
 
 
 _SRC_EXPORT_RE = re.compile(r"\.(export|exportzp|global|globalzp)\b(.*)$", re.I)
-_SRC_UNMODELLED_RE = re.compile(r"\.(linecont|ident)\b", re.I)
+_SRC_EXPORT_DIR_RE = re.compile(r"\.(export|exportzp|global|globalzp)\b", re.I)
+_SRC_INCLUDE_RE = re.compile(r'^\s*(?:[A-Za-z_]\w*:)?\s*\.include\s+"([^"]*)"', re.I)
+_SRC_DEFINE_RE = re.compile(r"^\s*\.define\s+([A-Za-z_]\w*)(\s*\()?(.*)$", re.I)
 
 
 def _split_top(args):
@@ -3945,8 +3947,62 @@ def _split_top(args):
     return out + [cur]
 
 
+def _src_lines(f):
+    """A source file's lines. Decoded latin-1: ca65 takes any byte in a
+    comment, and a strict UTF-8 read crashed the leg on one 0xFF byte
+    (review mutant \\377). latin-1 maps every byte, so the file stays IN the
+    population and an export after such a byte is still read."""
+    return f.read_bytes().decode("latin-1").splitlines()
+
+
+def _resolve_include(name, including):
+    """The file ca65 would open for `.include "name"` from `including`, as
+    the Makefile runs it (cwd = REPO, `-I src`), also trying the including
+    file's own directory. None when no candidate exists; the caller records
+    that as a failure -- an include this scan cannot open is not a clean one."""
+    for base in (including.parent, REPO, REPO / "src"):
+        p = (base / name).resolve()
+        if p.is_file():
+            return p
+    return None
+
+
+def source_scan_population(archives):
+    """Every file the scan reads: each shipped arm's source (Makefile-derived)
+    plus every src/*.s and src/*.inc, and then the TRANSITIVE .include closure
+    of all of them, whatever the path or extension. Returns (files,
+    unresolved). Review R1 of #183: globbing src/ missed
+    `.include "../cfg/evil_s4.inc"` and `.include "evil_s5.h"`."""
+    roots = {(REPO / "src" / f"{s}.s").resolve()
+             for s, _d, _u in shipped_object_arms(archives).values()}
+    roots |= {p.resolve() for p in (REPO / "src").glob("*.s")}
+    roots |= {p.resolve() for p in (REPO / "src").glob("*.inc")}
+    files, unresolved, todo = [], [], sorted(roots)
+    while todo:
+        f = todo.pop()
+        if f in files:
+            continue
+        if not f.is_file():
+            unresolved.append(f"{f.relative_to(REPO) if f.is_relative_to(REPO) else f}: missing")
+            continue
+        files.append(f)
+        for ln in _src_lines(f):
+            m = _SRC_INCLUDE_RE.match(ln.split(";", 1)[0])
+            if m:
+                p = _resolve_include(m.group(1), f)
+                if p is None:
+                    unresolved.append(f"{_rel(f)}: .include \"{m.group(1)}\"")
+                if p is not None and p not in files:
+                    todo.append(p)
+    return sorted(files), unresolved
+
+
+def _rel(f):
+    return str(f.relative_to(REPO)) if f.is_relative_to(REPO) else str(f)
+
+
 @leg
-def forbidden_export_source_scan(failures):
+def forbidden_export_source_scan(failures, archives):
     """§8.0/§8.1/§8.2: no source line exports a MUST-NOT name, whatever gates it.
 
     forbidden_export_check examines BUILT objects, so it sees exactly the
@@ -3960,27 +4016,56 @@ def forbidden_export_source_scan(failures):
     The second ships both names from `make lib CONTRACT_DEFINES='-D
     LIB_SHARED_SQTAB_BASE=0x8000'`.
 
-    This leg reads the TEXT of every src/*.s and src/*.inc instead, ignoring
-    conditional assembly entirely: any `.export` / `.exportzp` / `.global` /
-    `.globalzp` (line start or after a label, comma lists, `:addrsize`, and
-    the `name = expr` / `name := expr` forms) naming a forbidden symbol fails,
-    in every arm at once. `.export .ident(.sprintf("fmt", p...))` inside a
-    macro whose format arguments are macro parameters (precalc_table.inc) is
-    expanded against every invocation's string-literal arguments; any other
-    `.ident`, a non-literal argument, and `.linecont` are reported as
-    UNMODELLED and fail rather than pass. What it cannot see: a forbidden
-    name reaching an export through a `.define` alias or a plain macro
-    parameter (`.export name`); the built sweep still covers those, for the
-    configurations it builds."""
+    This leg reads the TEXT of its population (source_scan_population: every
+    shipped arm's source, every src/*.s and *.inc, and the transitive
+    .include closure of all of them, any path, any extension; an include it
+    cannot open FAILS), ignoring conditional assembly entirely. It fails any
+    `.export` / `.exportzp` / `.global` / `.globalzp` (line start or after a
+    label, comma lists, `:addrsize`, `name = expr` / `name := expr`) of a
+    forbidden name, in every arm at once. Before matching, each line has
+    every one-line, parameterless `.define` expanded (so `.define NCX
+    .export` / `NCX sqtab_lo` is read as the export it is). Exports inside a
+    `.macro` whose exported name is a macro parameter -- bare, or through
+    `.ident(.sprintf("fmt", p...))` -- are expanded against every invocation
+    of that macro (precalc_table.inc's §8.4 rows). Fails closed, as
+    UNMODELLED: a parameterised `.define` whose body exports, any other
+    `.ident`, an invocation argument it cannot read, and `.linecont`."""
     print("\n=== §8 forbidden exports, source text (every arm, ungated) ===")
-    files = sorted((REPO / "src").glob("*.s")) + sorted((REPO / "src").glob("*.inc"))
-    texts = {f: f.read_text().splitlines() for f in files}
+    files, unresolved = source_scan_population(archives)
+    texts = {f: _src_lines(f) for f in files}
     hits, unmodelled, nlines = [], [], 0
-    templates = []        # (macro, fmt, [param index], "file:line")
+    # Pass 1: one-line .define bodies, population-wide.
+    defines = {}
+    for f in files:
+        for i, ln in enumerate(texts[f], 1):
+            m = _SRC_DEFINE_RE.match(ln.split(";", 1)[0])
+            if not m:
+                continue
+            if m.group(2):          # parameterised
+                if _SRC_EXPORT_DIR_RE.search(m.group(3)):
+                    unmodelled.append(f"{_rel(f)}:{i}: parameterised .define "
+                                      f"exporting: {ln.strip()}")
+                continue
+            defines[m.group(1)] = m.group(3).strip()
+
+    def expand(code):
+        for _ in range(8):
+            new = code
+            for name, body in defines.items():
+                new = re.sub(rf"(?<![\w.@]){re.escape(name)}(?!\w)",
+                             lambda _m, b=body: b, new)
+            if new == code:
+                return code
+            code = new
+        return code
+
+    templates = []        # (macro, kind, fmt, [param index], "file:line")
     for f in files:
         macro, params = None, []
         for i, ln in enumerate(texts[f], 1):
             code = ln.split(";", 1)[0]
+            if _SRC_DEFINE_RE.match(code):
+                continue
             mm = re.match(r"^\s*\.macro\s+(\w+)(.*)$", code, re.I)
             if mm:
                 macro = mm.group(1)
@@ -3990,43 +4075,47 @@ def forbidden_export_source_scan(failures):
                 macro, params = None, []
                 continue
             if re.search(r"\.linecont\b", code, re.I):
-                unmodelled.append(f"{f.name}:{i}: .linecont")
+                unmodelled.append(f"{_rel(f)}:{i}: .linecont")
+            code = expand(code)
             m = _SRC_EXPORT_RE.search(code)
             if not m:
                 continue
             nlines += 1
             names = []
             for item in _split_top(m.group(2)):
-                # `.ident(.sprintf("fmt", p, ...))` inside a macro whose
-                # format arguments are all macro parameters: expanded below
-                # against every invocation (precalc_table.inc's §8.4 rows).
                 im = re.match(r'\s*\.ident\s*\(\s*\.sprintf\s*\(\s*"([^"]*)"'
                               r'((?:\s*,\s*\w+)*)\s*\)\s*\)', item, re.I)
                 if im:
                     args = [a.strip() for a in im.group(2).split(",") if a.strip()]
                     if macro and all(a in params for a in args):
-                        templates.append((macro, im.group(1),
+                        templates.append((macro, "fmt", im.group(1),
                                           [params.index(a) for a in args],
-                                          f"{f.name}:{i}"))
+                                          f"{_rel(f)}:{i}"))
                     else:
-                        unmodelled.append(f"{f.name}:{i}: {ln.strip()}")
+                        unmodelled.append(f"{_rel(f)}:{i}: {ln.strip()}")
                     continue
-                if _SRC_UNMODELLED_RE.search(item):
-                    unmodelled.append(f"{f.name}:{i}: {ln.strip()}")
+                if re.search(r"\.ident\b", item, re.I):
+                    unmodelled.append(f"{_rel(f)}:{i}: {ln.strip()}")
                     continue
                 nm = re.match(r"\s*([A-Za-z_@][\w@]*)", item)
-                if nm:
-                    names.append(nm.group(1))
+                if not nm:
+                    continue
+                if macro and nm.group(1) in params:
+                    templates.append((macro, "bare", "%s",
+                                      [params.index(nm.group(1))], f"{_rel(f)}:{i}"))
+                    continue
+                names.append(nm.group(1))
             bad = forbidden(names)
             if bad:
-                hits.append(f"src/{f.name}:{i} `{ln.strip()}` exports {sorted(bad)}")
+                hits.append(f"{_rel(f)}:{i} `{ln.strip()}` exports {sorted(bad)}")
     # Expand each template against every invocation of its macro. A needed
-    # argument that is not a string literal cannot be read here: unmodelled.
+    # argument that is not a string literal (fmt) or identifier/literal
+    # (bare) cannot be read here: unmodelled.
     nexpanded = 0
-    for macro, fmt, idx, where in templates:
+    for macro, kind, fmt, idx, where in templates:
         for f in files:
             for i, ln in enumerate(texts[f], 1):
-                code = ln.split(";", 1)[0]
+                code = expand(ln.split(";", 1)[0])
                 inv = re.match(rf"^\s*(?:[A-Za-z_]\w*:)?\s*{macro}\b(?!\s*:)(.*)$", code)
                 if not inv or re.match(r"^\s*\.macro\b", code, re.I):
                     continue
@@ -4035,8 +4124,10 @@ def forbidden_export_source_scan(failures):
                 for k in idx:
                     a = args[k] if k < len(args) else ""
                     sm = re.fullmatch(r'"([^"]*)"', a)
+                    if not sm and kind == "bare":
+                        sm = re.fullmatch(r"([A-Za-z_@][\w@]*)", a)
                     if not sm:
-                        unmodelled.append(f"{f.name}:{i}: {macro} argument {k + 1} "
+                        unmodelled.append(f"{_rel(f)}:{i}: {macro} argument {k + 1} "
                                           f"({a!r}) feeds the export at {where}")
                         break
                     vals.append(sm.group(1))
@@ -4049,7 +4140,7 @@ def forbidden_export_source_scan(failures):
                     if "%" in name:
                         unmodelled.append(f"{where}: format {fmt!r} not expandable")
                     elif forbidden([name]):
-                        hits.append(f"src/{f.name}:{i} `{ln.strip()}` exports "
+                        hits.append(f"{_rel(f)}:{i} `{ln.strip()}` exports "
                                     f"['{name}'] via {where}")
     note_examined(nexpanded, "macro-expanded export")
     note_examined(len(files), "source file")
@@ -4058,6 +4149,10 @@ def forbidden_export_source_scan(failures):
         failures.append(f"forbidden exports (source): examined {len(files)} files "
                         f"and {nlines} export directives -- vacuous")
         print("  FORBID SRC FAIL: empty population")
+    for u in unresolved:
+        failures.append(f"forbidden exports (source): cannot open {u} -- an "
+                        "unread include is not a clean one")
+        print(f"  FORBID SRC FAIL: unresolved {u}")
     for u in unmodelled:
         failures.append(f"forbidden exports (source): unmodelled form at {u} -- "
                         "this scan cannot read the exported name")
@@ -4066,11 +4161,14 @@ def forbidden_export_source_scan(failures):
         failures.append(f"forbidden exports (source): {h} (SPEC §8.0/§8.1/§8.2 "
                         "MUST NOT, whatever conditional gates it)")
         print(f"  FORBID SRC FAIL: {h}")
-    if files and nlines and not hits and not unmodelled:
+    if files and nlines and not hits and not unmodelled and not unresolved:
+        outside = sorted(_rel(f) for f in files if f.parent != (REPO / "src").resolve()
+                         or f.suffix not in (".s", ".inc"))
         print(f"  forbidden exports (source) OK ({nlines} export directives + "
-              f"{nexpanded} macro-expanded names, "
-              f"in {len(files)} src/*.s + *.inc files, every conditional arm: none "
-              "names a §8 forbidden symbol)")
+              f"{nexpanded} macro-expanded names, {len(defines)} .define(s) "
+              f"expanded, in {len(files)} files: src/*.s + *.inc + .include "
+              f"closure{' ' + str(outside) if outside else ''}; every "
+              "conditional arm: none names a §8 forbidden symbol)")
 
 
 ABI_BASELINE = REPO / "tools" / "abi_baseline.json"
@@ -5654,7 +5752,7 @@ def _run_all_legs():
         ("§5 footprint basis", footprint_basis_check, (failures,)),
         ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
         ("§8 forbidden exports", forbidden_export_check, (failures, archives)),
-        ("§8 forbidden exports (source)", forbidden_export_source_scan, (failures,)),
+        ("§8 forbidden exports (source)", forbidden_export_source_scan, (failures, archives)),
         ("§1/§7 ABI vs last release", abi_surface_check, (failures, archives)),
         ("documented ABI gate", abi_doc_binding_check, (failures,)),
         ("§8.1 sqtab pin, deferral x onchip", sqtab_pin_deferral_check, (failures,)),
