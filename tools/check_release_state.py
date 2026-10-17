@@ -223,10 +223,13 @@ class NoGitRepo(Exception):
     """
 
 
-def _git_tags(pattern: str | None = None, merged: bool = False) -> list[str]:
+def _git_tags(pattern: str | None = None, merged: bool | str = False,
+              points_at: str | None = None) -> list[str]:
     cmd = ["git", "-C", str(REPO), "tag", "--list"]
     if merged:
-        cmd += ["--merged", "HEAD"]
+        cmd += ["--merged", "HEAD" if merged is True else merged]
+    if points_at:
+        cmd += ["--points-at", points_at]
     if pattern is not None:
         cmd.append(pattern)
     out = subprocess.run(cmd, capture_output=True, text=True)
@@ -250,6 +253,29 @@ def merged_tags() -> list[str]:
     baseline could or should reflect. Using every tag made a checkout of
     v0.15.0 fail forever once v0.16.0 existed (review F8 of #183)."""
     return _git_tags(merged=True)
+
+
+def baseline_comparand() -> tuple[str | None, str | None]:
+    """(newest release tag leg 5 compares the baseline against, the release
+    tag HEAD itself carries or None).
+
+    Normally the newest release tag reachable from HEAD. But AT a release
+    commit -- HEAD itself tagged vX.Y.Z -- the baseline cannot reflect that
+    tag: it was committed before the tag existed, and regenerating it needs
+    the tag. So there the comparand is the newest release reachable from
+    HEAD^ that is not HEAD's own tag, i.e. the previous release, and the
+    tag's own tree passes (review R3 of #183: it was red at its own tag).
+    The post-tag regen commit is still required: it is not tagged, so from
+    it on the comparand is the new tag again."""
+    at_head = [t for t in _git_tags(points_at="HEAD") if RE_RELEASE_TAG.match(t)]
+    if not at_head:
+        return newest_release_tag(merged_tags()), None
+    own = newest_release_tag(at_head)
+    try:
+        prev = [t for t in _git_tags(merged="HEAD^") if t not in at_head]
+    except NoGitRepo:
+        prev = []          # HEAD is a root commit: no previous release
+    return newest_release_tag(prev), own
 
 
 # --------------------------------------------------------------------------
@@ -657,8 +683,12 @@ def main() -> int:
     if base is not None and not git_ok:
         print("  abi baseline   : tag comparison SKIPPED (no git)")
     elif base is not None:
-        newest = newest_release_tag(merged_tags())
+        newest, own = baseline_comparand()
         ok, msg = baseline_verdict(newest, base_tag, version, tagged)
+        if ok and own:
+            msg = (f"HEAD is release {own}; baseline reflects {base_tag}, the "
+                   f"previous release, as it must at the tag -- commit "
+                   f"`python3 tools/gen_abi_baseline.py {own}` next")
         if not ok:
             failures.append(msg)
         elif not base_commit:

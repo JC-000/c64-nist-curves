@@ -118,7 +118,13 @@ Three later releases matter here:
     (check-archives verifies the same digest);
   - in the pre-tag state (VERSION bumped, tag not cut) it passes and prints
     which tag the baseline reflects, because the previous release's baseline
-    is the right comparand until the new tag exists.
+    is the right comparand until the new tag exists;
+  - AT the tagged release commit itself (HEAD carries `vX.Y.Z`) it compares
+    against the newest release reachable from `HEAD^`, i.e. the previous
+    one, and passes: that commit's baseline was necessarily generated before
+    its own tag existed. It prints the regen command to run next;
+  - from the first commit after the tag it fails until the regen commit
+    lands, so the post-tag regen stays mandatory.
   It runs in the git tree only; in a release tarball, which has no tag
   namespace, it SKIPs.
 - **1.1.1** — withdrew the §6.1 requirement that `make lib` also ship a `.inc`
