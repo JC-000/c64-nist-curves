@@ -101,7 +101,7 @@ git archive \
   src/nistcurves.inc cfg/nistcurves-example.cfg \
   src/constants.s src/zp_config.s src/zp_aliases.s \
   src/lib_version.s src/lib_manifest.s src/reu_config.s \
-  src/precalc_manifest.s src/precalc_table.inc src/sqtab_base.inc \
+  src/precalc_manifest.s src/precalc_table.inc src/nistcurves_sqtab_base.inc \
   src/reu_dma_done.inc \
   src/main.s src/mul_8x8.s src/reu_mul_init.s \
   src/fp256.s src/mod256.s src/curve256.s src/inv256.s \

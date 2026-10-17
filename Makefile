@@ -4,7 +4,7 @@ CA65 = ca65
 # rules the same way. Besides the fixed flags it carries `--create-dep`, which
 # makes ca65 write build/<object>.o.d naming the object's source AND every
 # header it `.include`s (issue #178). Those .d files are `-include`d below,
-# so editing src/sqtab_base.inc, src/reu_banks.inc, src/precalc_table.inc,
+# so editing src/nistcurves_sqtab_base.inc, src/reu_banks.inc, src/precalc_table.inc,
 # src/reu_dma_done.inc -- or any header added later -- reassembles exactly the
 # objects (every variant) that include it. Before this, no recipe named its
 # headers: a header edit left `make` / `make lib-*` answering "Nothing to be
@@ -680,10 +680,15 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
 #
 #   build/lib/nistcurves.a                    the archive (per-variant name)
 #   build/lib/nistcurves.inc                  <- src/nistcurves.inc
-#   build/lib/sqtab_base.inc                  <- src/sqtab_base.inc
+#   build/lib/nistcurves_sqtab_base.inc       <- src/nistcurves_sqtab_base.inc
 #   build/lib/cfg/nistcurves-example.cfg      <- cfg/nistcurves-example.cfg
 #
-# sqtab_base.inc ships from v0.16.0, when the bare sqtab_lo/sqtab_hi exports
+# Every shipped file is named `nistcurves*`: a consumer vendoring several
+# libraries puts every build/lib on one -I path, and a name a sibling also
+# ships (c64-mlkem ships its own `sqtab_base.inc`) resolves to whichever comes
+# first, silently. check-archives' packaging leg fails an unprefixed one.
+#
+# nistcurves_sqtab_base.inc ships from v0.16.0, when the bare sqtab_lo/sqtab_hi exports
 # were removed (SPEC §8.1 forbids them). A consumer now has to derive the two
 # names in its own TU, and the header tells it to do so with this include --
 # which, until it shipped, existed only in the library's src/. Without it the
@@ -702,7 +707,7 @@ LIB_FULL_ONCHIP_OBJS = $(LIB_CORE_ONCHIP_OBJS) $(LIB_MUL_ONCHIP_OBJS) \
 LIB_INC         = $(LIB_DIR)/nistcurves.inc
 LIB_CFG_DIR     = $(LIB_DIR)/cfg
 LIB_EXAMPLE_CFG = $(LIB_CFG_DIR)/nistcurves-example.cfg
-LIB_SQTAB_INC   = $(LIB_DIR)/sqtab_base.inc
+LIB_SQTAB_INC   = $(LIB_DIR)/nistcurves_sqtab_base.inc
 LIB_PACKAGING   = $(LIB_INC) $(LIB_SQTAB_INC) $(LIB_EXAMPLE_CFG)
 
 lib:             $(LIB_DIR)/nistcurves.a $(LIB_PACKAGING)
@@ -727,7 +732,7 @@ $(LIB_CFG_DIR):
 $(LIB_INC): $(SRC_DIR)/nistcurves.inc | $(LIB_DIR)
 	cp $< $@
 
-$(LIB_SQTAB_INC): $(SRC_DIR)/sqtab_base.inc | $(LIB_DIR)
+$(LIB_SQTAB_INC): $(SRC_DIR)/nistcurves_sqtab_base.inc | $(LIB_DIR)
 	cp $< $@
 
 $(LIB_EXAMPLE_CFG): cfg/nistcurves-example.cfg | $(LIB_CFG_DIR)

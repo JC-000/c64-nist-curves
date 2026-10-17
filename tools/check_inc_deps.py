@@ -4,8 +4,9 @@
 Why this exists (issue #178)
 ----------------------------
 Every ca65 recipe named only its `.s`.  The headers those sources
-`.include` -- `sqtab_base.inc`, `reu_banks.inc`, `precalc_table.inc`,
-`reu_dma_done.inc` at the time of writing -- were prerequisites of
+`.include` -- `sqtab_base.inc` (since renamed `nistcurves_sqtab_base.inc`),
+`reu_banks.inc`, `precalc_table.inc`, `reu_dma_done.inc` at the time of
+writing -- were prerequisites of
 nothing, so editing one (or a `git checkout` that touched only a header)
 left `make` / `make lib-*` answering "Nothing to be done" and shipping a
 stale object, archive or PRG.  Nothing in the build reported it.
@@ -871,7 +872,7 @@ def run(work: Path, spell: tuple[str, str]) -> int:
             fail("q-paths", f"`make -q {rel}`: unchanged knobs exit {c} (want 0), "
                  f"changed knobs exit {s} (want 1)")
     pkg = [p for p in (bdir / "lib" / "nistcurves.inc",
-                       bdir / "lib" / "sqtab_base.inc",
+                       bdir / "lib" / "nistcurves_sqtab_base.inc",
                        bdir / "lib" / "cfg" / "nistcurves-example.cfg") if p.is_file()]
     pkg_q = {str(p.relative_to(work)):
              make(work, "-q", str(p.relative_to(work)),

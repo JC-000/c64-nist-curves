@@ -1314,7 +1314,7 @@ enforced by `.assert` in `src/mul_8x8.s`.
 
 The library exports neither `sqtab_lo` nor `sqtab_hi` (SPEC §8.1 forbids it;
 removed at v0.16.0). Derive them in your own TU from
-`build/lib/sqtab_base.inc`, which `make lib` ships. To check that your base
+`build/lib/nistcurves_sqtab_base.inc`, which `make lib` ships. To check that your base
 matches the archive's, import the prefixed output
 `LIB_NISTCURVES_SHARED_SQTAB_BASE`, the base the archive's code reads,
 exported by every field archive except `nistcurves-app-owned.a`.
@@ -1322,7 +1322,7 @@ exported by every field archive except `nistcurves-app-owned.a`.
 before the header is read:
 
 ```asm
-.include "sqtab_base.inc"     ; first
+.include "nistcurves_sqtab_base.inc"     ; first
 .include "nistcurves.inc"     ; asserts LIB_SHARED_SQTAB_BASE = LIB_NISTCURVES_SHARED_SQTAB_BASE
 sqtab_lo = LIB_SHARED_SQTAB_BASE
 sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200

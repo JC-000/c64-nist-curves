@@ -84,8 +84,8 @@
 ;   `LIB_SHARED_SQTAB_BASE`, not an import -- and since v0.16.0 not
 ;   importable at all: §8.1 says they MUST NOT be exported, and no archive
 ;   does. Derive them in your own TU from the shipped default, which `make
-;   lib` copies beside this header as build/lib/sqtab_base.inc:
-;       .include "sqtab_base.inc"       ; FIRST: LIB_SHARED_SQTAB_BASE, .ifndef-guarded
+;   lib` copies beside this header as build/lib/nistcurves_sqtab_base.inc:
+;       .include "nistcurves_sqtab_base.inc"       ; FIRST: LIB_SHARED_SQTAB_BASE, .ifndef-guarded
 ;       .include "nistcurves.inc"       ; then this header, which pins the base
 ;       sqtab_lo = LIB_SHARED_SQTAB_BASE
 ;       sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200
@@ -94,7 +94,7 @@
 ;   asserts your base against the archive's prefixed output
 ;   LIB_NISTCURVES_SHARED_SQTAB_BASE at link (see §8.1 below), but only if
 ;   LIB_SHARED_SQTAB_BASE is defined BEFORE this header is read: `-D`, or
-;   include sqtab_base.inc first, as above.
+;   include nistcurves_sqtab_base.inc first, as above.
 ; * The `LIB_SHARED_*` placement knobs (§8.1 / §8.2). Those are consumer
 ;   input, deliberately unexported by every adopter — two exporters of an
 ;   unprefixed name collide in a composed link. What you read back instead
@@ -541,7 +541,7 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 ; your TU derives sqtab_lo/_hi from a base the archive was not built with,
 ; your table and the library's reads land on different pages and the link is
 ; otherwise clean. Active only if LIB_SHARED_SQTAB_BASE is already defined when
-; this header is read: pass it with -D, or `.include "sqtab_base.inc"` BEFORE
+; this header is read: pass it with -D, or `.include "nistcurves_sqtab_base.inc"` BEFORE
 ; this header.
 .ifdef LIB_SHARED_SQTAB_BASE
 .assert LIB_SHARED_SQTAB_BASE = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive: pass the same -D to CONTRACT_DEFINES and your own build"

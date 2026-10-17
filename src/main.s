@@ -55,7 +55,7 @@
 ; MEMORY{} block instead; there is no way to assert against a memory map
 ; we do not author.
 ;
-; Comparing against LIB_SHARED_SQTAB_BASE from sqtab_base.inc (the include
+; Comparing against LIB_SHARED_SQTAB_BASE from nistcurves_sqtab_base.inc (the include
 ; mul_8x8.s also uses) means a `-D LIB_SHARED_SQTAB_BASE=...` override moves
 ; the guard and the table together.
 ;
@@ -70,7 +70,7 @@
 ; import against `define = yes` on MAIN in src/c64.cfg. Remove that cfg
 ; attribute and the link fails loudly (verified, exit 1, no output file);
 ; make the import optional instead and the collision goes back to silent.
-.include "sqtab_base.inc"   ; source-level base. §6.7 was RETIRED at contract
+.include "nistcurves_sqtab_base.inc"   ; source-level base. §6.7 was RETIRED at contract
                             ; 1.0.0 -- the reasoning below is why WE keep the
                             ; guard, not an obligation anyone owes; the §8.1
                             ; half of it is live. (SPEC v0.10.2 §6.7: the

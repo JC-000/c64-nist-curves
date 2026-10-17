@@ -39,7 +39,7 @@
 ; -- i.e. the documented override does not assemble at all. Guarding makes
 ; both arms work: no override -> import reu_config.s's exported default;
 ; override -> use the -D value, which is the same value reu_config.s exports,
-; because the one -D reaches both TUs. Same shape as src/sqtab_base.inc's
+; because the one -D reaches both TUs. Same shape as src/nistcurves_sqtab_base.inc's
 ; "included, not imported" note.
 .ifndef LIB_NISTCURVES_REU_BANK_MUL
 .import LIB_NISTCURVES_REU_BANK_MUL
@@ -51,7 +51,7 @@
 ; Consumer override via `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>`.
 ; Default $9c00 was chosen on 2026-05-17 (see Known issues note) so the
 ; standalone library build links cleanly without an override.
-.include "sqtab_base.inc"   ; single shared default (SPEC v0.10.2 §6.7 rule)
+.include "nistcurves_sqtab_base.inc"   ; single shared default (SPEC v0.10.2 §6.7 rule)
 
 sqtab_lo        = LIB_SHARED_SQTAB_BASE             ; 512 B: lo bytes of floor(n^2/4)
 sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n^2/4)

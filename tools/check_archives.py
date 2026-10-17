@@ -2317,8 +2317,8 @@ def packaging_check(failures, archives):
     src_cfg = REPO / "cfg" / "nistcurves-example.cfg"
     shipped_inc = LIBDIR / "nistcurves.inc"
     shipped_cfg = LIBDIR / "cfg" / "nistcurves-example.cfg"
-    src_sqb = REPO / "src" / "sqtab_base.inc"
-    shipped_sqb = LIBDIR / "sqtab_base.inc"
+    src_sqb = REPO / "src" / "nistcurves_sqtab_base.inc"
+    shipped_sqb = LIBDIR / "nistcurves_sqtab_base.inc"
     archive = LIBDIR / "nistcurves.a"
 
     # (1) `make lib` produced all three artifacts, and the shipped header/cfg
@@ -2339,25 +2339,46 @@ def packaging_check(failures, archives):
             failures.append(f"packaging: shipped {label} differs from {s}")
             print(f"  PACKAGING FAIL: build/lib copy of the {label} is stale")
             ok = False
+    # (1a) Every shipped file is in this library's filename namespace. A
+    # consumer vendoring two libraries puts both build/lib directories on its
+    # include and library paths, so a shipped name another library also ships
+    # resolves to whichever path comes first, silently, and neither library's
+    # own build can see it. v0.16.0's first cut shipped `nistcurves_sqtab_base.inc`,
+    # which c64-mlkem also ships (default $9000) and c64-https vendors both
+    # (c64-lib-contract review of #183, item 2).
+    shipped = sorted(p.relative_to(LIBDIR) for p in LIBDIR.rglob("*") if p.is_file())
+    note_examined(len(shipped), "shipped file")
+    foreign = [str(p) for p in shipped if not p.name.startswith("nistcurves")]
+    if not shipped:
+        failures.append("packaging: build/lib holds no files -- the namespace "
+                        "check examined nothing")
+        ok = False
+    if foreign:
+        failures.append(f"packaging: build/lib ships {foreign}, outside the "
+                        "`nistcurves*` filename namespace -- a sibling library "
+                        "shipping the same name shadows it on a shared -I path")
+        print(f"  PACKAGING FAIL: unprefixed shipped file(s) {foreign}")
+        ok = False
     if not ok:
         return
-    print("  artifacts OK (.a + .inc + sqtab_base.inc + example .cfg, shipped "
-          "copies match src/)")
+    print(f"  artifacts OK (.a + .inc + nistcurves_sqtab_base.inc + example "
+          f".cfg, shipped copies match src/; all {len(shipped)} shipped files "
+          "`nistcurves*`)")
 
-    # (1b) sqtab_base.inc is self-contained from build/lib alone (v0.16.0).
+    # (1b) nistcurves_sqtab_base.inc is self-contained from build/lib alone (v0.16.0).
     # With the bare sqtab_lo/sqtab_hi exports gone (SPEC §8.1), deriving them
     # in the consumer's own TU is the ONLY way to obtain them, and
     # nistcurves.inc tells consumers to do it with this include. So assemble
     # exactly that, with -I pointing at build/lib and nowhere else, and check
     # the derived value both at the shipped default and under a -D override.
-    # The default is not restated here: it is parsed from src/sqtab_base.inc,
+    # The default is not restated here: it is parsed from src/nistcurves_sqtab_base.inc,
     # which (1) has just proved byte-identical to the shipped copy.
     mdef = re.search(r"LIB_SHARED_SQTAB_BASE\s*=\s*\$([0-9a-fA-F]+)",
                      src_sqb.read_text())
     sqb_ok = mdef is not None
     if not mdef:
         failures.append("packaging: cannot parse the default out of "
-                        "src/sqtab_base.inc -- the derivation probe would "
+                        "src/nistcurves_sqtab_base.inc -- the derivation probe would "
                         "compare against nothing")
         print("  SQTAB INC FAIL: default unparsed")
     # Failures here do not end the leg: the header rows below are independent
@@ -2368,7 +2389,7 @@ def packaging_check(failures, archives):
                 (0xA000, ["-D", "LIB_SHARED_SQTAB_BASE=0xA000"])) if mdef else ()
         for want, dargs in rows:
             (td / "d.s").write_text(
-                '.include "sqtab_base.inc"\n'
+                '.include "nistcurves_sqtab_base.inc"\n'
                 "sqtab_lo = LIB_SHARED_SQTAB_BASE\n"
                 "sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200\n"
                 f".assert sqtab_lo = ${want:04X}, error, \"derived sqtab_lo\"\n"
@@ -2378,12 +2399,12 @@ def packaging_check(failures, archives):
             note_examined(1, "sqtab derivation probe")
             if rc:
                 failures.append(f"packaging: deriving sqtab_lo from the shipped "
-                                f"sqtab_base.inc {dargs or '(default)'} failed: "
+                                f"nistcurves_sqtab_base.inc {dargs or '(default)'} failed: "
                                 f"{out.strip()[:200]}")
                 print(f"  SQTAB INC FAIL {dargs or '(default)'}: {out.strip()[:200]}")
                 sqb_ok = False
     if sqb_ok:
-        print("  sqtab_base.inc OK (consumer derivation from build/lib alone: "
+        print("  nistcurves_sqtab_base.inc OK (consumer derivation from build/lib alone: "
               "default and -D override both land where asserted)")
 
     # (2) Every LIB_NISTCURVES_* segment the sources emit must be mapped by the
@@ -2578,8 +2599,8 @@ def packaging_check(failures, archives):
         # header must turn that into an lderror against the archive's
         # LIB_NISTCURVES_SHARED_SQTAB_BASE. Driven with -D, which is how both
         # a CONTRACT_DEFINES-style build and an earlier
-        # `.include "sqtab_base.inc"` present it to the header. The matching
-        # value is the default parsed from src/sqtab_base.inc, which the
+        # `.include "nistcurves_sqtab_base.inc"` present it to the header. The matching
+        # value is the default parsed from src/nistcurves_sqtab_base.inc, which the
         # default-built archive under test was assembled with; it is NOT read
         # back from the archive, so a missing export cannot make the row pass.
         if mdef:
@@ -4204,7 +4225,7 @@ def sibling_sqtab_collision_check(failures):
     `sqtab_hi` for a consumer at all. SPEC §8.1 says they "MUST NOT be
     exported either -- they are source-level names each consuming TU derives".
     Through v0.15.0 this half was a value pin instead -- every archive that
-    exported the pair was checked against src/sqtab_base.inc -- because the
+    exported the pair was checked against src/nistcurves_sqtab_base.inc -- because the
     export was a gated §6.5-window item. The export is gone (v0.16.0), and the
     value pin turned into a leg that passes by finding nothing to pin, so it is
     now the absence assertion it should become. Absence over a link proves

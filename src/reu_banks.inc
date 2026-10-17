@@ -30,7 +30,7 @@
 ; An `.include` is the way out: both TUs see the same guarded equates at
 ; assembly time, so the mask can be COMPUTED per variant instead of asserted,
 ; and a `-D` reaching every TU (which `CONTRACT_DEFINES` guarantees, §6.2)
-; moves the mask and the code together. Same mechanism as sqtab_base.inc.
+; moves the mask and the code together. Same mechanism as nistcurves_sqtab_base.inc.
 ;
 ; Do not define these anywhere else. Two copies of a default can silently
 ; disagree, which is exactly what this file exists to prevent.

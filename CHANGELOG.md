@@ -70,7 +70,7 @@ update it (see Removed below).
   `-D LIB_NO_BARE_EXPORTS=1 -D SHARED_SQTAB_INIT`, so it never took ours.
   c64-wireguard does not link this library. If you imported either name:
   - derive it in your own TU instead, the way SPEC §8.1 prescribes:
-    `.include "sqtab_base.inc"`, then `sqtab_lo = LIB_SHARED_SQTAB_BASE`
+    `.include "nistcurves_sqtab_base.inc"`, then `sqtab_lo = LIB_SHARED_SQTAB_BASE`
     and `sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200`;
   - pass the same `-D LIB_SHARED_SQTAB_BASE=0x..` to your own build that
     you pass to the library's `CONTRACT_DEFINES`;
@@ -108,7 +108,7 @@ update it (see Removed below).
   link against every archive with exactly `{sqtab_lo, sqtab_hi}`
   unresolved. A positive control, the same probe against a stand-in
   exporting the pair, must resolve first.
-- **Packaging leg: `sqtab_base.inc` is shipped, byte-identical to
+- **Packaging leg: `nistcurves_sqtab_base.inc` is shipped, byte-identical to
   `src/`, and self-contained.** The leg assembles a consumer's derivation
   with `-I build/lib` and nothing else, at the default and at a `-D`
   override. Negative-tested twice. Dropping the file from `LIB_PACKAGING`
@@ -213,7 +213,7 @@ update it (see Removed below).
     longer wipes the user's `build/`.
 
 - **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
-  its source `.include`s (`sqtab_base.inc`, `reu_banks.inc`,
+  its source `.include`s (`nistcurves_sqtab_base.inc`, `reu_banks.inc`,
   `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout
   touching only a header -- left `make` / `make lib-*` reporting "Nothing to
   be done" over a stale PRG or archive. Measured on the pre-fix Makefile with
@@ -283,9 +283,9 @@ update it (see Removed below).
   (SPEC.md:389). **Additive, so `LIB_NISTCURVES_ABI_VERSION` does not move
   again**; it is 5 for the removal above. An equate adds no segment bytes:
   every PRG and every measured §5 footprint is unchanged.
-- **`make lib*` now ships `build/lib/sqtab_base.inc`** beside
+- **`make lib*` now ships `build/lib/nistcurves_sqtab_base.inc`** beside
   `nistcurves.inc`. It is the library's single `.ifndef`-guarded default for
-  `LIB_SHARED_SQTAB_BASE`, byte-identical to `src/sqtab_base.inc`. With the
+  `LIB_SHARED_SQTAB_BASE`, byte-identical to `src/nistcurves_sqtab_base.inc`. With the
   exports gone, deriving the two names is the only way to obtain them.
   Before this change the include the header recommended existed only in the
   library's `src/`, so a consumer would have transcribed `$9C00` from prose.

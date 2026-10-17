@@ -602,7 +602,7 @@ def run_make(defines: str = "", build_dir: str | None = None) -> None:
                 "LIB_NISTCURVES_REU_OFFSET_COMB_P384 (src/points384_comb.s) — "
                 "i.e. the whole SPEC §3 consumer-relocation path. The fix is "
                 "to guard each import with `.ifndef`, the shape "
-                "src/sqtab_base.inc already documents as 'included, not "
+                "src/nistcurves_sqtab_base.inc already documents as 'included, not "
                 "imported'; it is being handled in its own PR and is "
                 "deliberately NOT on this branch, so --verify-builds cannot "
                 "run here. The MEASUREMENT path does not need it: the settle "
