@@ -126,6 +126,23 @@ update it (see Removed below).
   stray high byte in a comment neither crashes the leg nor drops the file.
   Red: both mutants, with the built sweep still printing `forbidden
   exports OK`, and the three escapes above.
+- **`make check-archives`: `sqtab_pin_deferral_check` (new leg).** The
+  `LIB_NISTCURVES_SHARED_SQTAB_BASE` export gate (`src/mul_8x8.s`) and the
+  header's import gate (`src/nistcurves.inc`) are hand copies, and the pin
+  was only driven against the default archive. This leg builds every
+  archive under four switch sets (the shipped defaults, c64-https's exact
+  P-256 set, §8.1+§8.3 deferral, §8.1 deferral alone), each twice, at two
+  `LIB_SHARED_SQTAB_BASE` values. Whether an arm reads the table is
+  MEASURED: some member's raw segment bytes move with the base (od65 shows
+  no segment bytes, so the xo65 Segments section is compared directly,
+  which also leaves out the datetime-bearing Options/Files). The archive
+  must export the base exactly where it reads the table. The header must
+  import it exactly where the archive exports it. A matching-base consumer
+  must link, and an off-by-a-page one must fail on the pin. Red: dropping
+  `.or .defined(FP_ONCHIP_MUL)` from either gate. Also red: an exported
+  table reader added under `SHARED_SQTAB_INIT` + `SHARED_CT_MUL_8X8` without
+  `FP_ONCHIP_MUL`, which left app-owned reading the table with no export
+  while both gate copies still agreed.
 - **`sibling_sqtab_collision_check`'s second half is now an absence
   assertion.** It was a value pin that passed by finding "nothing to pin"
   in any archive that exports nothing, and after this removal that would
