@@ -4534,8 +4534,9 @@ def _xo65_segments(obj):
 
 
 def sqtab_readers(dir_a, dir_b, archive):
-    """Members of `archive` whose segment bytes differ between the build in
-    dir_a and the one in dir_b (same config, two sqtab bases). Returns
+    """Members of `archive` whose segment bytes, or any export's VALUE other
+    than LIB_NISTCURVES_SHARED_SQTAB_BASE, differ between the build in dir_a
+    and the one in dir_b (same config, two sqtab bases). Returns
     (readers, members, err)."""
     xs = []
     for d in (dir_a, dir_b):
@@ -4560,6 +4561,21 @@ def sqtab_readers(dir_a, dir_b, archive):
             return None, 0, f"{archive}:{m}: not a readable xo65 object"
         if sa != sb:
             readers.append(m)
+            continue
+        # A member can also HAND the table's address to another member: an
+        # export whose value moves with the base (`nc_tab = sqtab_lo`) lets an
+        # importer read the table with no base-dependent byte of its own --
+        # its fragment is an expression on an import. Review L1 (mutant P'').
+        # The base output itself is excluded: it moves by definition, and
+        # counting it would make every exporting arm a "reader".
+        ra, rb = od65_export_records(xa / m), od65_export_records(xb / m)
+        if not isinstance(ra, dict) or not isinstance(rb, dict):
+            return None, 0, f"{archive}:{m}: export dump unreadable"
+        moved = sorted(n for n in set(ra) | set(rb)
+                       if n != "LIB_NISTCURVES_SHARED_SQTAB_BASE"
+                       and ra.get(n, "absent") != rb.get(n, "absent"))
+        if moved:
+            readers.append(f"{m} (exports {', '.join(moved)})")
     return readers, len(na), None
 
 
