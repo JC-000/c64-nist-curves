@@ -570,7 +570,7 @@ def run(work: Path) -> int:
             # is pristine and every tree-state test below passes vacuously.
             # Only judge_real asserted an exit status, so an ambiguous or
             # invalid flag spelling scored the same as a correct --touch.
-            # rcs carries the probe's own contract; only `-q` may answer 1.
+            # rcs carries the probe's own contract; only `-q` answers 1.
             if r.returncode not in rcs:
                 ok = False
                 # make prints the reason on the FIRST stderr line and then
@@ -615,13 +615,15 @@ def run(work: Path) -> int:
     TOUCH_ABBREV = "--t" if _mv < (4,) else "--tou"
     TOUCH_CLUSTER = "-ntx" if _mv < (4,) else "-nt"
     # `-q` is the one probe whose correct answer is nonzero: with changed
-    # knobs the target is out of date and `-q` reports that as exit 1.
+    # knobs the target is out of date, and exit 1 is the ONLY correct
+    # answer. Exit 0 means "up to date" -- i.e. the knob force was
+    # suppressed -- so accepting it would pass the very defect this asks.
     for mf, mode in ((TOUCH_ABBREV, "touch"), ("--dr", "dry"), ("--que", "dry"),
                      (TOUCH_CLUSTER, "touch"), ("--touch", "touch"),
                      ("--just-print", "dry")):
         route("env-e", f"env MAKEFLAGS={mf!r} `make -e lib`",
               ["make", "-e", "lib", "@KNOB@"], mode, env_extra={"MAKEFLAGS": mf},
-              rcs=(0, 1) if mf == "--que" else (0,))
+              rcs=(1,) if mf == "--que" else (0,))
     # A command-line MAKEFLAGS is obeyed by 3.81. TOUCH_ABBREV for the same
     # reason as above: on the command-line route 4.x does not refuse `--t`
     # but silently ignores it and runs a full real build, which was the one
