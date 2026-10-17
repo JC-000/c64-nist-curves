@@ -12,8 +12,16 @@ contract).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-17
+
 `LIB_NISTCURVES_ABI_VERSION` **4 → 5** — consumers with an ABI gate must
 update it (see Removed below).
+
+Conformant to c64-lib-contract **SPEC v1.2.2** (frozen) with **no disclosed
+exceptions remaining**: the bare `sqtab_lo` / `sqtab_hi` export removal below
+closes the last one. A removal on a pre-1.0 MINOR is stated as explicitly
+conformant in contract 1.3.0 §7 (c64-lib-contract PR #206, pending merge at
+the time of this release); nothing in 1.3.0 is owed by this library.
 
 ### Removed
 
@@ -314,6 +322,26 @@ update it (see Removed below).
   files. It deliberately keeps the knob stamp, so `make clean all` followed
   by `make all` does not reassemble anything. Goals that build nothing do not
   read the `.d` files, so `make clean` still works over a corrupt one.
+- **`make check-inc-deps` is portable across GNU Make 3.81 and 4.x (PR #184,
+  contributed by windstalker-arch — thank you).** Tool-only; no PRG or
+  archive byte moves. Two defects, both of which made the knob-invalidation
+  guard inert and falsely green on GNU Make 4.x:
+  - The flag-route probes hard-coded 3.81's spellings. On 4.4.1, env
+    `MAKEFLAGS=--t` and `-ntx` are refused (`option '--t' is ambiguous`,
+    `invalid option -- x`), and a command-line `MAKEFLAGS=--t` is ignored
+    and runs a full real build. No single spelling is right on both, since
+    3.81 has no long options. The tool now reads `make --version` and picks
+    the spelling for that make; on 3.x the probe list is byte-identical to
+    the one #180 measured. A `make` that is not GNU make fails closed.
+  - The `touch` / `dry` routes judged tree state only and never checked an
+    exit status, so a flag make refused during option parsing (no recipe
+    runs, `build/` pristine) read as a correct no-op. Each route now
+    asserts its exit status; `--que` must answer exit 1 (stale), and the
+    "make refused the flag" diagnosis is given only when make exits 2.
+
+  Red on 4.4.1 with the 3.x spelling forced: `FAIL [cmdline-makeflags] ...
+  72 changed`, and both `env-e` legs `exit 2, expected 0`; before the
+  exit-status fix the same run printed `FAIL count: 0`.
 
 ### Added
 
@@ -2886,6 +2914,10 @@ downstream projects (planned: c64-https, c64-wireguard once migrated to ca65).
 | P-256 | ~91.9 M cycles | 46.7 M cycles | 1.97× |
 | P-384 | ~270.6 M cycles | 131.4 M cycles | 2.06× |
 
+[0.16.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.16.0
+[0.15.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.15.0
+[0.14.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.14.0
+[0.13.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.13.0
 [0.12.0]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.12.0
 [0.11.2]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.11.2
 [0.11.1]: https://github.com/JC-000/c64-nist-curves/releases/tag/v0.11.1
