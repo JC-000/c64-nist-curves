@@ -32,7 +32,8 @@ MINOR, not "at the next MAJOR" as this file used to promise. The reading:
 and at 0.y.z the MINOR position is the breaking one (semver's pre-1.0 rule,
 our documented policy since v0.9.0). §1:39 *describes* that ("a library may
 break its surface on a MINOR bump while pre-1.0") but is an aside, not a
-grant. §7's one-MINOR deprecation cycle had been satisfied since v0.10.0, and
+grant. v1.2.2 §7's one-MINOR deprecation cycle (deleted in v1.3.0, whose §7
+makes MINOR the breaking position while MAJOR is 0) had been satisfied since v0.10.0, and
 v0.10.0's removal of the §8.2 `LIB_SHARED_REU_MUL_*` exports is the
 precedent. The window existed only
 because `main.s` imported `sqtab_lo`; it no longer does. `make check-archives`'

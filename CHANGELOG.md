@@ -53,7 +53,9 @@ contract's own text. Nothing else in 1.3.0 is owed by this library.
     bump while pre-1.0"). That sentence explains why the ABI counter cannot
     track MAJOR; it is a description, not a grant, and we do not rest on it
     alone.
-  - SPEC §7 (SPEC.md:253): "Breaking changes go through a one-MINOR-release
+  - SPEC v1.2.2 §7 (SPEC.md:253 at v1.2.2; the sentence was deleted in
+    v1.3.0, whose §7 makes MINOR the breaking position while MAJOR is 0):
+    "Breaking changes go through a one-MINOR-release
     deprecation cycle." That cycle has been satisfied since v0.10.0: the
     window opened there, and five MINORs (0.11–0.15) have shipped since.
   - §6.5's "drop the old form at its next MAJOR" (SPEC.md:240) governs

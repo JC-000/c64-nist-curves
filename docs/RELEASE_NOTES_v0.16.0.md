@@ -37,9 +37,10 @@ gives the three-line derivation SPEC §8.1 prescribes.
 **This is a change of plan.** v0.10.0 through v0.15.0 said the pair would go
 "at the next MAJOR". It goes on a MINOR instead, under the semver reading this
 library has documented since v0.9.0: while MAJOR is 0, the MINOR position is
-the breaking position. The one-MINOR deprecation cycle §7 asks for has been
-satisfied since v0.10.0, and SPEC v1.3.0 §7 now says in so many words that
-such a removal is conformant. `CHANGELOG.md` sets out the full reasoning.
+the breaking position. SPEC v1.3.0 §7 makes MINOR the breaking position while
+MAJOR is 0; nothing is renamed, so §6.5's window does not apply, and §8.1
+requires the removal. The export has been gated under `LIB_NO_BARE_EXPORTS`
+since v0.10.0. `CHANGELOG.md` sets out the full reasoning.
 
 ## Added
 
