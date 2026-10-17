@@ -2343,7 +2343,7 @@ def packaging_check(failures, archives):
     # consumer vendoring two libraries puts both build/lib directories on its
     # include and library paths, so a shipped name another library also ships
     # resolves to whichever path comes first, silently, and neither library's
-    # own build can see it. v0.16.0's first cut shipped `nistcurves_sqtab_base.inc`,
+    # own build can see it. v0.16.0's first cut shipped `sqtab_base.inc`,
     # which c64-mlkem also ships (default $9000) and c64-https vendors both
     # (c64-lib-contract review of #183, item 2).
     shipped = sorted(p.relative_to(LIBDIR) for p in LIBDIR.rglob("*") if p.is_file())
@@ -4558,8 +4558,8 @@ def sibling_sqtab_collision_check(failures):
     `sqtab_hi` for a consumer at all. SPEC §8.1 says they "MUST NOT be
     exported either -- they are source-level names each consuming TU derives".
     Through v0.15.0 this half was a value pin instead -- every archive that
-    exported the pair was checked against src/nistcurves_sqtab_base.inc -- because the
-    export was a gated §6.5-window item. The export is gone (v0.16.0), and the
+    exported the pair was checked against src/sqtab_base.inc (as it was then
+    named) -- because the export was a gated §6.5-window item. The export is gone (v0.16.0), and the
     value pin turned into a leg that passes by finding nothing to pin, so it is
     now the absence assertion it should become. Absence over a link proves
     nothing unless the probe CAN resolve: a positive control links the same

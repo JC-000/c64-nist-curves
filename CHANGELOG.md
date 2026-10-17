@@ -232,7 +232,7 @@ update it (see Removed below).
     longer wipes the user's `build/`.
 
 - **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
-  its source `.include`s (`nistcurves_sqtab_base.inc`, `reu_banks.inc`,
+  its source `.include`s (`sqtab_base.inc`, since renamed, `reu_banks.inc`,
   `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout
   touching only a header -- left `make` / `make lib-*` reporting "Nothing to
   be done" over a stale PRG or archive. Measured on the pre-fix Makefile with
