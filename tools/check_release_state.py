@@ -263,7 +263,8 @@ def baseline_comparand() -> tuple[str | None, str | None]:
     commit -- HEAD itself tagged vX.Y.Z -- the baseline cannot reflect that
     tag: it was committed before the tag existed, and regenerating it needs
     the tag. So there the comparand is the newest release reachable from
-    HEAD^ that is not HEAD's own tag, i.e. the previous release, and the
+    HEAD that does not point at HEAD itself, i.e. the previous release
+    along ANY parent, and the
     tag's own tree passes (review R3 of #183: it was red at its own tag).
     The post-tag regen commit is still required: it is not tagged, so from
     it on the comparand is the new tag again."""
@@ -271,10 +272,11 @@ def baseline_comparand() -> tuple[str | None, str | None]:
     if not at_head:
         return newest_release_tag(merged_tags()), None
     own = newest_release_tag(at_head)
-    try:
-        prev = [t for t in _git_tags(merged="HEAD^") if t not in at_head]
-    except NoGitRepo:
-        prev = []          # HEAD is a root commit: no previous release
+    # Every release reachable from HEAD except the ones ON HEAD -- not
+    # `--merged HEAD^`, which follows the first parent only: at a tagged
+    # merge whose previous release came in through the second parent, HEAD^
+    # missed it and compared against an older one (review L6).
+    prev = [t for t in merged_tags() if t not in at_head]
     return newest_release_tag(prev), own
 
 
