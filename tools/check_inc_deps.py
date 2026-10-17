@@ -171,18 +171,30 @@ def make(work: Path, *args: str, env_extra: dict[str, str] | None = None,
                           env=env, capture_output=True, text=True)
 
 
-def make_version() -> tuple[int, int]:
-    """(major, minor) of the `make` that will run these probes.
+def make_version() -> tuple[tuple[int, int] | None, str]:
+    """((major, minor) or None, first output line) of the `make` on PATH.
 
     Which flag spellings reach a recipe is version-dependent (leg 5c), so
     the probes ask this make what it accepts rather than hardcoding one
-    platform's answer. Unparseable output yields (0, 0), which selects the
-    pre-long-option spellings -- the ones #180 measured on 3.81.
+    platform's answer. None when it is not a parseable GNU make (BSD make,
+    a failing or missing binary): the caller fails closed rather than
+    guessing a spelling set, since the build requires GNU make anyway and
+    a wrong guess makes every probe of that spelling examine nothing.
     """
-    out = subprocess.run(["make", "--version"], capture_output=True,
-                         text=True).stdout
-    m = re.search(r"GNU Make (\d+)\.(\d+)", out)
-    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    try:
+        r = subprocess.run(["make", "--version"], capture_output=True, text=True)
+    except OSError as e:
+        return None, str(e)
+    head = next((ln for ln in (r.stdout + r.stderr).splitlines() if ln.strip()), "")
+    m = re.search(r"GNU Make (\d+)\.(\d+)", r.stdout)
+    if r.returncode != 0 or not m:
+        return None, f"exit {r.returncode}: {head.strip()[:160]!r}"
+    return (int(m.group(1)), int(m.group(2))), head.strip()
+
+
+def flag_spellings(mv: tuple[int, int]) -> tuple[str, str]:
+    """(touch abbreviation, touch cluster) this make reads as `-t` (leg 5c)."""
+    return ("--t", "-ntx") if mv < (4,) else ("--tou", "-nt")
 
 
 def ca65_objects(output: str) -> dict[str, str]:
@@ -239,6 +251,14 @@ def snapshot(d: Path) -> dict[str, tuple[int, int, bytes]]:
 
 
 def main() -> int:
+    mv, head = make_version()
+    if mv is None:
+        fail("make", f"`make --version` did not identify a GNU make ({head}) -- "
+             f"cannot choose the version-dependent flag spellings (leg 5c), and "
+             f"the build requires GNU make anyway")
+        return report()
+    spell = flag_spellings(mv)
+    print(f"[make] {head} -> touch abbrev {spell[0]!r}, touch cluster {spell[1]!r}")
     tmp = Path(tempfile.mkdtemp(prefix="check_inc_deps_"))
     try:
         work = tmp / "tree"
@@ -255,12 +275,12 @@ def main() -> int:
         shutil.copy2(mk, work / "Makefile")
         shutil.copytree(REPO / SRC, work / SRC)
         shutil.copytree(REPO / "cfg", work / "cfg")
-        return run(work)
+        return run(work, spell)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def run(work: Path) -> int:
+def run(work: Path, spell: tuple[str, str]) -> int:
     makefile = (work / "Makefile").read_text()
 
     # ---- leg 0: populations ---------------------------------------------
@@ -616,9 +636,7 @@ def run(work: Path) -> int:
     # A refused flag exits during option parsing, before any recipe runs, so
     # build/ is pristine -- which reads as a clean no-op to the tree-state
     # judges unless route() also asserts an exit status. It does.
-    _mv = make_version()
-    TOUCH_ABBREV = "--t" if _mv < (4,) else "--tou"
-    TOUCH_CLUSTER = "-ntx" if _mv < (4,) else "-nt"
+    TOUCH_ABBREV, TOUCH_CLUSTER = spell
     # `-q` is the one probe whose correct answer is nonzero: with changed
     # knobs the target is out of date, and exit 1 is the ONLY correct
     # answer. Exit 0 means "up to date" -- i.e. the knob force was
