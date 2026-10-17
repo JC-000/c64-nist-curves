@@ -3701,7 +3701,13 @@ def forbidden_export_check(failures, archives):
         app-owned arm, swept as itself by (1)); any other gap fails.
     Every dump must be readable (od65_export_names is None/COUNT_MISMATCH on
     an untrustworthy dump), and an empty population fails: an absence
-    assertion over nothing is the empty-population shape."""
+    assertion over nothing is the empty-population shape.
+
+    KNOWN LIMIT, accepted (review L2 of #183): pass (4) samples the switch
+    space (each consumer switch alone plus SWITCH_COMBOS), not its powerset,
+    and pass (3) moves every knob to two values, not all. An export keyed
+    on an unbuilt combination is caught by forbidden_export_source_scan,
+    which reads every arm of the text at once, not here."""
     import tempfile
     print("\n=== §8 forbidden exports (sqtab_lo/hi, LIB_SHARED_* inputs) ===")
     hits, unreadable, members = [], [], 0
@@ -3997,10 +4003,15 @@ def _src_text(f):
 
 def _resolve_include(name, including):
     """The file ca65 would open for `.include "name"` from `including`, as
-    the Makefile runs it (cwd = REPO, `-I src`), also trying the including
-    file's own directory. None when no candidate exists; the caller records
-    that as a failure -- an include this scan cannot open is not a clean one."""
-    for base in (including.parent, REPO, REPO / "src"):
+    the Makefile runs it (`-I src`), in ca65's own order: the including
+    file's directory, then the -I directory. The current directory is NOT
+    searched -- measured on ca65 V2.18: with leaf.inc only in the cwd,
+    `Cannot open include file`; with it in cwd and src/, src/ wins. The
+    previous order (including dir, cwd, src) read a decoy in the repo root
+    while ca65 assembled src/'s copy (review L3(c), mutant S9). None when no
+    candidate exists; the caller records that as a failure -- an include
+    this scan cannot open is not a clean one."""
+    for base in (including.parent, REPO / "src"):
         p = (base / name).resolve()
         if p.is_file():
             return p
@@ -4069,7 +4080,23 @@ def forbidden_export_source_scan(failures, archives):
     `.ident(.sprintf("fmt", p...))` -- are expanded against every invocation
     of that macro (precalc_table.inc's §8.4 rows). Fails closed, as
     UNMODELLED: a parameterised `.define` whose body exports, any other
-    `.ident`, an invocation argument it cannot read, and `.linecont`."""
+    `.ident`, an invocation argument it cannot read, and `.linecont`.
+
+    KNOWN LIMITS, accepted (review L3 of #183). This is a text model of
+    ca65's preprocessor, not ca65; two shapes still pass it:
+      (a) a macro parameter forwarded through ANOTHER macro -- `.macro NCB
+          m` / `NCA m`, with NCA exporting its parameter, invoked as `NCB
+          sqtab_lo`. Templates are expanded one level, so the inner
+          invocation's argument is read as the literal name `m`;
+      (b) a `.define` redefined after a use: definitions are collected
+          population-wide, last one wins, so a use is expanded with the
+          final body rather than the body in force at that line.
+    Closing them means reimplementing ca65's macro and define semantics.
+    The threat model is our own developers, not an adversary, and the built
+    sweep (forbidden_export_check) plus the measured base pin
+    (sqtab_pin_deferral_check) cover the configurations consumers actually
+    build. (L3(c), include search order, was fixed instead: see
+    _resolve_include.)"""
     print("\n=== §8 forbidden exports, source text (every arm, ungated) ===")
     files, unresolved = source_scan_population(archives)
     texts = {f: _src_lines(f) for f in files}
@@ -4646,7 +4673,17 @@ def sqtab_pin_deferral_check(failures, archives):
         the pin's lderror wherever the archive exports the base (and, where
         it does not, links -- there is nothing to compare against).
     Population sentinel: the shipped-defaults row must measure at least one
-    reader, or the byte comparison itself is blind."""
+    reader, or the byte comparison itself is blind.
+
+    KNOWN LIMIT, accepted (review L2 of #183): the deferral space is
+    SAMPLED -- four rows (shipped defaults, c64-https's P-256 set, §8.1+§8.3,
+    §8.1 alone) out of the powerset of SHARED_SQTAB_INIT, SHARED_CT_MUL_8X8,
+    the SHARED_REU_MUL_INIT/_FETCH pair, LIB_NO_BARE_EXPORTS and the knob
+    values. A gate that is wrong only in an unsampled combination (e.g.
+    §8.3 deferral alone) passes here. Enumerating the powerset multiplies
+    the two-base builds; the threat model is our own developers, not an
+    adversary, and the rows are the configurations consumers actually use.
+    forbidden_export_check's switch pass is sampled the same way."""
     print("\n=== §8.1 sqtab base pin across deferral x onchip arms ===")
     ok_rows, nrows, nreaders = [], 0, 0
     sym = "LIB_NISTCURVES_SHARED_SQTAB_BASE"
