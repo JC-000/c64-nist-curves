@@ -101,6 +101,14 @@ LIB_NISTCURVES_VERSION_PATCH = 0
 ; one-MINOR deprecation cycle had run since v0.10.0. So it shipped on a MINOR,
 ; NOT "at the next MAJOR" as this file and the CHANGELOG had promised; the
 ; CHANGELOG entry owns that change of plan.
+; 4 -> 5 removes: sqtab_hi sqtab_lo
+;
+; A `; k -> k+1 removes: <names>` line lists EXACTLY the exported names that
+; step takes away. check-archives (abi_surface_check) fails on a name gone
+; from the last release's surface that no step between that release's ABI and
+; this one lists, and on a listed name that is not actually gone. Without the
+; list, the first removal of a cycle moved the counter and every later one
+; rode through on it (contract review of #183: deleting `vic_bg` passed).
 ;
 ; Bumped in the commit that causes it rather than at the release, so the
 ; source is never in a state where the surface has changed and the counter

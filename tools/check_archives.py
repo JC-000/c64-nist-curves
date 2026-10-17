@@ -3954,6 +3954,19 @@ def abi_step_reason(text, k):
     return None
 
 
+def abi_step_removals(text, k):
+    """The names step k -> k+1 declares removed in src/lib_version.s: the
+    union of every `; k -> k+1 removes: a b c` line (none = removes nothing).
+
+    The declaration is source text written with the change, never read back
+    from the build being checked: a list derived from the archives would
+    approve whatever they happen to lack (self-comparison)."""
+    names = set()
+    for m in re.finditer(rf"^;\s*{k}\s*->\s*{k + 1}\s+removes:(.*)$", text, re.M):
+        names |= set(re.findall(r"[A-Za-z_]\w*", m.group(1)))
+    return names
+
+
 @leg
 def abi_surface_check(failures):
     """SPEC §1/§7: a name the last RELEASE exported may disappear only if
@@ -3981,7 +3994,12 @@ def abi_surface_check(failures):
         (`vX.Y.Z`) AND at least ABI_REASON_MIN_WORDS words. A bare arrow is not
         a reason: review mutant tV went ABI 4 -> 6 on `; 5 -> 6` alone and
         passed. An ABI that moved with no removal is allowed (§7 moves it for
-        behaviour too), but not silently.
+        behaviour too), but not silently;
+      * the names gone must EQUAL the union of the `; k -> k+1 removes: ...`
+        lines for those steps (abi_step_removals). Without it the first
+        removal of a cycle moved the counter and any later one rode through:
+        contract review of #183 deleted `vic_bg` from src/constants.s and this
+        leg printed "3 name(s) gone [... 'vic_bg']" and passed.
     Scope: the DEFAULT configuration, the one the baseline records. A missing,
     unparseable or empty baseline fails; an empty population proves
     nothing."""
@@ -4065,11 +4083,31 @@ def abi_surface_check(failures):
                             f"{ABI_REASON_MIN_WORDS} words>` line in "
                             "src/lib_version.s; a bare arrow is not a reason")
             print(f"  ABI FAIL: unexplained step(s) {missing}")
+        declared = set()
+        for k in range(base_abi, cur_abi):
+            declared |= abi_step_removals(lv, k)
+        undeclared = sorted(set(gone_names) - declared)
+        stale = sorted(declared - set(gone_names))
+        if undeclared:
+            failures.append(
+                f"abi surface: {undeclared} ({tag} exported them) are gone, but "
+                f"no step {base_abi} -> {cur_abi} lists them in a `; k -> k+1 "
+                "removes: ...` line in src/lib_version.s -- a removal needs its "
+                "own declaration; a counter that already moved does not cover "
+                "it")
+            print(f"  ABI FAIL: undeclared removal(s) {undeclared}")
+        if stale:
+            failures.append(
+                f"abi surface: src/lib_version.s declares {stale} removed in "
+                f"ABI {base_abi} -> {cur_abi}, but every archive still exports "
+                f"them as {tag} did -- stale declaration")
+            print(f"  ABI FAIL: declared but not removed {stale}")
     if not failures or not any(f.startswith("abi surface") for f in failures):
         print(f"  abi surface OK ({len(rows)} archives, "
               f"{sum(len(v) for v in rows.values())} {tag} export rows; "
               f"{len(gone_names)} name(s) gone {gone_names}; ABI {base_abi} -> "
-              f"{cur_abi}, every step stated in src/lib_version.s)")
+              f"{cur_abi}, every step stated and every removal declared in "
+              "src/lib_version.s)")
 
 
 @leg
