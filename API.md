@@ -1314,18 +1314,46 @@ enforced by `.assert` in `src/mul_8x8.s`.
 
 The library exports neither `sqtab_lo` nor `sqtab_hi` (SPEC §8.1 forbids it;
 removed at v0.16.0). Derive them in your own TU from
-`build/lib/nistcurves_sqtab_base.inc`, which `make lib` ships. To check that your base
-matches the archive's, import the prefixed output
-`LIB_NISTCURVES_SHARED_SQTAB_BASE`, the base the archive's code reads,
-exported by every field archive except `nistcurves-app-owned.a`.
-`nistcurves.inc` does this for you if `LIB_SHARED_SQTAB_BASE` is defined
-before the header is read:
+`build/lib/nistcurves_sqtab_base.inc`, which `make lib` ships.
+
+To check that your table is where the archive's code reads it, compare
+against the prefixed output `LIB_NISTCURVES_SHARED_SQTAB_BASE`. **It exists
+only in an archive whose own code reads the table**: one that carries
+`sqtab_init`, the §8.3 `ct_mul_8x8` body, or the onchip row generator. With
+the shipped switch sets that is every field archive except
+`nistcurves-app-owned.a`. Under your own deferral switches it can be none:
+built with `SHARED_SQTAB_INIT` + `SHARED_CT_MUL_8X8`, `nistcurves-p256-verify.a`
+reads no table and publishes no base, while the onchip archives still do.
+
+`nistcurves.inc` carries a pin in exactly those arms, and it is narrow:
+
+- it compares **assemble-time constants**, your `LIB_SHARED_SQTAB_BASE`
+  against the archive's;
+- it is active only if `LIB_SHARED_SQTAB_BASE` is defined **before** the
+  header is read (`-D`, or include `nistcurves_sqtab_base.inc` first, as
+  below). Included the other way round, nothing is checked;
+- it says nothing about where your `sqtab_lo` actually is. A table placed
+  by a label, or derived from some other constant, is not compared.
 
 ```asm
 .include "nistcurves_sqtab_base.inc"     ; first
 .include "nistcurves.inc"     ; asserts LIB_SHARED_SQTAB_BASE = LIB_NISTCURVES_SHARED_SQTAB_BASE
 sqtab_lo = LIB_SHARED_SQTAB_BASE
 sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200
+```
+
+The robust check compares the address your table **really has** with the
+one the archive reads, at link time, whatever defines it and in whatever
+order. Add it in the TU that defines `sqtab_lo`, for an archive that exports
+the base (it is an unresolved external against one that does not, and
+there is nothing to compare there):
+
+```asm
+.include "nistcurves_sqtab_base.inc"
+sqtab_lo = LIB_SHARED_SQTAB_BASE         ; or wherever your table really is
+sqtab_hi = sqtab_lo + $0200
+.import LIB_NISTCURVES_SHARED_SQTAB_BASE
+.assert sqtab_lo = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "sqtab_lo is not where c64-nist-curves reads the table"
 ```
 
 **§8.2 shared `reu_mul` placement** (contract v0.8.5 export discipline). The

@@ -287,16 +287,25 @@ update it (see Removed below).
 - **`LIB_NISTCURVES_SHARED_SQTAB_BASE`, a prefixed §8.1 output, plus a
   header pin against it.** It is exported from `src/mul_8x8.s` in every arm
   that carries code reading the quarter-square table: `sqtab_init`, the §8.3
-  body, or the onchip row generator. That is every field archive except the
-  fully-deferring `nistcurves-app-owned.a`. It replaces the one thing the
+  body, or the onchip row generator. With the shipped switch sets that is
+  every field archive except the fully-deferring `nistcurves-app-owned.a`;
+  under a consumer's deferral switches it can be fewer (c64-https's P-256
+  set leaves `nistcurves-p256-verify.a` with no reader and no export, while
+  the onchip archives keep both). It replaces the one thing the
   removed bare `sqtab_lo` gave a consumer: a way to learn where the archive's
   code reads the table. Without it, a consumer deriving `sqtab_lo` from
   `-D LIB_SHARED_SQTAB_BASE=0xA000` linked clean against a `$9C00` archive,
   so its table and the library's reads sat on different pages (review
   finding, demonstrated). `src/nistcurves.inc` now asserts the consumer's
-  `LIB_SHARED_SQTAB_BASE`, when it is defined before the header is read,
-  against the export with `lderror`:
-  `LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive`.
+  `LIB_SHARED_SQTAB_BASE` against the export with `lderror`
+  (`LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive`),
+  and that pin is narrow: it compares two assemble-time constants, it is
+  active only if the base is defined BEFORE the header is read, and it
+  exists only in the arms above. It does not see where the consumer's
+  `sqtab_lo` actually is. The robust check, documented in API.md §8.1, is the
+  consumer's own `.assert sqtab_lo = LIB_NISTCURVES_SHARED_SQTAB_BASE,
+  lderror`, in the TU that defines `sqtab_lo`, against an archive that
+  exports the base.
   The new name carries the prefix and §8.1 forbids only the unprefixed
   names, so this follows the §8.2 `LIB_NISTCURVES_SHARED_REU_MUL_*` precedent
   (SPEC.md:389). **Additive, so `LIB_NISTCURVES_ABI_VERSION` does not move

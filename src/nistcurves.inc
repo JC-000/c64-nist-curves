@@ -91,10 +91,18 @@
 ;       sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200
 ;   If you relocate the table, pass the SAME `-D LIB_SHARED_SQTAB_BASE=0x..`
 ;   to your own ca65 as to the library's CONTRACT_DEFINES. This header then
-;   asserts your base against the archive's prefixed output
-;   LIB_NISTCURVES_SHARED_SQTAB_BASE at link (see §8.1 below), but only if
-;   LIB_SHARED_SQTAB_BASE is defined BEFORE this header is read: `-D`, or
-;   include nistcurves_sqtab_base.inc first, as above.
+;   compares your LIB_SHARED_SQTAB_BASE (an assemble-time constant) with the
+;   archive's prefixed output LIB_NISTCURVES_SHARED_SQTAB_BASE at link (see
+;   §8.1 below). That pin is narrow: only if LIB_SHARED_SQTAB_BASE is
+;   defined BEFORE this header is read (`-D`, or include
+;   nistcurves_sqtab_base.inc first, as above), only in an archive whose
+;   code reads the table (absent from app-owned, and from any archive your
+;   deferral switches leave without sqtab_init, the §8.3 body and the onchip
+;   row generator), and never about where your sqtab_lo actually is. The
+;   robust check is your own, in the TU that defines sqtab_lo, against an
+;   archive that exports the base (API.md §8.1):
+;       .import LIB_NISTCURVES_SHARED_SQTAB_BASE
+;       .assert sqtab_lo = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "..."
 ; * The `LIB_SHARED_*` placement knobs (§8.1 / §8.2). Those are consumer
 ;   input, deliberately unexported by every adopter — two exporters of an
 ;   unprefixed name collide in a composed link. What you read back instead
@@ -545,7 +553,10 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 ; your table and the library's reads land on different pages and the link is
 ; otherwise clean. Active only if LIB_SHARED_SQTAB_BASE is already defined when
 ; this header is read: pass it with -D, or `.include "nistcurves_sqtab_base.inc"` BEFORE
-; this header.
+; this header. It compares two assemble-time constants, not your sqtab_lo;
+; the consumer-side `.assert sqtab_lo = LIB_NISTCURVES_SHARED_SQTAB_BASE,
+; lderror` (the sqtab_lo bullet near the top; API.md §8.1) checks the
+; table's real address.
 .ifdef LIB_SHARED_SQTAB_BASE
 .assert LIB_SHARED_SQTAB_BASE = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive: pass the same -D to CONTRACT_DEFINES and your own build"
 .endif
