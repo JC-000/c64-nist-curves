@@ -71,8 +71,10 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 ; the same two names from the same base, so an export is a duplicate-
 ; identifier collision in any composed link, and no in-tree importer remains:
 ; src/main.s's sqtab-window guard asserts against LIB_SHARED_SQTAB_BASE.
-; make check-archives (forbidden_export_check) fails any archive member or
-; source arm, gated or not, that exports either name.
+; make check-archives fails an export of either name twice over:
+; forbidden_export_source_scan on the source line, whatever conditional gates
+; it, and forbidden_export_check on the built objects of every configuration
+; it samples.
 ; Do not add an .export of either name, here or anywhere.
 ;
 ; What IS exported (v0.16.0) is the prefixed OUTPUT counterpart: the base this

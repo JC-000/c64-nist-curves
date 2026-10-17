@@ -89,8 +89,10 @@ update it (see Removed below).
 - **`make check-archives`: `forbidden_export_check` (new leg).** Fails any
   member of any built archive (`ar65 x` + `od65`), and any shipped object
   arm re-assembled from source both ungated and under
-  `LIB_NO_BARE_EXPORTS`, that exports a name the contract forbids in every
-  configuration. Those names are:
+  `LIB_NO_BARE_EXPORTS`, plus two derived-knob rebuilds and a list of
+  presence-switch builds, that exports a name the contract forbids in every
+  configuration. It examines the configurations it builds, and only those.
+  Those names are:
   - the §8.0 `LIB_SHARED_PRIMITIVES_*` bit constants;
   - the §8.1 `LIB_SHARED_SQTAB_BASE`, `sqtab_lo` and `sqtab_hi`;
   - the §8.2 `LIB_SHARED_REU_MUL_*` inputs.
@@ -101,6 +103,23 @@ update it (see Removed below).
   on the fixed tree by re-adding `.export sqtab_lo` to `src/mul_8x8.s`.
   That fired on all eleven archives containing a `mul_8x8*` member, and on
   all six source arms, gated included.
+- **`make check-archives`: `forbidden_export_source_scan` (new leg).** The
+  built sweep above is a sample: an export keyed on a switch combination or
+  knob value it does not build passed it. Two review mutants showed it, in
+  `src/mul_8x8.s`: `.if .defined(SHARED_SQTAB_INIT) .and
+  .defined(SHARED_CT_MUL_8X8) .and (.not .defined(SHARED_REU_MUL_INIT))` and
+  `.if LIB_SHARED_SQTAB_BASE = $8000`, each guarding `.export sqtab_lo,
+  sqtab_hi`. The second ships both names from `make lib
+  CONTRACT_DEFINES='-D LIB_SHARED_SQTAB_BASE=0x8000'`. This leg reads the
+  text of every `src/*.s` and `*.inc` and fails any `.export` / `.exportzp`
+  / `.global` / `.globalzp` (comma lists, `:addrsize`, `name = expr` and
+  `name := expr` forms) of a forbidden name, whatever conditional gates it.
+  It expands `precalc_table.inc`'s `.ident(.sprintf(...))` exports against
+  every `LIB_PRECALC_TABLE` invocation, and reports any other `.ident`, a
+  non-literal macro argument, or `.linecont` as unmodelled, which fails. A
+  name reaching an export through `.define` or a bare macro parameter is
+  outside what it can read. Red: both mutants, with the built sweep still
+  printing `forbidden exports OK`.
 - **`sibling_sqtab_collision_check`'s second half is now an absence
   assertion.** It was a value pin that passed by finding "nothing to pin"
   in any archive that exports nothing, and after this removal that would

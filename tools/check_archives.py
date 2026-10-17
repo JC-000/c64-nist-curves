@@ -3639,15 +3639,19 @@ def forbidden(names):
 
 @leg
 def forbidden_export_check(failures, archives):
-    """§8.0/§8.1/§8.2: names no library may export, in any arm, gated or not.
+    """§8.0/§8.1/§8.2: names no library may export, in the BUILT objects of
+    the configurations listed below -- a sample, not every configuration.
+    An export keyed on a switch combination or knob value this leg does not
+    build passes here; forbidden_export_source_scan reads the source text of
+    every arm at once and closes that.
 
-    Two populations, because each misses something the other sees:
+    Four populations, because each misses something the others see:
     (1) every member of every BUILT archive, extracted with `ar65 x` -- the
         artifact a consumer links, including deferral arms (app-owned) that
         no source sweep reproduces unless it reads the Makefile right;
     (2) every shipped object arm re-assembled from source both ungated and
-        under LIB_NO_BARE_EXPORTS -- "forbidden" means no configuration, and
-        the gated build is one no archive ships, so (1) cannot see it;
+        under LIB_NO_BARE_EXPORTS -- the gated build is one no default
+        archive ships, so (1) cannot see it;
     (3) every archive rebuilt by the REAL Makefile, in a throwaway BUILD_DIR,
         twice (KNOB_PASS_HI / KNOB_PASS_LO), with EVERY consumer knob the
         archived sources read moved off its default -- the knob set derived
@@ -3919,6 +3923,154 @@ def forbidden_export_check(failures, archives):
               f"gated + {nknob} members rebuilt in two derived-knob passes: "
               "none exports a §8 forbidden name)")
         print(f"  knob passes: {knob_summary}")
+
+
+_SRC_EXPORT_RE = re.compile(r"\.(export|exportzp|global|globalzp)\b(.*)$", re.I)
+_SRC_UNMODELLED_RE = re.compile(r"\.(linecont|ident)\b", re.I)
+
+
+def _split_top(args):
+    """Split an argument list on commas outside parentheses."""
+    out, depth, cur = [], 0, ""
+    for ch in args:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    return out + [cur]
+
+
+@leg
+def forbidden_export_source_scan(failures):
+    """§8.0/§8.1/§8.2: no source line exports a MUST-NOT name, whatever gates it.
+
+    forbidden_export_check examines BUILT objects, so it sees exactly the
+    configurations it builds: every shipped arm, two derived-knob passes and
+    a fixed list of presence-switch builds. An export keyed on any other
+    switch combination or knob value is invisible to it, and both shapes were
+    demonstrated on #183 (reviews F1/F4 and c64-lib-contract item 3):
+      `.if .defined(SHARED_SQTAB_INIT) .and .defined(SHARED_CT_MUL_8X8)
+           .and (.not .defined(SHARED_REU_MUL_INIT))` / `.export sqtab_lo, ...`
+      `.if LIB_SHARED_SQTAB_BASE = $8000` / `.export sqtab_lo, sqtab_hi`
+    The second ships both names from `make lib CONTRACT_DEFINES='-D
+    LIB_SHARED_SQTAB_BASE=0x8000'`.
+
+    This leg reads the TEXT of every src/*.s and src/*.inc instead, ignoring
+    conditional assembly entirely: any `.export` / `.exportzp` / `.global` /
+    `.globalzp` (line start or after a label, comma lists, `:addrsize`, and
+    the `name = expr` / `name := expr` forms) naming a forbidden symbol fails,
+    in every arm at once. `.export .ident(.sprintf("fmt", p...))` inside a
+    macro whose format arguments are macro parameters (precalc_table.inc) is
+    expanded against every invocation's string-literal arguments; any other
+    `.ident`, a non-literal argument, and `.linecont` are reported as
+    UNMODELLED and fail rather than pass. What it cannot see: a forbidden
+    name reaching an export through a `.define` alias or a plain macro
+    parameter (`.export name`); the built sweep still covers those, for the
+    configurations it builds."""
+    print("\n=== §8 forbidden exports, source text (every arm, ungated) ===")
+    files = sorted((REPO / "src").glob("*.s")) + sorted((REPO / "src").glob("*.inc"))
+    texts = {f: f.read_text().splitlines() for f in files}
+    hits, unmodelled, nlines = [], [], 0
+    templates = []        # (macro, fmt, [param index], "file:line")
+    for f in files:
+        macro, params = None, []
+        for i, ln in enumerate(texts[f], 1):
+            code = ln.split(";", 1)[0]
+            mm = re.match(r"^\s*\.macro\s+(\w+)(.*)$", code, re.I)
+            if mm:
+                macro = mm.group(1)
+                params = [p.strip() for p in mm.group(2).split(",") if p.strip()]
+                continue
+            if re.match(r"^\s*\.endmacro\b", code, re.I):
+                macro, params = None, []
+                continue
+            if re.search(r"\.linecont\b", code, re.I):
+                unmodelled.append(f"{f.name}:{i}: .linecont")
+            m = _SRC_EXPORT_RE.search(code)
+            if not m:
+                continue
+            nlines += 1
+            names = []
+            for item in _split_top(m.group(2)):
+                # `.ident(.sprintf("fmt", p, ...))` inside a macro whose
+                # format arguments are all macro parameters: expanded below
+                # against every invocation (precalc_table.inc's §8.4 rows).
+                im = re.match(r'\s*\.ident\s*\(\s*\.sprintf\s*\(\s*"([^"]*)"'
+                              r'((?:\s*,\s*\w+)*)\s*\)\s*\)', item, re.I)
+                if im:
+                    args = [a.strip() for a in im.group(2).split(",") if a.strip()]
+                    if macro and all(a in params for a in args):
+                        templates.append((macro, im.group(1),
+                                          [params.index(a) for a in args],
+                                          f"{f.name}:{i}"))
+                    else:
+                        unmodelled.append(f"{f.name}:{i}: {ln.strip()}")
+                    continue
+                if _SRC_UNMODELLED_RE.search(item):
+                    unmodelled.append(f"{f.name}:{i}: {ln.strip()}")
+                    continue
+                nm = re.match(r"\s*([A-Za-z_@][\w@]*)", item)
+                if nm:
+                    names.append(nm.group(1))
+            bad = forbidden(names)
+            if bad:
+                hits.append(f"src/{f.name}:{i} `{ln.strip()}` exports {sorted(bad)}")
+    # Expand each template against every invocation of its macro. A needed
+    # argument that is not a string literal cannot be read here: unmodelled.
+    nexpanded = 0
+    for macro, fmt, idx, where in templates:
+        for f in files:
+            for i, ln in enumerate(texts[f], 1):
+                code = ln.split(";", 1)[0]
+                inv = re.match(rf"^\s*(?:[A-Za-z_]\w*:)?\s*{macro}\b(?!\s*:)(.*)$", code)
+                if not inv or re.match(r"^\s*\.macro\b", code, re.I):
+                    continue
+                args = [a.strip() for a in _split_top(inv.group(1))]
+                vals = []
+                for k in idx:
+                    a = args[k] if k < len(args) else ""
+                    sm = re.fullmatch(r'"([^"]*)"', a)
+                    if not sm:
+                        unmodelled.append(f"{f.name}:{i}: {macro} argument {k + 1} "
+                                          f"({a!r}) feeds the export at {where}")
+                        break
+                    vals.append(sm.group(1))
+                else:
+                    name = fmt.replace("%%", "\0")
+                    for v in vals:
+                        name = name.replace("%s", v, 1)
+                    name = name.replace("\0", "%")
+                    nexpanded += 1
+                    if "%" in name:
+                        unmodelled.append(f"{where}: format {fmt!r} not expandable")
+                    elif forbidden([name]):
+                        hits.append(f"src/{f.name}:{i} `{ln.strip()}` exports "
+                                    f"['{name}'] via {where}")
+    note_examined(nexpanded, "macro-expanded export")
+    note_examined(len(files), "source file")
+    note_examined(nlines, "export directive")
+    if not files or nlines == 0:
+        failures.append(f"forbidden exports (source): examined {len(files)} files "
+                        f"and {nlines} export directives -- vacuous")
+        print("  FORBID SRC FAIL: empty population")
+    for u in unmodelled:
+        failures.append(f"forbidden exports (source): unmodelled form at {u} -- "
+                        "this scan cannot read the exported name")
+        print(f"  FORBID SRC FAIL: unmodelled {u}")
+    for h in hits:
+        failures.append(f"forbidden exports (source): {h} (SPEC §8.0/§8.1/§8.2 "
+                        "MUST NOT, whatever conditional gates it)")
+        print(f"  FORBID SRC FAIL: {h}")
+    if files and nlines and not hits and not unmodelled:
+        print(f"  forbidden exports (source) OK ({nlines} export directives + "
+              f"{nexpanded} macro-expanded names, "
+              f"in {len(files)} src/*.s + *.inc files, every conditional arm: none "
+              "names a §8 forbidden symbol)")
 
 
 ABI_BASELINE = REPO / "tools" / "abi_baseline.json"
@@ -5321,6 +5473,7 @@ def _run_all_legs():
         ("§5 footprint basis", footprint_basis_check, (failures,)),
         ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
         ("§8 forbidden exports", forbidden_export_check, (failures, archives)),
+        ("§8 forbidden exports (source)", forbidden_export_source_scan, (failures,)),
         ("§1/§7 ABI vs last release", abi_surface_check, (failures, archives)),
         ("documented ABI gate", abi_doc_binding_check, (failures,)),
         ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
