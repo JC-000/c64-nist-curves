@@ -576,10 +576,15 @@ def run(work: Path) -> int:
                 # make prints the reason on the FIRST stderr line and then
                 # dumps its whole usage text, so take the head: the tail is
                 # "Report bugs to <bug-make@gnu.org>" on every rejection.
+                # Only rc 2 is a usage error; 0 or 1 where the other was due
+                # means make ran the flag and answered wrongly (e.g. a `-q`
+                # saying "up to date" because the knob force was suppressed).
                 why = next((ln for ln in r.stderr.splitlines() if ln.strip()), "")
+                verdict = ("make refused the flag instead of running it"
+                           if r.returncode == 2 else "unexpected exit status")
                 fail(leg, f"{desc} ({mode}): exit {r.returncode}, expected "
-                     f"{'/'.join(str(c) for c in rcs)} -- make refused the flag "
-                     f"instead of running it: {why.strip()[:160]!r}")
+                     f"{'/'.join(str(c) for c in rcs)} -- {verdict}: "
+                     f"{why.strip()[:160]!r}")
             gone = sorted(set(before) - set(after))
             resized = sorted(k for k in set(before) & set(after) if before[k][0] != after[k][0])
             moved = sorted(k for k in set(before) & set(after) if before[k] != after[k])
