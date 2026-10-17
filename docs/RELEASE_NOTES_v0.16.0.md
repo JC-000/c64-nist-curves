@@ -4,12 +4,11 @@ P-256 and P-384 elliptic curve arithmetic for the Commodore 64.
 
 **MINOR.** `LIB_NISTCURVES_ABI_VERSION` **4 → 5**.
 
-Conformant to **c64-lib-contract SPEC v1.2.2** (frozen) with **no disclosed
+Conformant through **c64-lib-contract SPEC v1.3.0** with **no disclosed
 exceptions remaining**. The last one, §8.1's ban on exporting `sqtab_lo` /
-`sqtab_hi`, is closed by this release. Removing an export on a pre-1.0 MINOR
-is stated as explicitly conformant in contract 1.3.0 §7 (c64-lib-contract
-PR #206, pending merge at the time of this release); nothing in 1.3.0 is owed
-by this library.
+`sqtab_hi`, is closed by this release. SPEC v1.3.0 §7 makes this ABI-moving
+removal on a pre-1.0 MINOR explicitly conformant, and nothing else in 1.3.0 is
+owed by this library.
 
 ---
 
@@ -39,7 +38,8 @@ gives the three-line derivation SPEC §8.1 prescribes.
 "at the next MAJOR". It goes on a MINOR instead, under the semver reading this
 library has documented since v0.9.0: while MAJOR is 0, the MINOR position is
 the breaking position. The one-MINOR deprecation cycle §7 asks for has been
-satisfied since v0.10.0. `CHANGELOG.md` sets out the full reasoning.
+satisfied since v0.10.0, and SPEC v1.3.0 §7 now says in so many words that
+such a removal is conformant. `CHANGELOG.md` sets out the full reasoning.
 
 ## Added
 

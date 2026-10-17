@@ -17,11 +17,11 @@ contract).
 `LIB_NISTCURVES_ABI_VERSION` **4 → 5** — consumers with an ABI gate must
 update it (see Removed below).
 
-Conformant to c64-lib-contract **SPEC v1.2.2** (frozen) with **no disclosed
+Conformant through c64-lib-contract **SPEC v1.3.0** with **no disclosed
 exceptions remaining**: the bare `sqtab_lo` / `sqtab_hi` export removal below
-closes the last one. A removal on a pre-1.0 MINOR is stated as explicitly
-conformant in contract 1.3.0 §7 (c64-lib-contract PR #206, pending merge at
-the time of this release); nothing in 1.3.0 is owed by this library.
+closes the last one. SPEC v1.3.0 §7 makes an ABI-moving removal on a pre-1.0
+MINOR explicitly conformant, so the reading set out under Removed is now the
+contract's own text. Nothing else in 1.3.0 is owed by this library.
 
 ### Removed
 

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v1.2.2** (the contract is FROZEN there), verified clause-by-clause from built
+— conformant through **SPEC v1.3.0** (nothing owed under 1.3.0; its §7 makes v0.16.0's ABI-moving removal on a pre-1.0 MINOR explicitly conformant), verified clause-by-clause from built
 objects rather than from source comments (the alignment baseline lives in the
 session memory's lib-contract-alignment-monitor note).
 
