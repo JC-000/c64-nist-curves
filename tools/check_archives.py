@@ -3530,7 +3530,7 @@ def archived_source_files(archives):
         if f in files or not f.exists():
             continue
         files.append(f)
-        todo += [REPO / "src" / inc for inc in _INCLUDE_RE.findall(f.read_text())]
+        todo += [REPO / "src" / inc for inc in _INCLUDE_RE.findall("\n".join(_src_lines(f)))]
     return sorted(files)
 
 
@@ -3548,7 +3548,7 @@ def derive_knobs(archives):
     files = archived_source_files(archives)
     knobs, zp = {}, set()
     for f in files:
-        lines = f.read_text().splitlines()
+        lines = _src_lines(f)
         for i, ln in enumerate(lines):
             m = _KNOB_GUARD_RE.match(ln)
             if not m:
@@ -3633,7 +3633,7 @@ def derive_switches(archives, knobs):
     `*_INCLUDED` guard."""
     found = {}
     for f in archived_source_files(archives):
-        for ln in f.read_text().splitlines():
+        for ln in _src_lines(f):
             for m in _SWITCH_NAME_RE.finditer(ln.split(";", 1)[0]):
                 x = m.group(1) or m.group(2)
                 if x in knobs or x.endswith(KNOB_SCAN_EXCLUDE_SUFFIX):
@@ -3976,7 +3976,10 @@ def _src_lines(f):
     """A source file's lines. Decoded latin-1: ca65 takes any byte in a
     comment, and a strict UTF-8 read crashed the leg on one 0xFF byte
     (review mutant \\377). latin-1 maps every byte, so the file stays IN the
-    population and an export after such a byte is still read."""
+    population and an export after such a byte is still read. The ONE source
+    reader: forbidden_export_check's knob/switch derivation
+    (archived_source_files, derive_knobs, derive_switches) uses it too --
+    its strict read crashed that leg on the same byte, a false red."""
     return f.read_bytes().decode("latin-1").splitlines()
 
 
