@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 P-256 and P-384 elliptic curve arithmetic optimized for the Commodore 64 (6502 CPU at 1 MHz). Optimizations ported from the c64-x25519 project.
 
 Fully adopts the [c64-lib-contract](https://github.com/JC-000/c64-lib-contract)
-— conformant through **SPEC v1.2.2** (the contract is FROZEN there), verified clause-by-clause from built
+— conformant through **SPEC v1.3.0** (nothing owed under 1.3.0; its §7 makes v0.16.0's ABI-moving removal on a pre-1.0 MINOR explicitly conformant), verified clause-by-clause from built
 objects rather than from source comments (the alignment baseline lives in the
 session memory's lib-contract-alignment-monitor note).
 
@@ -32,7 +32,8 @@ MINOR, not "at the next MAJOR" as this file used to promise. The reading:
 and at 0.y.z the MINOR position is the breaking one (semver's pre-1.0 rule,
 our documented policy since v0.9.0). §1:39 *describes* that ("a library may
 break its surface on a MINOR bump while pre-1.0") but is an aside, not a
-grant. §7's one-MINOR deprecation cycle had been satisfied since v0.10.0, and
+grant. v1.2.2 §7's one-MINOR deprecation cycle (deleted in v1.3.0, whose §7
+makes MINOR the breaking position while MAJOR is 0) had been satisfied since v0.10.0, and
 v0.10.0's removal of the §8.2 `LIB_SHARED_REU_MUL_*` exports is the
 precedent. The window existed only
 because `main.s` imported `sqtab_lo`; it no longer does. `make check-archives`'
@@ -327,7 +328,7 @@ the variant PRGs, labels and `.d` files but keeps the knob stamp on purpose.
 hash of an archive cannot see a code-byte change; compare raw member bytes
 with the Options/Files sections zeroed (they hold the assembly datetime).
 
-Current PRG size: ~36.9 KB (37743 bytes as of v0.15.0, measured; 37739 at issue #148's comb post-condition guard; 37483 through v0.12.0 — the guard adds ~64 B of code but the page-aligned LIB_NISTCURVES_TABLES segment rounds that up to +256 B of image. Earlier: 37480 at v0.10.0's issue #98 P384_BSS fix, 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801. **Any negative test that perturbs image size trips this guard first** — it has intercepted three such tests aimed at other asserts. Pass `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom, or you are re-testing the guard you already have. **Slack under the §4 `__MAIN_LAST__ <= LIB_SHARED_SQTAB_BASE` link guard is now 150 bytes** (`$9B6A` vs `$9C00`), down from 406; anything that grows MAIN much further needs the buffers moved first, not a bigger guard.
+Current PRG size: ~36.9 KB (37743 bytes as of v0.16.0, measured, unchanged since v0.15.0; 37739 at issue #148's comb post-condition guard; 37483 through v0.12.0 — the guard adds ~64 B of code but the page-aligned LIB_NISTCURVES_TABLES segment rounds that up to +256 B of image. Earlier: 37480 at v0.10.0's issue #98 P384_BSS fix, 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801. **Any negative test that perturbs image size trips this guard first** — it has intercepted three such tests aimed at other asserts. Pass `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom, or you are re-testing the guard you already have. **Slack under the §4 `__MAIN_LAST__ <= LIB_SHARED_SQTAB_BASE` link guard is now 150 bytes** (`$9B6A` vs `$9C00`), down from 406; anything that grows MAIN much further needs the buffers moved first, not a bigger guard.
 
 `src/*.s` (ca65) is the only source set. The legacy ACME `src/*.asm`
 files and the `make build-acme` target were **deleted** — the toolchain
