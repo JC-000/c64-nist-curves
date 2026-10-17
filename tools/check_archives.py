@@ -4350,6 +4350,187 @@ def abi_doc_binding_check(failures):
               f"says {cur}, as built)")
 
 
+# --- §8.1 base pin across the deferral x profile arms (review F2 of #183) ----
+# src/mul_8x8.s gates the EXPORT of LIB_NISTCURVES_SHARED_SQTAB_BASE and
+# src/nistcurves.inc gates its IMPORT (and the base pin) with two hand-copied
+# conditions. The packaging leg drives the pin only against the default
+# nistcurves.a, where both conditions are trivially true, so dropping
+# `.or .defined(FP_ONCHIP_MUL)` from either went unseen: from the export gate,
+# a c64-https-mode onchip consumer failed `Unresolved external
+# 'LIB_NISTCURVES_SHARED_SQTAB_BASE'`; from the header gate, the pin silently
+# vanished in exactly the arms where og_common reads the table.
+#
+# Each row: CONTRACT_DEFINES, CONTRACT_ZP_DEFINES, the base the archives are
+# built at, and for each archive whether its objects READ the table (and so
+# must publish the base). That last column is a third, independent statement
+# of the gate -- sqtab_init, the §8.3 body or og_common present -- so a
+# mutation applied to BOTH hand copies at once still fails here.
+# The first row is c64-https's P-256 build verbatim
+# (tools/integration/build_nistcurves_p256.sh:395 in that repo).
+SQTAB_PIN_ARCHIVES = ["nistcurves-p256-verify.a", "nistcurves-p256-verify-onchip.a",
+                      "nistcurves-p256-comb-onchip.a"]
+SQTAB_PIN_CONFIGS = {
+    "c64-https P-256": (
+        "-D SHARED_SQTAB_INIT -D SHARED_REU_MUL_INIT -D SHARED_REU_MUL_FETCH "
+        "-D SHARED_CT_MUL_8X8 -D LIB_NO_BARE_EXPORTS=1 -D LIB_SHARED_SQTAB_BASE=0xBC00",
+        "-D nistcurves_zp_ptr2=0x3d -D fp_mul_i=0x39 -D fp_mul_j=0x3a",
+        0xBC00,
+        {"nistcurves-p256-verify.a": False,          # no reader left: all deferred
+         "nistcurves-p256-verify-onchip.a": True,    # og_common reads it
+         "nistcurves-p256-comb-onchip.a": True}),
+    "§8.1+§8.3 deferral": (
+        "-D SHARED_SQTAB_INIT -D SHARED_CT_MUL_8X8", "", 0x9C00,
+        {"nistcurves-p256-verify.a": False,
+         "nistcurves-p256-verify-onchip.a": True,
+         "nistcurves-p256-comb-onchip.a": True}),
+    "§8.1 deferral only": (
+        "-D SHARED_SQTAB_INIT", "", 0x9C00,
+        {a: True for a in SQTAB_PIN_ARCHIVES}),      # the §8.3 body reads it
+}
+SQTAB_PIN_MSG = "sqtab base disagrees"
+
+
+def _pin_link(td, defines, archive, tag):
+    """Assemble a consumer that is ONLY `.include "nistcurves.inc"` under
+    `defines`, link it against `archive`. The header's pin assert is the only
+    reference, so ld65 pulls exactly the member that exports the base.
+    Deferred providers the pulled member needs (the consumer's own §8.x
+    bodies in a real build) are satisfied by a stub of equates, generated
+    from the first link's unresolved list -- never the pinned symbol itself.
+    Returns (asm_rc, asm_out, link_rc, link_out, imported)."""
+    src = td / f"pin_{tag}.s"
+    obj = td / f"pin_{tag}.o"
+    src.write_text('.include "nistcurves.inc"\n.segment "CODE"\n    rts\n')
+    arc, aout = sh(["ca65", "--cpu", "6502", *defines, "-I", str(REPO / "src"),
+                    "-o", str(obj), str(src)])
+    if arc:
+        return arc, aout, None, "", None
+    imported = "LIB_NISTCURVES_SHARED_SQTAB_BASE" in od65_names(obj, "--dump-imports")
+    cfg = td / "pin.cfg"
+    cfg.write_text(CONSUMER_CFG)
+    out_prg = td / f"pin_{tag}.prg"
+    lrc, lout = sh(["ld65", "-C", str(cfg), "-o", str(out_prg), str(obj), str(archive)])
+    need = sorted(set(re.findall(r"Unresolved external '([^']+)'", lout))
+                  - {"LIB_NISTCURVES_SHARED_SQTAB_BASE"})
+    if need:
+        stub = td / f"prov_{tag}.s"
+        stub.write_text("".join(f".export {n}\n{n} = ${0x80 + i:02X}\n"
+                                for i, n in enumerate(need)))
+        rc, sout = sh(["ca65", "--cpu", "6502", "-o", str(td / f"prov_{tag}.o"),
+                       str(stub)])
+        if rc:
+            return arc, aout, 1, f"provider stub failed: {sout}", imported
+        lrc, lout = sh(["ld65", "-C", str(cfg), "-o", str(out_prg), str(obj),
+                        str(td / f"prov_{tag}.o"), str(archive)])
+    return arc, aout, lrc, lout, imported
+
+
+@leg
+def sqtab_pin_deferral_check(failures):
+    """§8.1 base pin, driven in the deferral x profile arms (review F2).
+
+    For every SQTAB_PIN_CONFIGS row, the real Makefile builds
+    SQTAB_PIN_ARCHIVES in a throwaway BUILD_DIR. Per archive:
+      * it exports LIB_NISTCURVES_SHARED_SQTAB_BASE exactly when the row says
+        it reads the table, at the row's base;
+      * the header, driven with the row's CONTRACT_DEFINES plus the
+        archive's own variant switches (HEADER_ARCHIVE_SWITCHES), imports it
+        exactly when the archive exports it -- the two hand-copied gates
+        agree;
+      * a consumer at the row's base links; a consumer one page off fails
+        on the pin's lderror wherever the archive exports the base (and,
+        where it does not, links -- there is nothing to compare against)."""
+    print("\n=== §8.1 sqtab base pin across deferral x onchip arms ===")
+    ok_rows, nrows = [], 0
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        for label, (cdef, zdef, base, reads) in SQTAB_PIN_CONFIGS.items():
+            slug = re.sub(r"\W+", "_", label)
+            bdir = td / f"b_{slug}"
+            rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={bdir}",
+                          f"CONTRACT_DEFINES={cdef}", f"CONTRACT_ZP_DEFINES={zdef}",
+                          *[str(bdir / "lib" / a) for a in SQTAB_PIN_ARCHIVES]])
+            if rc:
+                failures.append(f"sqtab pin [{label}]: build failed: {out.strip()[-400:]}")
+                print(f"  PIN FAIL [{label}]: build failed")
+                continue
+            switches = re.findall(r"-D\s+(\S+)", cdef)
+            for aname in SQTAB_PIN_ARCHIVES:
+                apath = bdir / "lib" / aname
+                (td / f"x_{slug}").mkdir(exist_ok=True)
+                exp = built_archive_exports(apath, td / f"x_{slug}")
+                if exp is None:
+                    failures.append(f"sqtab pin [{label}] {aname}: unreadable")
+                    continue
+                exported = "LIB_NISTCURVES_SHARED_SQTAB_BASE" in exp
+                where = f"[{label}] {aname}"
+                nrows += 1
+                note_examined(1, "sqtab pin arm")
+                if exported != reads[aname]:
+                    failures.append(
+                        f"sqtab pin {where}: archive "
+                        f"{'exports' if exported else 'does not export'} "
+                        "LIB_NISTCURVES_SHARED_SQTAB_BASE, but its objects "
+                        f"{'read' if reads[aname] else 'do not read'} the table "
+                        "-- src/mul_8x8.s's export gate is wrong for this arm")
+                    print(f"  PIN FAIL {where}: exported={exported}, reads={reads[aname]}")
+                if exported:
+                    v = od65_value(sorted((td / f"x_{slug}" / f"x_{apath.stem}").glob("*.o")),
+                                   "LIB_NISTCURVES_SHARED_SQTAB_BASE")
+                    if v != base:
+                        failures.append(f"sqtab pin {where}: exports the base as "
+                                        f"{v!r}, built at ${base:04X}")
+                        print(f"  PIN FAIL {where}: value {v!r} != ${base:04X}")
+                hdefs = []
+                for d in switches + HEADER_ARCHIVE_SWITCHES[aname]:
+                    if d.split("=")[0] != "LIB_SHARED_SQTAB_BASE":
+                        hdefs += ["-D", d]
+                rows = {}
+                for tag, b in (("match", base), ("off", base ^ 0x0100)):
+                    rows[tag] = _pin_link(td, hdefs + ["-D", f"LIB_SHARED_SQTAB_BASE={b}"],
+                                          apath, f"{slug}_{apath.stem}_{tag}")
+                arc, aout, lrc, lout, imported = rows["match"]
+                if arc:
+                    failures.append(f"sqtab pin {where}: consumer does not "
+                                    f"assemble: {aout.strip()[:300]}")
+                    print(f"  PIN FAIL {where}: consumer does not assemble")
+                    continue
+                if imported != exported:
+                    failures.append(
+                        f"sqtab pin {where}: the header "
+                        f"{'imports' if imported else 'does not import'} "
+                        "LIB_NISTCURVES_SHARED_SQTAB_BASE but the archive "
+                        f"{'exports' if exported else 'does not export'} it -- "
+                        "src/nistcurves.inc's import gate and src/mul_8x8.s's "
+                        "export gate disagree in this arm")
+                    print(f"  PIN FAIL {where}: header imports={imported}, archive exports={exported}")
+                if lrc:
+                    failures.append(f"sqtab pin {where}: a consumer at the "
+                                    f"archive's own base ${base:04X} does not "
+                                    f"link: {lout.strip()[:300]}")
+                    print(f"  PIN FAIL {where}: matching base rejected")
+                _a, _o, olrc, olout, _i = rows["off"]
+                if exported and (olrc == 0 or SQTAB_PIN_MSG not in olout):
+                    failures.append(
+                        f"sqtab pin {where}: a consumer at ${base ^ 0x100:04X} "
+                        f"vs an archive at ${base:04X} "
+                        f"{'linked clean' if olrc == 0 else 'failed for another reason: ' + olout.strip()[:200]}"
+                        " -- the base pin is missing in this arm")
+                    print(f"  PIN FAIL {where}: off-base consumer not stopped by the pin")
+                if not exported and olrc:
+                    failures.append(f"sqtab pin {where}: archive publishes no "
+                                    f"base, yet an off-base consumer failed: "
+                                    f"{olout.strip()[:200]}")
+                    print(f"  PIN FAIL {where}: off-base consumer failed with nothing to pin")
+                ok_rows.append(f"{label}/{aname.removeprefix('nistcurves-')}:"
+                               f"{'pinned' if exported else 'none'}")
+    if nrows == 0:
+        failures.append("sqtab pin: examined no archive -- vacuous")
+        print("  PIN FAIL: empty population")
+    elif not any(f.startswith("sqtab pin") for f in failures):
+        print(f"  sqtab pin OK ({nrows} arms: {ok_rows})")
+
+
 @leg
 def sibling_sqtab_collision_check(failures):
     """§6.1 + §8.1: the MANDATORY boot call must not drag a bare sqtab name in.
@@ -5476,6 +5657,7 @@ def _run_all_legs():
         ("§8 forbidden exports (source)", forbidden_export_source_scan, (failures,)),
         ("§1/§7 ABI vs last release", abi_surface_check, (failures, archives)),
         ("documented ABI gate", abi_doc_binding_check, (failures,)),
+        ("§8.1 sqtab pin, deferral x onchip", sqtab_pin_deferral_check, (failures,)),
         ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
         ("od65 extraction canary", od65_extraction_canary, (failures,)),
         ("APP_OWNED buffer ownership", app_owned_buffer_ownership_check, (failures,)),

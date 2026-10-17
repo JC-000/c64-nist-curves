@@ -90,7 +90,10 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 ;   - the ct_mul_8x8 body       (.ifndef SHARED_CT_MUL_8X8)
 ;   - og_common                 (.ifdef FP_ONCHIP_MUL)
 ; The fully-deferring app-owned arm has none of the three, so it publishes no
-; base, rather than a number nothing in the archive reads. An equate adds no
+; base, rather than a number nothing in the archive reads. src/nistcurves.inc
+; repeats this condition on its import; check-archives'
+; sqtab_pin_deferral_check builds the deferral x onchip arms and fails if the
+; two copies disagree, or if either drops an arm that reads the table. An equate adds no
 ; segment bytes, so no image or §5 figure moves.
 .if (.not .defined(SHARED_SQTAB_INIT)) .or (.not .defined(SHARED_CT_MUL_8X8)) .or .defined(FP_ONCHIP_MUL)
 LIB_NISTCURVES_SHARED_SQTAB_BASE = LIB_SHARED_SQTAB_BASE

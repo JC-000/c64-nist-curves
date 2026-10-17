@@ -532,7 +532,10 @@ NISTCURVES_PIN_OVERRIDE _nc_ovr_settle, LIB_NISTCURVES_REU_SETTLE_ITER, "LIB_NIS
 ; LIB_SHARED_SQTAB_BASE, so it is derived, not a knob, and a `-D` of it must
 ; collide. Gated exactly as mul_8x8.s gates the export, i.e. present wherever
 ; the archive carries a table reader (sqtab_init, the §8.3 body, or the onchip
-; row generator); absent only in the fully-deferring app-owned archive.
+; row generator); absent only in the fully-deferring app-owned archive. A
+; hand copy of that gate: check-archives' sqtab_pin_deferral_check builds the
+; deferral x onchip arms (c64-https's set among them) and fails if this import
+; and that export disagree in any of them.
 .if (.not .defined(SHARED_SQTAB_INIT)) .or (.not .defined(SHARED_CT_MUL_8X8)) .or .defined(FP_ONCHIP_MUL)
 .import LIB_NISTCURVES_SHARED_SQTAB_BASE
 ; Base pin. LIB_SHARED_SQTAB_BASE is consumer INPUT that §8.1 forbids the
