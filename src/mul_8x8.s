@@ -39,7 +39,7 @@
 ; -- i.e. the documented override does not assemble at all. Guarding makes
 ; both arms work: no override -> import reu_config.s's exported default;
 ; override -> use the -D value, which is the same value reu_config.s exports,
-; because the one -D reaches both TUs. Same shape as src/sqtab_base.inc's
+; because the one -D reaches both TUs. Same shape as src/nistcurves_sqtab_base.inc's
 ; "included, not imported" note.
 .ifndef LIB_NISTCURVES_REU_BANK_MUL
 .import LIB_NISTCURVES_REU_BANK_MUL
@@ -51,7 +51,7 @@
 ; Consumer override via `ca65 -D LIB_SHARED_SQTAB_BASE=$<addr>`.
 ; Default $9c00 was chosen on 2026-05-17 (see Known issues note) so the
 ; standalone library build links cleanly without an override.
-.include "sqtab_base.inc"   ; single shared default (SPEC v0.10.2 §6.7 rule)
+.include "nistcurves_sqtab_base.inc"   ; single shared default (SPEC v0.10.2 §6.7 rule)
 
 sqtab_lo        = LIB_SHARED_SQTAB_BASE             ; 512 B: lo bytes of floor(n^2/4)
 sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n^2/4)
@@ -62,29 +62,43 @@ sqtab_hi        = LIB_SHARED_SQTAB_BASE + $0200     ; 512 B: hi bytes of floor(n
 .assert (LIB_SHARED_SQTAB_BASE & $00ff) = 0, error, "sqtab base must be page-aligned (SPEC §8.1)"
 .assert sqtab_hi = sqtab_lo + $0200,        error, "sqtab_hi must follow sqtab_lo by $0200 (SPEC §8.1)"
 
-; §8.1 (v0.9.1): sqtab_lo/sqtab_hi are canonical NAMES, but canonical does not
-; mean exported -- they derive from the consumer-input LIB_SHARED_SQTAB_BASE,
-; and every §8.1 adopter derives the same two, so the bare exports are a
-; #82-class collision in any composed link. Export-gated under the §6.5 window;
-; removed at the next MAJOR. In-library they are same-TU equates (og_common)
-; plus one .import from the never-archived main.s sqtab-window guard, which the
-; standalone build (no gate) still satisfies.
+; SPEC §8.1: sqtab_lo/sqtab_hi are canonical NAMES, but they "MUST NOT be
+; exported either — they are source-level names each consuming TU derives".
+; So they are local equates here and exported by NO TU in this library. They
+; were exported, gated, from v0.10.0 (here) and from src/sqtab_aliases.s
+; (issue #155), riding a §6.5 window until v0.16.0 removed them, ABI 4 -> 5;
+; src/lib_version.s records why that was a MINOR. Every §8.1 adopter derives
+; the same two names from the same base, so an export is a duplicate-
+; identifier collision in any composed link, and no in-tree importer remains:
+; src/main.s's sqtab-window guard asserts against LIB_SHARED_SQTAB_BASE.
+; make check-archives fails an export of either name twice over:
+; forbidden_export_source_scan on the source line, whatever conditional gates
+; it, and forbidden_export_check on the built objects of every configuration
+; it samples.
+; Do not add an .export of either name, here or anywhere.
 ;
-; Narrowed further by the SPEC 1.1.0 realignment: a build that DEFERS §8.1 to a
-; canonical provider must not export them at all. In the deferral arm the
-; provider derives the same two names from the same base, so the collision is
-; certain rather than merely possible -- and a consumer who has already gone to
-; the trouble of supplying a provider is exactly the one who should not have to
-; discover a second gate (`-D LIB_NO_BARE_EXPORTS=1`) to link. There is no
-; in-tree importer left to protect: src/main.s's sqtab-window guard asserts
-; against LIB_SHARED_SQTAB_BASE, not against these labels.
-; EXPORTED FROM src/sqtab_aliases.s SINCE ISSUE #155, not from here. The two
-; names stay local equates in this TU (the body below indexes them and the SMC
-; page-delta math is computed from them), but exporting them HERE is what made
-; every reference into this member -- the mandatory `sqtab_init` boot call, the
-; §8.3 body, `og_common` under FP_ONCHIP_MUL -- drag two displaceable names
-; into a consumer's link. Same values, same gate, same archives, own TU.
-; Do not re-add the .export here.
+; What IS exported (v0.16.0) is the prefixed OUTPUT counterpart: the base this
+; TU's code actually reads. That replaces the one thing the bare export gave a
+; consumer, which was a way to learn where the archive put the table. Without
+; it, a consumer deriving its own sqtab_lo from a different
+; LIB_SHARED_SQTAB_BASE linked clean while its table and the library's reads
+; were on different pages. src/nistcurves.inc asserts the consumer's base
+; against it. Prefixed, so it collides with nothing. It is the §8.2 precedent
+; (LIB_NISTCURVES_SHARED_REU_MUL_*, SPEC.md:389); §8.1 forbids only the
+; unprefixed names. Exported exactly where code here reads the table:
+;   - the sqtab_init body       (.ifndef SHARED_SQTAB_INIT)
+;   - the ct_mul_8x8 body       (.ifndef SHARED_CT_MUL_8X8)
+;   - og_common                 (.ifdef FP_ONCHIP_MUL)
+; The fully-deferring app-owned arm has none of the three, so it publishes no
+; base, rather than a number nothing in the archive reads. src/nistcurves.inc
+; repeats this condition on its import; check-archives'
+; sqtab_pin_deferral_check builds the deferral x onchip arms and fails if the
+; two copies disagree, or if either drops an arm that reads the table. An equate adds no
+; segment bytes, so no image or §5 figure moves.
+.if (.not .defined(SHARED_SQTAB_INIT)) .or (.not .defined(SHARED_CT_MUL_8X8)) .or .defined(FP_ONCHIP_MUL)
+LIB_NISTCURVES_SHARED_SQTAB_BASE = LIB_SHARED_SQTAB_BASE
+.export LIB_NISTCURVES_SHARED_SQTAB_BASE: abs
+.endif
 
 ; =============================================================================
 ; sqtab_init - Build quarter-square lookup table at sqtab_lo / sqtab_hi
@@ -323,7 +337,11 @@ ct_sign_mask:   .byte 0
 ; generated row -- so the deferred provider surface is imported instead of
 ; defined. Import only what this TU references: without FP_ONCHIP_MUL the
 ; og_common block is absent and a deferring DMA-profile object needs none
-; of these (fp256/fp384 carry their own poly_prod imports). Cross-TU SMC
+; of these. (The only other TU that touches the §8.3 surface is
+; reu_mul_init.s, which imports mul_8x8, poly_prod_lo/hi and smc_* itself;
+; fp256.s / fp384.s reference none of it -- their fp_sqr diagonal scratch
+; moved off poly_prod_lo/hi into data_p256.s / data_p384.s, issue #155.)
+; Cross-TU SMC
 ; patching of an imported label is fleet-established (c64-x25519
 ; fe25519.s does exactly this against its own mul TU).
 .ifdef FP_ONCHIP_MUL

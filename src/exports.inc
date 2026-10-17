@@ -33,7 +33,8 @@
 ; mul_8x8.s
 ; EXPORTS: sqtab_init, mul_8x8, ct_mul_8x8 (alias), smc_sum_a_imm,
 ;          smc_diff_a_imm, poly_prod_lo, poly_prod_hi,
-;          sqtab_lo, sqtab_hi, reu_fetch_mul_row
+;          reu_fetch_mul_row  (sqtab_lo/sqtab_hi: local equates, exported by
+;          nothing -- SPEC §8.1; removed v0.16.0)
 ; IMPORTS:
 ;   data: mul_cached_a
 ;   constants: reu_reu_hi, reu_reu_bank, reu_command

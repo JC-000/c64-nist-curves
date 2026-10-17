@@ -63,7 +63,7 @@
 ; -- i.e. the documented override does not assemble at all. Guarding makes
 ; both arms work: no override -> import reu_config.s's exported default;
 ; override -> use the -D value, which is the same value reu_config.s exports,
-; because the one -D reaches both TUs. Same shape as src/sqtab_base.inc's
+; because the one -D reaches both TUs. Same shape as src/nistcurves_sqtab_base.inc's
 ; "included, not imported" note.
 .ifndef LIB_NISTCURVES_REU_BANK_MUL
 .import LIB_NISTCURVES_REU_BANK_MUL

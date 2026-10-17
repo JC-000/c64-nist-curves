@@ -12,6 +12,161 @@ contract).
 
 ## [Unreleased]
 
+`LIB_NISTCURVES_ABI_VERSION` **4 → 5** — consumers with an ABI gate must
+update it (see Removed below).
+
+### Removed
+
+- **The bare `sqtab_lo` / `sqtab_hi` exports are gone, from every archive
+  and every build configuration.** `src/sqtab_aliases.s` is deleted. This
+  closes the last disclosed exception to contract conformance. SPEC v1.2.2
+  §8.1 (SPEC.md:345): "`sqtab_lo`/`sqtab_hi` derive from it and MUST NOT be
+  exported either — they are source-level names each consuming TU derives
+  via the pattern above. Two exporters of an unprefixed name collide in any
+  composed link." From v0.10.0 through v0.15.0 they were a §6.5-window item
+  instead: exported by default, suppressed under `LIB_NO_BARE_EXPORTS` and
+  (from v0.13.0) under `SHARED_SQTAB_INIT`.
+
+  **This is a change of plan, and we own it.** v0.10.0 through v0.15.0 —
+  this CHANGELOG, `src/mul_8x8.s`, `src/sqtab_aliases.s` and CLAUDE.md —
+  said the pair would be "removed at the next MAJOR". It is removed on a
+  MINOR instead. The reading this relies on, stated plainly because the
+  contract does not grant it in so many words:
+  - SPEC §7's MAJOR bullet (SPEC.md:246) reads "MAJOR — breaking change to
+    the exported surface (removed or renamed symbols, changed calling
+    conventions, changed memory model)". So a removed symbol is a
+    MAJOR-class change. The question is what "MAJOR" means for a library
+    still at 0.y.z.
+  - We read it the semver way: while MAJOR is 0, the MINOR position is the
+    breaking position, and a 0.y bump is this library's MAJOR-class release.
+    `src/lib_version.s` has documented that policy since v0.9.0, and v0.9.0
+    and v0.10.0 shipped removals under it. SPEC §1 (SPEC.md:39) describes
+    the same pre-1.0 reality ("a library may break its surface on a MINOR
+    bump while pre-1.0"). That sentence explains why the ABI counter cannot
+    track MAJOR; it is a description, not a grant, and we do not rest on it
+    alone.
+  - SPEC §7 (SPEC.md:253): "Breaking changes go through a one-MINOR-release
+    deprecation cycle." That cycle has been satisfied since v0.10.0: the
+    window opened there, and five MINORs (0.11–0.15) have shipped since.
+  - §6.5's "drop the old form at its next MAJOR" (SPEC.md:240) governs
+    *renames*. Nothing is renamed here: the canonical names are unchanged,
+    and §8.1 forbids exporting them under any name.
+  - Precedent in this library: v0.10.0 removed the three unprefixed §8.2
+    `LIB_SHARED_REU_MUL_*` equates outright on a MINOR (ABI 1 → 2), for the
+    same reason, a contract MUST NOT. The sqtab pair only got a window then
+    because the library's own `main.s` sqtab-window guard imported
+    `sqtab_lo`. It no longer does: it asserts against
+    `LIB_SHARED_SQTAB_BASE`.
+
+  **ABI 4 → 5.** §1 names "a removed or renamed symbol" as a counter event,
+  and §7 (SPEC.md:251) moves the counter "when a consumer conforming to the
+  previously documented contract can be broken by the change". The export
+  was documented as present for the whole window, so a consumer importing it
+  was conforming, and now gets `Unresolved external 'sqtab_lo'` at link.
+
+  **Consumer impact.** There are no known importers. c64-https, the only
+  consumer of this library, defines and exports its own `sqtab_lo` /
+  `sqtab_hi` (`src/data.s`) and builds its P-256 archive with
+  `-D LIB_NO_BARE_EXPORTS=1 -D SHARED_SQTAB_INIT`, so it never took ours.
+  c64-wireguard does not link this library. If you imported either name:
+  - derive it in your own TU instead, the way SPEC §8.1 prescribes:
+    `.include "nistcurves_sqtab_base.inc"`, then `sqtab_lo = LIB_SHARED_SQTAB_BASE`
+    and `sqtab_hi = LIB_SHARED_SQTAB_BASE + $0200`;
+  - pass the same `-D LIB_SHARED_SQTAB_BASE=0x..` to your own build that
+    you pass to the library's `CONTRACT_DEFINES`;
+  - update your `.assert LIB_NISTCURVES_ABI_VERSION` gate to 5.
+  `src/nistcurves.inc` and `cfg/nistcurves-example.cfg` now show the
+  derivation. The example cfg's image guard compares against
+  `LIB_SHARED_SQTAB_BASE` rather than `sqtab_lo`.
+
+  **Example cfg: the SQTAB memory area no longer sets `define = yes`.** The
+  area and the segment of the same name both did, so both published
+  `__SQTAB_SIZE__`, and a consumer placing its table with labels in the
+  segment failed with `ld65: Error: Duplicate external identifier:
+  '__SQTAB_SIZE__'`. If you linked with `cfg/nistcurves-example.cfg` and
+  referenced the memory-area symbols `__SQTAB_START__` or `__SQTAB_LAST__`,
+  they are no longer defined. The segment's `__SQTAB_LOAD__`, `__SQTAB_RUN__`
+  and `__SQTAB_SIZE__` remain. `make check-docs` now links both forms of the
+  API.md §8.1 `sqtab_lo` check against `nistcurves.a` with this cfg.
+
+  No PRG byte moves (sha256 `e975f8e2…`, unchanged). In the archives, the
+  `sqtab_aliases.o` member is gone from the ten that shipped it.
+  `lib_version.o` and the default PRG's `labels.txt` change accordingly:
+  `.sqtab_lo` / `.sqtab_hi` leave `labels.txt`, and no tool here reads them.
+
+### Gates strengthened
+
+- **`make check-archives`: `forbidden_export_check` (new leg).** Fails any
+  member of any built archive (`ar65 x` + `od65`), and any shipped object
+  arm re-assembled from source both ungated and under
+  `LIB_NO_BARE_EXPORTS`, plus two derived-knob rebuilds and a list of
+  presence-switch builds, that exports a name the contract forbids in every
+  configuration. It examines the configurations it builds, and only those.
+  Those names are:
+  - the §8.0 `LIB_SHARED_PRIMITIVES_*` bit constants;
+  - the §8.1 `LIB_SHARED_SQTAB_BASE`, `sqtab_lo` and `sqtab_hi`;
+  - the §8.2 `LIB_SHARED_REU_MUL_*` inputs.
+
+  Unreadable dumps and an empty population fail. Red on the pre-change
+  tree: the `sqtab_aliases.o` member was flagged in each of the ten
+  archives that shipped it, plus the ungated source arm. Negative-tested
+  on the fixed tree by re-adding `.export sqtab_lo` to `src/mul_8x8.s`.
+  That fired on all eleven archives containing a `mul_8x8*` member, and on
+  all six source arms, gated included.
+- **`make check-archives`: `forbidden_export_source_scan` (new leg).** The
+  built sweep above is a sample: an export keyed on a switch combination or
+  knob value it does not build passed it. Two review mutants showed it, in
+  `src/mul_8x8.s`: `.if .defined(SHARED_SQTAB_INIT) .and
+  .defined(SHARED_CT_MUL_8X8) .and (.not .defined(SHARED_REU_MUL_INIT))` and
+  `.if LIB_SHARED_SQTAB_BASE = $8000`, each guarding `.export sqtab_lo,
+  sqtab_hi`. The second ships both names from `make lib
+  CONTRACT_DEFINES='-D LIB_SHARED_SQTAB_BASE=0x8000'`. This leg reads the
+  text of every archived source, every `src/*.s` and `*.inc`, and the
+  transitive `.include` closure of all of them, whatever the path or
+  extension (`.include "../cfg/x.inc"` and `.include "x.h"` both escaped a
+  glob of `src/`); an include it cannot open fails. It fails any `.export`
+  / `.exportzp` / `.global` / `.globalzp` (comma lists, `:addrsize`,
+  `name = expr` and `name := expr` forms) of a forbidden name, whatever
+  conditional gates it, after expanding one-line `.define`s (`.define NCX
+  .export` / `NCX sqtab_lo` also escaped). Exports of a macro parameter,
+  bare or through `precalc_table.inc`'s `.ident(.sprintf(...))`, are
+  expanded against every invocation. A parameterised `.define` that
+  exports, any other `.ident`, an unreadable macro argument and `.linecont`
+  are reported as unmodelled, which fails. Files are read as latin-1, so a
+  stray high byte in a comment neither crashes the leg nor drops the file.
+  Red: both mutants, with the built sweep still printing `forbidden
+  exports OK`, and the three escapes above.
+- **`make check-archives`: `sqtab_pin_deferral_check` (new leg).** The
+  `LIB_NISTCURVES_SHARED_SQTAB_BASE` export gate (`src/mul_8x8.s`) and the
+  header's import gate (`src/nistcurves.inc`) are hand copies, and the pin
+  was only driven against the default archive. This leg builds every
+  archive under four switch sets (the shipped defaults, c64-https's exact
+  P-256 set, §8.1+§8.3 deferral, §8.1 deferral alone), each twice, at two
+  `LIB_SHARED_SQTAB_BASE` values. Whether an arm reads the table is
+  MEASURED: some member's raw segment bytes move with the base (od65 shows
+  no segment bytes, so the xo65 Segments section is compared directly,
+  which also leaves out the datetime-bearing Options/Files). The archive
+  must export the base exactly where it reads the table. The header must
+  import it exactly where the archive exports it. A matching-base consumer
+  must link, and an off-by-a-page one must fail on the pin. Red: dropping
+  `.or .defined(FP_ONCHIP_MUL)` from either gate. Also red: an exported
+  table reader added under `SHARED_SQTAB_INIT` + `SHARED_CT_MUL_8X8` without
+  `FP_ONCHIP_MUL`, which left app-owned reading the table with no export
+  while both gate copies still agreed.
+- **`sibling_sqtab_collision_check`'s second half is now an absence
+  assertion.** It was a value pin that passed by finding "nothing to pin"
+  in any archive that exports nothing, and after this removal that would
+  have been every archive. Now a probe importing both names must fail to
+  link against every archive with exactly `{sqtab_lo, sqtab_hi}`
+  unresolved. A positive control, the same probe against a stand-in
+  exporting the pair, must resolve first.
+- **Packaging leg: `nistcurves_sqtab_base.inc` is shipped, byte-identical to
+  `src/`, and self-contained.** The leg assembles a consumer's derivation
+  with `-I build/lib` and nothing else, at the default and at a `-D`
+  override. Negative-tested twice. Dropping the file from `LIB_PACKAGING`
+  gave `make lib did not produce the sqtab base include`. Adding an
+  `.include` of a non-shipped file to it gave `Cannot open include file`.
+
 ### Fixed
 
 - **`nistcurves.inc` declared names some archives do not provide, or
@@ -110,7 +265,7 @@ contract).
     longer wipes the user's `build/`.
 
 - **Header edits now rebuild (issue #178).** No ca65 recipe named the headers
-  its source `.include`s (`sqtab_base.inc`, `reu_banks.inc`,
+  its source `.include`s (`sqtab_base.inc`, since renamed, `reu_banks.inc`,
   `precalc_table.inc`, `reu_dma_done.inc`), so editing one -- or a checkout
   touching only a header -- left `make` / `make lib-*` reporting "Nothing to
   be done" over a stale PRG or archive. Measured on the pre-fix Makefile with
@@ -161,6 +316,40 @@ contract).
   read the `.d` files, so `make clean` still works over a corrupt one.
 
 ### Added
+
+- **`LIB_NISTCURVES_SHARED_SQTAB_BASE`, a prefixed §8.1 output, plus a
+  header pin against it.** It is exported from `src/mul_8x8.s` in every arm
+  that carries code reading the quarter-square table: `sqtab_init`, the §8.3
+  body, or the onchip row generator. With the shipped switch sets that is
+  every field archive except the fully-deferring `nistcurves-app-owned.a`;
+  under a consumer's deferral switches it can be fewer (c64-https's P-256
+  set leaves `nistcurves-p256-verify.a` with no reader and no export, while
+  the onchip archives keep both). It replaces the one thing the
+  removed bare `sqtab_lo` gave a consumer: a way to learn where the archive's
+  code reads the table. Without it, a consumer deriving `sqtab_lo` from
+  `-D LIB_SHARED_SQTAB_BASE=0xA000` linked clean against a `$9C00` archive,
+  so its table and the library's reads sat on different pages (review
+  finding, demonstrated). `src/nistcurves.inc` now asserts the consumer's
+  `LIB_SHARED_SQTAB_BASE` against the export with `lderror`
+  (`LIB_SHARED_SQTAB_BASE: consumer sqtab base disagrees with the archive`),
+  and that pin is narrow: it compares two assemble-time constants, it is
+  active only if the base is defined BEFORE the header is read, and it
+  exists only in the arms above. It does not see where the consumer's
+  `sqtab_lo` actually is. The robust check, documented in API.md §8.1, is the
+  consumer's own `.assert sqtab_lo = LIB_NISTCURVES_SHARED_SQTAB_BASE,
+  lderror`, in the TU that defines `sqtab_lo`, against an archive that
+  exports the base.
+  The new name carries the prefix and §8.1 forbids only the unprefixed
+  names, so this follows the §8.2 `LIB_NISTCURVES_SHARED_REU_MUL_*` precedent
+  (SPEC.md:389). **Additive, so `LIB_NISTCURVES_ABI_VERSION` does not move
+  again**; it is 5 for the removal above. An equate adds no segment bytes:
+  every PRG and every measured §5 footprint is unchanged.
+- **`make lib*` now ships `build/lib/nistcurves_sqtab_base.inc`** beside
+  `nistcurves.inc`. It is the library's single `.ifndef`-guarded default for
+  `LIB_SHARED_SQTAB_BASE`, byte-identical to `src/nistcurves_sqtab_base.inc`. With the
+  exports gone, deriving the two names is the only way to obtain them.
+  Before this change the include the header recommended existed only in the
+  library's `src/`, so a consumer would have transcribed `$9C00` from prose.
 
 - `make check-inc-deps` (`tools/check_inc_deps.py`): discovers the include
   set and the object set (never hard-coded), then proves in a throwaway copy

@@ -8,8 +8,8 @@
 ;   .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 ;   .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 ;
-;   .assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 9), lderror, "c64-nist-curves v0.9 or newer is required"
-;   .assert LIB_NISTCURVES_ABI_VERSION = 1, lderror, "c64-nist-curves ABI v1 expected; rebuild consumer"
+;   .assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 16), lderror, "c64-nist-curves v0.16 or newer is required"
+;   .assert LIB_NISTCURVES_ABI_VERSION = 5, lderror, "c64-nist-curves ABI v5 expected; rebuild consumer"
 ;
 ; Why `.assert`/`lderror` and not `.if`/`.error`: `.if` requires an
 ; assembly-time constant, but an `.import`ed symbol has no value until
@@ -69,6 +69,8 @@
 LIB_NISTCURVES_VERSION_MAJOR = 0
 LIB_NISTCURVES_VERSION_MINOR = 15
 LIB_NISTCURVES_VERSION_PATCH = 0
+; ABI generation history (each step: what moved it, and why it is not MAJOR):
+;
 ; 2 -> 3 (issue #148). `ec_scalar_mul` / `ec_scalar_mul_384` documented no
 ; carry and now return one: C=1 with a zeroed output when the evaluation ends
 ; at infinity having seeded from a table slot. SPEC v1.1.0 §7 -- the counter
@@ -79,11 +81,47 @@ LIB_NISTCURVES_VERSION_PATCH = 0
 ; fleet has hit the clause. Per the same clause it is NOT thereby MAJOR and
 ; owes no deprecation cycle: a return set has no side-by-side form.
 ;
+; 3 -> 4 (issue #153). `reu_fetch_mul_row` now takes the row index in A, as
+; SPEC §8.2 had always documented; it used to ignore A and fetch whatever
+; `nistcurves_mul_cached_a` held. A consumer following the documented contract
+; was already broken and is fixed by this, so it is not a §7 "changed calling
+; convention" MAJOR; the counter still moves because a consumer that had
+; reverse-engineered the cached-byte behaviour DOES break.
+;
+; 4 -> 5 (v0.16.0). The deprecated bare `sqtab_lo` / `sqtab_hi` exports are
+; removed (src/sqtab_aliases.s deleted). SPEC §8.1: they "MUST NOT be exported
+; either"; they were a gated §6.5-window item from v0.10.0 through v0.15.0. A
+; removed symbol is the textbook counter event (§1: "a removed or renamed
+; symbol"), and the export had been documented as present for the window, so
+; a consumer importing it conformed to our documented contract and now breaks
+; at link. §7's MAJOR bullet makes a removed symbol a MAJOR-class change; at
+; 0.y.z we read the MINOR position as the breaking one (the semver pre-1.0
+; reading this file's versioning policy states, and which §1's "a library may
+; break its surface on a MINOR bump while pre-1.0" describes), and §7's
+; one-MINOR deprecation cycle had run since v0.10.0. So it shipped on a MINOR,
+; NOT "at the next MAJOR" as this file and the CHANGELOG had promised; the
+; CHANGELOG entry owns that change of plan.
+; 4 -> 5 removes: sqtab_hi sqtab_lo
+;
+; A `; k -> k+1 removes: <names>` line lists EXACTLY the exported names that
+; step takes away. check-archives (abi_surface_check) fails on a name gone
+; from the last release's surface that no step between that release's ABI and
+; this one lists, and on a listed name that is not actually gone. Without the
+; list, the first removal of a cycle moved the counter and every later one
+; rode through on it (contract review of #183: deleting `vic_bg` passed).
+;
 ; Bumped in the commit that causes it rather than at the release, so the
 ; source is never in a state where the surface has changed and the counter
-; says otherwise -- check-archives pins the counter against the source, so it
-; would validate a stale value against itself and pass.
-LIB_NISTCURVES_ABI_VERSION   = 4
+; says otherwise. check-archives enforces that for removals, against the LAST
+; RELEASE rather than against this source: abi_surface_check compares the
+; built archives (default and LIB_NO_BARE_EXPORTS=1) with
+; tools/abi_baseline.json, and a name gone from it fails unless the counter
+; moved past the release's value AND a `; k -> k+1 removes:` line above lists
+; it; abi_doc_binding_check binds every documented `.assert
+; LIB_NISTCURVES_ABI_VERSION = N` to the built value. A §7 behaviour change
+; with no removal (2 -> 3, 3 -> 4) is not machine-detectable: nothing fails
+; if such a bump is forgotten, so it still rests on review.
+LIB_NISTCURVES_ABI_VERSION   = 5
 
 .export LIB_NISTCURVES_VERSION_MAJOR:abs
 .export LIB_NISTCURVES_VERSION_MINOR:abs
@@ -92,7 +130,7 @@ LIB_NISTCURVES_ABI_VERSION   = 4
 
 
 ; -----------------------------------------------------------------------------
-; Deprecated bare forms (SPEC §1; removed at contract v1.0)
+; Deprecated bare forms (SPEC §1; removal deferred by contract 1.0.0 to a future MAJOR)
 ; -----------------------------------------------------------------------------
 ; These names are identical across every adopter of the contract, so a
 ; consumer that links two sibling libraries and imports both manifests
