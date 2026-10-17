@@ -79,6 +79,16 @@ update it (see Removed below).
   derivation. The example cfg's image guard compares against
   `LIB_SHARED_SQTAB_BASE` rather than `sqtab_lo`.
 
+  **Example cfg: the SQTAB memory area no longer sets `define = yes`.** The
+  area and the segment of the same name both did, so both published
+  `__SQTAB_SIZE__`, and a consumer placing its table with labels in the
+  segment failed with `ld65: Error: Duplicate external identifier:
+  '__SQTAB_SIZE__'`. If you linked with `cfg/nistcurves-example.cfg` and
+  referenced the memory-area symbols `__SQTAB_START__` or `__SQTAB_LAST__`,
+  they are no longer defined. The segment's `__SQTAB_LOAD__`, `__SQTAB_RUN__`
+  and `__SQTAB_SIZE__` remain. `make check-docs` now links both forms of the
+  API.md §8.1 `sqtab_lo` check against `nistcurves.a` with this cfg.
+
   No PRG byte moves (sha256 `e975f8e2…`, unchanged). In the archives, the
   `sqtab_aliases.o` member is gone from the ten that shipped it.
   `lib_version.o` and the default PRG's `labels.txt` change accordingly:
