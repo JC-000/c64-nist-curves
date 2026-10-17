@@ -625,7 +625,8 @@ def main() -> int:
         from gen_abi_baseline import rows_digest
         try:
             digest_ok = base.get("rows_sha256") == rows_digest(
-                base.get("abi"), base.get("archives") or {})
+                base.get("abi"), base.get("archives") or {},
+                base.get("archives_nobare") or {})
         except (TypeError, ValueError, AttributeError):
             digest_ok = False
         if not digest_ok:

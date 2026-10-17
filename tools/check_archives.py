@@ -3968,7 +3968,7 @@ def abi_step_removals(text, k):
 
 
 @leg
-def abi_surface_check(failures):
+def abi_surface_check(failures, archives):
     """SPEC §1/§7: a name the last RELEASE exported may disappear only if
     LIB_NISTCURVES_ABI_VERSION has moved past that release's value.
 
@@ -4000,15 +4000,23 @@ def abi_surface_check(failures):
         removal of a cycle moved the counter and any later one rode through:
         contract review of #183 deleted `vic_bg` from src/constants.s and this
         leg printed "3 name(s) gone [... 'vic_bg']" and passed.
-    Scope: the DEFAULT configuration, the one the baseline records. A missing,
-    unparseable or empty baseline fails; an empty population proves
-    nothing."""
+    Scope: BOTH configurations the baseline records -- the default build
+    ("archives") and the build-wide `LIB_NO_BARE_EXPORTS=1` build
+    ("archives_nobare"), which is what c64-https and any multi-library
+    consumer links. Until review F5 only the default was compared, so an
+    export gated out under LIB_NO_BARE_EXPORTS alone was a removal no leg
+    saw. The nobare archives are built here by the real Makefile in a
+    throwaway BUILD_DIR, from the archive list the Makefile declares. Other
+    CONTRACT_DEFINES (deferral switches, knob values) are not baselined. A
+    missing, unparseable or empty baseline (either mode) fails; an empty
+    population proves nothing."""
     import json
     print("\n=== §1/§7 ABI counter vs the last release's exported surface ===")
     try:
         base = json.loads(ABI_BASELINE.read_text())
         base_abi = int(base["abi"])
-        rows = base["archives"]
+        modes = {"default": base["archives"], "nobare": base["archives_nobare"]}
+        rows = modes["default"]
         tag = base.get("tag", "?")
     except FileNotFoundError:
         failures.append(f"abi surface: {ABI_BASELINE.relative_to(REPO)} is "
@@ -4021,7 +4029,9 @@ def abi_surface_check(failures):
         return
     sys.path.insert(0, str(REPO / "tools"))
     from gen_abi_baseline import rows_digest
-    if not isinstance(rows, dict) or base.get("rows_sha256") != rows_digest(base_abi, rows):
+    if (not all(isinstance(r, dict) for r in modes.values())
+            or base.get("rows_sha256") != rows_digest(base_abi, modes["default"],
+                                                      modes["nobare"])):
         failures.append(
             f"abi surface: baseline content does not match its rows_sha256 "
             f"(recorded {str(base.get('rows_sha256'))[:12]}) -- a row or the ABI "
@@ -4029,8 +4039,9 @@ def abi_surface_check(failures):
             "digest; regenerate with tools/gen_abi_baseline.py <tag>")
         print("  ABI FAIL: baseline content digest mismatch")
         return
-    empty = sorted(a for a, v in rows.items() if not v) if isinstance(rows, dict) else ["?"]
-    if not isinstance(rows, dict) or not rows or empty:
+    empty = sorted(f"{m}:{a}" for m, r in modes.items() for a, v in r.items()
+                   if not v)
+    if any(not r for r in modes.values()) or empty:
         failures.append(f"abi surface: baseline has no archives, or empty rows "
                         f"{empty} -- an absence check over nothing is vacuous")
         print("  ABI FAIL: baseline population empty")
@@ -4041,21 +4052,34 @@ def abi_surface_check(failures):
                         "from build/lib_version.o")
         print("  ABI FAIL: built ABI unreadable")
         return
-    removed, unread = {}, []
+    removed, unread = {}, []          # keys "mode:archive"
     with tempfile.TemporaryDirectory() as td:
-        for aname, names in sorted(rows.items()):
-            apath = LIBDIR / aname
-            note_examined(len(names), "baseline export")
-            if not apath.exists():
-                removed[aname] = sorted(names)        # the whole archive went
-                continue
-            cur = built_archive_exports(apath, td)
-            if cur is None:
-                unread.append(aname)
-                continue
-            gone = sorted(set(names) - cur)
-            if gone:
-                removed[aname] = gone
+        td = Path(td)
+        nb = td / "nobare"
+        rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={nb}",
+                      "CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1",
+                      *[str(nb / "lib" / a) for a in sorted(archives)]])
+        if rc:
+            failures.append("abi surface: the LIB_NO_BARE_EXPORTS=1 build failed: "
+                            + out.strip()[-400:])
+            print("  ABI FAIL: nobare build failed")
+            return
+        libdirs = {"default": LIBDIR, "nobare": nb / "lib"}
+        for mode, mrows in sorted(modes.items()):
+            (td / f"ex_{mode}").mkdir(exist_ok=True)
+            for aname, names in sorted(mrows.items()):
+                apath = libdirs[mode] / aname
+                note_examined(len(names), f"baseline export ({mode})")
+                if aname not in archives or not apath.exists():
+                    removed[f"{mode}:{aname}"] = sorted(names)  # archive went
+                    continue
+                cur = built_archive_exports(apath, td / f"ex_{mode}")
+                if cur is None:
+                    unread.append(f"{mode}:{aname}")
+                    continue
+                gone = sorted(set(names) - cur)
+                if gone:
+                    removed[f"{mode}:{aname}"] = gone
     if unread:
         failures.append(f"abi surface: could not read {unread}")
         print(f"  ABI FAIL: unreadable archives {unread}")
@@ -4089,8 +4113,10 @@ def abi_surface_check(failures):
         undeclared = sorted(set(gone_names) - declared)
         stale = sorted(declared - set(gone_names))
         if undeclared:
+            where = sorted(k for k, v in removed.items() if set(v) & set(undeclared))
             failures.append(
-                f"abi surface: {undeclared} ({tag} exported them) are gone, but "
+                f"abi surface: {undeclared} ({tag} exported them) are gone from "
+                f"{where[:6]}{' ...' if len(where) > 6 else ''}, but "
                 f"no step {base_abi} -> {cur_abi} lists them in a `; k -> k+1 "
                 "removes: ...` line in src/lib_version.s -- a removal needs its "
                 "own declaration; a counter that already moved does not cover "
@@ -4104,7 +4130,9 @@ def abi_surface_check(failures):
             print(f"  ABI FAIL: declared but not removed {stale}")
     if not failures or not any(f.startswith("abi surface") for f in failures):
         print(f"  abi surface OK ({len(rows)} archives, "
-              f"{sum(len(v) for v in rows.values())} {tag} export rows; "
+              f"{sum(len(v) for v in rows.values())} default + "
+              f"{sum(len(v) for v in modes['nobare'].values())} nobare "
+              f"{tag} export rows; "
               f"{len(gone_names)} name(s) gone {gone_names}; ABI {base_abi} -> "
               f"{cur_abi}, every step stated and every removal declared in "
               "src/lib_version.s)")
@@ -5272,7 +5300,7 @@ def _run_all_legs():
         ("§5 footprint basis", footprint_basis_check, (failures,)),
         ("sibling bare collision (mul_dma_*)", sibling_bare_collision_check, (failures,)),
         ("§8 forbidden exports", forbidden_export_check, (failures, archives)),
-        ("§1/§7 ABI vs last release", abi_surface_check, (failures,)),
+        ("§1/§7 ABI vs last release", abi_surface_check, (failures, archives)),
         ("documented ABI gate", abi_doc_binding_check, (failures,)),
         ("sibling bare collision (sqtab_*)", sibling_sqtab_collision_check, (failures,)),
         ("od65 extraction canary", od65_extraction_canary, (failures,)),

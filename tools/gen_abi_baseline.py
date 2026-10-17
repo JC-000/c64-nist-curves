@@ -22,8 +22,12 @@ The generator builds the TAG, not the working tree. It checks the tag out in a
 throwaway git worktree, runs the `make` targets that tag's own
 `check-archives` rule lists, and reads every member of every built archive
 with `ar65 x` + `od65`. The baseline is therefore what that release shipped,
-which this tree's sources cannot reproduce. Default configuration only, with
-no CONTRACT_DEFINES: the bare §6.5-window names are included, as shipped.
+which this tree's sources cannot reproduce. Two configurations are recorded:
+"archives", the default build with no CONTRACT_DEFINES (the bare §6.5-window
+names included, as shipped), and "archives_nobare", the same targets built
+with CONTRACT_DEFINES='-D LIB_NO_BARE_EXPORTS=1' in a separate BUILD_DIR --
+the mode multi-library consumers link (review F5 of #183: until then an
+export gated out under LIB_NO_BARE_EXPORTS alone was a removal nothing saw).
 
 No VICE, no device, no network.
 """
@@ -40,9 +44,9 @@ REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "tools" / "abi_baseline.json"
 
 
-def rows_digest(abi, archives):
+def rows_digest(abi, archives, archives_nobare):
     """sha256 over the baseline's CONTENT: the ABI value and every archive's
-    export rows, canonically serialised. Stored as "rows_sha256" at generation
+    export rows in both recorded modes, canonically serialised. Stored as "rows_sha256" at generation
     time and re-derived by both readers (check_archives.abi_surface_check and
     check_release_state leg 5), so a hand-edited row fails even with "tag" and
     "commit" intact. tag/commit are outside the digest on purpose: each is
@@ -55,7 +59,9 @@ def rows_digest(abi, archives):
     does, is the independent check; the digest makes an accidental or
     one-site edit loud."""
     canon = json.dumps({"abi": int(abi),
-                        "archives": {k: sorted(v) for k, v in archives.items()}},
+                        "archives": {k: sorted(v) for k, v in archives.items()},
+                        "archives_nobare": {k: sorted(v) for k, v
+                                            in archives_nobare.items()}},
                        sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode()).hexdigest()
 
@@ -82,6 +88,35 @@ def abi_value(obj):
     return int(m.group(1), 16) if m else None
 
 
+def build_mode(wt, tmp, targets, mode, make_args):
+    """({archive: sorted exports}, {ABI values read}) for one build of the
+    tag's archive targets. `make_args` selects the mode: none for the default
+    build; a separate BUILD_DIR plus CONTRACT_DEFINES for nobare, so neither
+    build's knob stamp or objects touch the other's."""
+    run(["make", "-C", str(wt), *make_args, *targets])
+    libdir = wt / ("build-nobare" if make_args else "build") / "lib"
+    archives, abis = {}, set()
+    for a in sorted(libdir.glob("*.a")):
+        names = [l.strip() for l in run(["ar65", "t", str(a)]).splitlines()
+                 if l.strip().endswith(".o")]
+        xd = tmp / "x" / mode / a.stem
+        xd.mkdir(parents=True)
+        run(["ar65", "x", str(a), *names], cwd=xd)
+        exp = set()
+        for n in names:
+            exp |= member_exports(xd / n)
+            if n.startswith("lib_version"):
+                v = abi_value(xd / n)
+                if v is not None:
+                    abis.add(v)
+        if not exp:
+            sys.exit(f"{mode} {a.name}: no exports read -- refusing an empty row")
+        archives[a.name] = sorted(exp)
+    if not archives:
+        sys.exit(f"{mode}: no archives built -- refusing an empty baseline")
+    return archives, abis
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("usage: gen_abi_baseline.py <release-tag>")
@@ -97,29 +132,13 @@ def main():
             sys.exit(f"{tag}: Makefile has no check-archives rule to take the "
                      "archive targets from")
         targets = m.group(1).split()
-        run(["make", "-C", str(wt), *targets])
-        libdir = wt / "build" / "lib"
-        archives, abis = {}, set()
-        for a in sorted(libdir.glob("*.a")):
-            names = [l.strip() for l in run(["ar65", "t", str(a)]).splitlines()
-                     if l.strip().endswith(".o")]
-            xd = tmp / "x" / a.stem
-            xd.mkdir(parents=True)
-            run(["ar65", "x", str(a), *names], cwd=xd)
-            exp = set()
-            for n in names:
-                exp |= member_exports(xd / n)
-                if n.startswith("lib_version"):
-                    v = abi_value(xd / n)
-                    if v is not None:
-                        abis.add(v)
-            if not exp:
-                sys.exit(f"{a.name}: no exports read -- refusing an empty row")
-            archives[a.name] = sorted(exp)
+        archives, abis = build_mode(wt, tmp, targets, "default", [])
+        archives_nobare, nb_abis = build_mode(
+            wt, tmp, targets, "nobare",
+            ["BUILD_DIR=build-nobare", "CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1"])
+        abis |= nb_abis
         if len(abis) != 1:
             sys.exit(f"expected one ABI value across the archives, read {abis}")
-        if not archives:
-            sys.exit("no archives built -- refusing an empty baseline")
         doc = {
             "_comment": "Generated by tools/gen_abi_baseline.py -- do not edit "
                         "by hand. Refresh after tagging each release.",
@@ -127,12 +146,15 @@ def main():
             "commit": sha,
             "abi": abis.pop(),
             "archives": archives,
+            "archives_nobare": archives_nobare,
         }
-        doc["rows_sha256"] = rows_digest(doc["abi"], archives)
+        doc["rows_sha256"] = rows_digest(doc["abi"], archives, archives_nobare)
         OUT.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
         print(f"wrote {OUT.relative_to(REPO)}: {tag} ({sha[:12]}), ABI "
               f"{doc['abi']}, {len(archives)} archives, "
-              f"{sum(len(v) for v in archives.values())} export rows")
+              f"{sum(len(v) for v in archives.values())} default + "
+              f"{sum(len(v) for v in archives_nobare.values())} nobare "
+              "export rows")
     finally:
         subprocess.run(["git", "-C", str(REPO), "worktree", "remove", "--force",
                         str(wt)], capture_output=True)
