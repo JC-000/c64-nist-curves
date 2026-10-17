@@ -337,7 +337,11 @@ ct_sign_mask:   .byte 0
 ; generated row -- so the deferred provider surface is imported instead of
 ; defined. Import only what this TU references: without FP_ONCHIP_MUL the
 ; og_common block is absent and a deferring DMA-profile object needs none
-; of these (fp256/fp384 carry their own poly_prod imports). Cross-TU SMC
+; of these. (The only other TU that touches the §8.3 surface is
+; reu_mul_init.s, which imports mul_8x8, poly_prod_lo/hi and smc_* itself;
+; fp256.s / fp384.s reference none of it -- their fp_sqr diagonal scratch
+; moved off poly_prod_lo/hi into data_p256.s / data_p384.s, issue #155.)
+; Cross-TU SMC
 ; patching of an imported label is fleet-established (c64-x25519
 ; fe25519.s does exactly this against its own mul TU).
 .ifdef FP_ONCHIP_MUL

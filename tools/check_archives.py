@@ -3587,7 +3587,7 @@ SWITCH_UNITS = [
 ]
 # Documented consumer combinations, each swept as its own full build. The
 # first is c64-https's P-256 CONTRACT_DEFINES verbatim
-# (tools/integration/build_nistcurves_p256.sh:371 in that repo), base
+# (tools/integration/build_nistcurves_p256.sh:395 in that repo), base
 # included; the second is the minimal deferral pair the review named; the
 # third is full §8.1-§8.3 deferral without the bare-name gate.
 SWITCH_COMBOS = {
@@ -4366,7 +4366,7 @@ def abi_doc_binding_check(failures):
 # of the gate -- sqtab_init, the §8.3 body or og_common present -- so a
 # mutation applied to BOTH hand copies at once still fails here.
 # The first row is c64-https's P-256 build verbatim
-# (tools/integration/build_nistcurves_p256.sh:395 in that repo).
+# (tools/integration/build_nistcurves_p256.sh:395, ZP set :407, in that repo).
 SQTAB_PIN_ARCHIVES = ["nistcurves-p256-verify.a", "nistcurves-p256-verify-onchip.a",
                       "nistcurves-p256-comb-onchip.a"]
 SQTAB_PIN_CONFIGS = {

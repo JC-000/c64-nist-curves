@@ -1184,9 +1184,14 @@ landed in v0.3.0 per c64-lib-contract SPEC §1):
 .import LIB_NISTCURVES_VERSION_MAJOR, LIB_NISTCURVES_VERSION_MINOR
 .import LIB_NISTCURVES_VERSION_PATCH, LIB_NISTCURVES_ABI_VERSION
 
-.assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 10), lderror, "c64-nist-curves v0.10 or newer is required"
+.assert (LIB_NISTCURVES_VERSION_MAJOR > 0) .or (LIB_NISTCURVES_VERSION_MINOR >= 16), lderror, "c64-nist-curves v0.16 or newer is required"
 .assert LIB_NISTCURVES_ABI_VERSION = 5, lderror, "c64-nist-curves ABI v5 expected; rebuild consumer"
 ```
+
+The floor shown is v0.16, the first release at ABI 5 (it removed the bare
+`sqtab_lo`/`sqtab_hi` exports and added `LIB_NISTCURVES_SHARED_SQTAB_BASE`),
+so the two lines agree with each other. In your own build, set the floor to
+the release that introduced the newest API you rely on.
 
 This uses `.assert`/`lderror` rather than `.if`/`.error`. `.if` requires
 an assembly-time constant, and an `.import`ed symbol has no value until

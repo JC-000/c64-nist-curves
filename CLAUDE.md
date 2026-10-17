@@ -83,10 +83,19 @@ Three later releases matter here:
   file claimed `check-archives` "pins it against the source", and nothing did:
   no leg read the counter's value. Two legs now do.
   - `abi_surface_check` compares the built archives with
-    `tools/abi_baseline.json`, the last **tag's** exported surface and ABI.
-    It fails a removed name without a counter move, a decrease, or a step
-    with no `; k -> k+1 (issue #NNN or vX.Y.Z) <4+ words>` reason line in
-    `src/lib_version.s` (a bare arrow does not count).
+    `tools/abi_baseline.json`, the last **tag's** exported surface and ABI,
+    in **both** the default and the `LIB_NO_BARE_EXPORTS=1` build (the
+    nobare archives are rebuilt in a throwaway `BUILD_DIR`). It fails a
+    removed name without a counter move, a decrease, a step with no
+    `; k -> k+1 (issue #NNN or vX.Y.Z) <4+ words>` reason line in
+    `src/lib_version.s` (a bare arrow does not count), and any removed name
+    that no `; k -> k+1 removes: <names>` line lists (or a listed name that
+    is still exported). Without that list the first removal of a cycle
+    moved the counter and every later one rode through on it.
+  - What is **not** pinned: a §7 behaviour change with no removal (2 → 3,
+    3 → 4 were both of that kind). Nothing fails if such a bump is
+    forgotten; that rests on review. Other `CONTRACT_DEFINES` (deferral
+    switches, knob values) are not baselined either.
   - `abi_doc_binding_check` makes every documented
     `.assert LIB_NISTCURVES_ABI_VERSION = N, lderror` in API.md,
     `src/nistcurves.inc` and `src/lib_version.s` equal the built value.
@@ -96,7 +105,8 @@ Three later releases matter here:
   generator builds the tag in a throwaway worktree, not this tree, and
   records the tag name and its commit. **`make check-release-state` enforces
   this** (leg 5):
-  - it fails while the baseline's tag is older than the newest `vX.Y.Z` tag,
+  - it fails while the baseline's tag is older than the newest `vX.Y.Z` tag
+    reachable from HEAD (a newer tag on another line of history is ignored),
     and the message names the command to run;
   - it fails closed on a baseline that is missing, unreadable, or records no
     tag, no commit, or a commit its tag no longer resolves to, and on rows
@@ -221,7 +231,7 @@ leg that does not).
 - **Negative tests are destructive.** Copy the file aside before mutating and
   restore from the copy — `git checkout <file>` has destroyed uncommitted
   work here twice. Any test that perturbs image size trips the
-  `__MAIN_LAST__ <= sqtab_lo` link guard first (150 bytes of slack); pass
+  `__MAIN_LAST__ <= LIB_SHARED_SQTAB_BASE` link guard first (150 bytes of slack); pass
   `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom or you are re-testing that
   guard. After a `git stash` round-trip, always `make clean` — same-second
   mtimes leave stale objects and produce misleading "unresolved" lists.
@@ -306,7 +316,7 @@ the variant PRGs, labels and `.d` files but keeps the knob stamp on purpose.
 hash of an archive cannot see a code-byte change; compare raw member bytes
 with the Options/Files sections zeroed (they hold the assembly datetime).
 
-Current PRG size: ~36.9 KB (37743 bytes as of v0.15.0, measured; 37739 at issue #148's comb post-condition guard; 37483 through v0.12.0 — the guard adds ~64 B of code but the page-aligned LIB_NISTCURVES_TABLES segment rounds that up to +256 B of image. Earlier: 37480 at v0.10.0's issue #98 P384_BSS fix, 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801. **Any negative test that perturbs image size trips this guard first** — it has intercepted three such tests aimed at other asserts. Pass `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom, or you are re-testing the guard you already have. **Slack under the §4 `__MAIN_LAST__ <= sqtab_lo` link guard is now 150 bytes** (`$9B6A` vs `$9C00`), down from 406; anything that grows MAIN much further needs the buffers moved first, not a bigger guard.
+Current PRG size: ~36.9 KB (37743 bytes as of v0.15.0, measured; 37739 at issue #148's comb post-condition guard; 37483 through v0.12.0 — the guard adds ~64 B of code but the page-aligned LIB_NISTCURVES_TABLES segment rounds that up to +256 B of image. Earlier: 37480 at v0.10.0's issue #98 P384_BSS fix, 37683 through v0.9.1, then −384 B RFC-vector deletion (#91) and +53 B image-shortfall restoration (#102)), loaded at $0801. **Any negative test that perturbs image size trips this guard first** — it has intercepted three such tests aimed at other asserts. Pass `-D LIB_SHARED_SQTAB_BASE=0xA000` for headroom, or you are re-testing the guard you already have. **Slack under the §4 `__MAIN_LAST__ <= LIB_SHARED_SQTAB_BASE` link guard is now 150 bytes** (`$9B6A` vs `$9C00`), down from 406; anything that grows MAIN much further needs the buffers moved first, not a bigger guard.
 
 `src/*.s` (ca65) is the only source set. The legacy ACME `src/*.asm`
 files and the `make build-acme` target were **deleted** — the toolchain
@@ -570,7 +580,7 @@ archive contract.
 | data_p384_limlee.s | P-384 Lim-Lee anchor RAM. Excluded from `lib-p384-verify`. |
 | data_sha.s | SHA-384 stream state (`sha_state`, `sha_w`, `sha_abcdefgh`, `sha_t`, `sha_scratch`, `sha_block_buf`, `sha_block_len`, `sha_total_len`, `sha384_digest`). |
 | data_test.s | Test-only buffers (`ecdsa_inputs_*`, `ecdsa_result_*`, `sha384_msg_buf`, and the `fp_tmp2..4` harness staging slots — no .s code references those; the Python tools poke operands there). Linked into the standalone PRG; excluded from every consumer archive. |
-| c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. Note `define = yes` on MAIN is load-bearing, not cosmetic: `src/main.s` imports `__MAIN_LAST__` and asserts with `lderror` that the image ends at or below `sqtab_lo`. Do not make that import conditional — an `lderror` assert whose operands are unresolvable degrades to a `Cannot evaluate assertion` warning, so the guard survives only because a missing external is itself a hard link error. Also carries the SPEC §4 **load-bearing cfg attribute declarations**: inline comments stating which placement attributes the library's correctness or timing depends on, and what breaks without them (`align = $100` on the two table segments; `type = rw`, i.e. never `bss`, on the self-modifying code segments and the REU DMA landing pages; plus the `$9C00..$9FFF` sqtab window that is an equate rather than a segment and so is invisible to ld65). Consumers author their own SEGMENTS{} block, so these are the contract — measured on ld65 V2.18, a dropped `align` and a zero-filled `rw`→`bss` flip both link with **no diagnostic at all**. |
+| c64.cfg | ld65 linker configuration with SEGMENTS{} alias block mapping `LIB_NISTCURVES_*` segments to MEMORY regions. Note `define = yes` on MAIN is load-bearing, not cosmetic: `src/main.s` imports `__MAIN_LAST__` and asserts with `lderror` that the image ends at or below `LIB_SHARED_SQTAB_BASE`, the sqtab window's base (it compared against the imported `sqtab_lo` until v0.16.0 removed that export). Do not make that import conditional — an `lderror` assert whose operands are unresolvable degrades to a `Cannot evaluate assertion` warning, so the guard survives only because a missing external is itself a hard link error. Also carries the SPEC §4 **load-bearing cfg attribute declarations**: inline comments stating which placement attributes the library's correctness or timing depends on, and what breaks without them (`align = $100` on the two table segments; `type = rw`, i.e. never `bss`, on the self-modifying code segments and the REU DMA landing pages; plus the `$9C00..$9FFF` sqtab window that is an equate rather than a segment and so is invisible to ld65). Consumers author their own SEGMENTS{} block, so these are the contract — measured on ld65 V2.18, a dropped `align` and a zero-filled `rw`→`bss` flip both link with **no diagnostic at all**. |
 | exports.inc | Cross-module .import/.export dependency map |
 | nistcurves.inc | **Consumer-facing header.** Not contract-required — 1.0.0 briefly demanded it of `make lib`, 1.1.1 withdrew that as a tightening the text cut had carried unannounced; shipped anyway because consumers were otherwise transcribing symbols out of API.md prose, and §3 binds any header that exists. Not included by any library TU — `make lib*` copies it to `build/lib/nistcurves.inc` for downstream projects to `.include`. Since v0.16.0 `make lib*` also copies `src/nistcurves_sqtab_base.inc` to `build/lib/nistcurves_sqtab_base.inc`: with the `sqtab_lo`/`sqtab_hi` exports gone, a consumer derives them in its own TU from that shipped default (the header says how), and the packaging leg of `make check-archives` assembles that derivation with `-I build/lib` alone — so `nistcurves_sqtab_base.inc` must stay self-contained. Publishes the §1 version equates, §5 manifest equates, §3 REU placement equates, §8.2 prefixed placement outputs, §8.4 precalc triples and the public entry points, gated by the same variant switches (`LIB_P256_VERIFY_ONLY`, `FP_ONCHIP_MUL`, the `SHARED_*` deferral set, …) that `lib_manifest.s` / `precalc_manifest.s` use, and `make check-archives` links it against all twelve archives with each one's switch set. **The §3 guard rule is per-symbol and load-bearing:** an import is `.ifndef`-guarded iff its defining TU guards the definition, and every such guard carries an `.else` asserting the consumer's `-D` against the archive's exported value — a bare guard alone turns a compile error into silent divergence. The `.else` imports the same-named export into a private `.scope` and compares across the boundary (`NISTCURVES_PIN_OVERRIDE`), so no duplicate "output alias" export exists to keep in sync. Symbols whose defining TU assigns unconditionally keep a **bare** import on purpose, so a `-D` on them collides loudly. Pinned by the `§6.1 consumer packaging + §3 header guards` leg of `make check-archives`, which drives every guarded symbol at the archive's real value and at value XOR 1. |
 | *(repo root)* `cfg/nistcurves-example.cfg` | **Example consumer linker config** (SPEC §4's standalone-build clause; §6.1 no longer asks for it). Copied by `make lib*` to `build/lib/cfg/`. Maps all twenty `LIB_NISTCURVES_*` segments and restates the load-bearing placement attributes from `src/c64.cfg` with their consequences, because that is the file consumers actually copy. Not the library's own build — `src/c64.cfg` stays canonical for `make`. |
@@ -1033,7 +1043,7 @@ keep all library calls on a single thread of control.
   linker does not know the window exists and will place a segment straight
   over it with **no overlap diagnostic** — exactly the 2026-05-17 failure.
   `src/c64.cfg` now gives MAIN `define = yes`, and `src/main.s` asserts
-  `__MAIN_LAST__ <= sqtab_lo` with `lderror`, turning that silent corruption
+  `__MAIN_LAST__ <= LIB_SHARED_SQTAB_BASE` with `lderror`, turning that silent corruption
   into a named link failure. Measured slack at adoption: **409 bytes** —
   409 B of added BSS still links, 410 B trips it, boundary verified exact.
   The guard lives in `main.s` because `main.o` is in no consumer archive;

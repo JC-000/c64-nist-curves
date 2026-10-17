@@ -112,8 +112,15 @@ LIB_NISTCURVES_VERSION_PATCH = 0
 ;
 ; Bumped in the commit that causes it rather than at the release, so the
 ; source is never in a state where the surface has changed and the counter
-; says otherwise -- check-archives pins the counter against the source, so it
-; would validate a stale value against itself and pass.
+; says otherwise. check-archives enforces that for removals, against the LAST
+; RELEASE rather than against this source: abi_surface_check compares the
+; built archives (default and LIB_NO_BARE_EXPORTS=1) with
+; tools/abi_baseline.json, and a name gone from it fails unless the counter
+; moved past the release's value AND a `; k -> k+1 removes:` line above lists
+; it; abi_doc_binding_check binds every documented `.assert
+; LIB_NISTCURVES_ABI_VERSION = N` to the built value. A §7 behaviour change
+; with no removal (2 -> 3, 3 -> 4) is not machine-detectable: nothing fails
+; if such a bump is forgotten, so it still rests on review.
 LIB_NISTCURVES_ABI_VERSION   = 5
 
 .export LIB_NISTCURVES_VERSION_MAJOR:abs
