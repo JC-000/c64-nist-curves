@@ -171,6 +171,32 @@ def make(work: Path, *args: str, env_extra: dict[str, str] | None = None,
                           env=env, capture_output=True, text=True)
 
 
+def make_version() -> tuple[tuple[int, int] | None, str]:
+    """((major, minor) or None, first output line) of the `make` on PATH.
+
+    Which flag spellings reach a recipe is version-dependent (leg 5c), so
+    the probes ask this make what it accepts rather than hardcoding one
+    platform's answer. None when it is not a parseable GNU make (BSD make,
+    a failing or missing binary): the caller fails closed rather than
+    guessing a spelling set, since the build requires GNU make anyway and
+    a wrong guess makes every probe of that spelling examine nothing.
+    """
+    try:
+        r = subprocess.run(["make", "--version"], capture_output=True, text=True)
+    except OSError as e:
+        return None, str(e)
+    head = next((ln for ln in (r.stdout + r.stderr).splitlines() if ln.strip()), "")
+    m = re.search(r"GNU Make (\d+)\.(\d+)", r.stdout)
+    if r.returncode != 0 or not m:
+        return None, f"exit {r.returncode}: {head.strip()[:160]!r}"
+    return (int(m.group(1)), int(m.group(2))), head.strip()
+
+
+def flag_spellings(mv: tuple[int, int]) -> tuple[str, str]:
+    """(touch abbreviation, touch cluster) this make reads as `-t` (leg 5c)."""
+    return ("--t", "-ntx") if mv < (4,) else ("--tou", "-nt")
+
+
 def ca65_objects(output: str) -> dict[str, str]:
     """Map object -> source from the ca65 lines in make's output."""
     out: dict[str, str] = {}
@@ -225,6 +251,14 @@ def snapshot(d: Path) -> dict[str, tuple[int, int, bytes]]:
 
 
 def main() -> int:
+    mv, head = make_version()
+    if mv is None:
+        fail("make", f"`make --version` did not identify a GNU make ({head}) -- "
+             f"cannot choose the version-dependent flag spellings (leg 5c), and "
+             f"the build requires GNU make anyway")
+        return report()
+    spell = flag_spellings(mv)
+    print(f"[make] {head} -> touch abbrev {spell[0]!r}, touch cluster {spell[1]!r}")
     tmp = Path(tempfile.mkdtemp(prefix="check_inc_deps_"))
     try:
         work = tmp / "tree"
@@ -241,12 +275,12 @@ def main() -> int:
         shutil.copy2(mk, work / "Makefile")
         shutil.copytree(REPO / SRC, work / SRC)
         shutil.copytree(REPO / "cfg", work / "cfg")
-        return run(work)
+        return run(work, spell)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def run(work: Path) -> int:
+def run(work: Path, spell: tuple[str, str]) -> int:
     makefile = (work / "Makefile").read_text()
 
     # ---- leg 0: populations ---------------------------------------------
@@ -536,7 +570,7 @@ def run(work: Path) -> int:
             return False
         return True
 
-    def route(leg, desc, argv, mode, goal="lib", env_extra=None):
+    def route(leg, desc, argv, mode, goal="lib", env_extra=None, rcs=(0,)):
         i = next(knob_seq)
         knob_name = f"LIB_ROUTE_PROBE_{i}"
         knob = f"CONTRACT_DEFINES=-D {knob_name}=1"
@@ -551,6 +585,26 @@ def run(work: Path) -> int:
         if mode == "real":
             ok = judge_real(leg, desc, before, goal, knob_name, r.returncode, r.stderr)
         else:
+            # A "touch"/"dry" run that make REFUSED is not a clean no-op: it
+            # exits during option parsing, before any recipe runs, so build/
+            # is pristine and every tree-state test below passes vacuously.
+            # Only judge_real asserted an exit status, so an ambiguous or
+            # invalid flag spelling scored the same as a correct --touch.
+            # rcs carries the probe's own contract; only `-q` answers 1.
+            if r.returncode not in rcs:
+                ok = False
+                # make prints the reason on the FIRST stderr line and then
+                # dumps its whole usage text, so take the head: the tail is
+                # "Report bugs to <bug-make@gnu.org>" on every rejection.
+                # Only rc 2 is a usage error; 0 or 1 where the other was due
+                # means make ran the flag and answered wrongly (e.g. a `-q`
+                # saying "up to date" because the knob force was suppressed).
+                why = next((ln for ln in r.stderr.splitlines() if ln.strip()), "")
+                verdict = ("make refused the flag instead of running it"
+                           if r.returncode == 2 else "unexpected exit status")
+                fail(leg, f"{desc} ({mode}): exit {r.returncode}, expected "
+                     f"{'/'.join(str(c) for c in rcs)} -- {verdict}: "
+                     f"{why.strip()[:160]!r}")
             gone = sorted(set(before) - set(after))
             resized = sorted(k for k in set(before) & set(after) if before[k][0] != after[k][0])
             moved = sorted(k for k in set(before) & set(after) if before[k] != after[k])
@@ -567,12 +621,37 @@ def run(work: Path) -> int:
             print(f"[{leg}] PASS: {desc} ({mode})")
 
     # env MAKEFLAGS under -e reaches parse time raw; make still obeys it.
-    for mf, mode in (("--t", "touch"), ("--dr", "dry"), ("--que", "dry"),
-                     ("-ntx", "touch"), ("--touch", "touch"), ("--just-print", "dry")):
+    # Two spellings are version-dependent and are asked of this make rather
+    # than hardcoded, because neither has one spelling that works on both:
+    #   --t    3.81 has no long options and reads it as `-t` (measured,
+    #          #180). 4.x parses it as a long-option prefix, where it is
+    #          ambiguous between --touch and --trace, and refuses it:
+    #          rc=2, "option '--t' is ambiguous". `--tou` is unambiguous on
+    #          4.x but must NOT be substituted unconditionally -- 3.81 would
+    #          read `--tou` as the short-option cluster -t -o -u, and -o
+    #          consumes an argument.
+    #   -ntx   the 3.81 getopt cluster measured in #180. 4.x rejects the -x
+    #          member outright ("invalid option -- x"); `-nt` is the 4.x
+    #          cluster.
+    # A refused flag exits during option parsing, before any recipe runs, so
+    # build/ is pristine -- which reads as a clean no-op to the tree-state
+    # judges unless route() also asserts an exit status. It does.
+    TOUCH_ABBREV, TOUCH_CLUSTER = spell
+    # `-q` is the one probe whose correct answer is nonzero: with changed
+    # knobs the target is out of date, and exit 1 is the ONLY correct
+    # answer. Exit 0 means "up to date" -- i.e. the knob force was
+    # suppressed -- so accepting it would pass the very defect this asks.
+    for mf, mode in ((TOUCH_ABBREV, "touch"), ("--dr", "dry"), ("--que", "dry"),
+                     (TOUCH_CLUSTER, "touch"), ("--touch", "touch"),
+                     ("--just-print", "dry")):
         route("env-e", f"env MAKEFLAGS={mf!r} `make -e lib`",
-              ["make", "-e", "lib", "@KNOB@"], mode, env_extra={"MAKEFLAGS": mf})
-    # A command-line MAKEFLAGS is obeyed by 3.81.
-    for mf, mode in (("t", "touch"), ("-t", "touch"), ("--t", "touch"),
+              ["make", "-e", "lib", "@KNOB@"], mode, env_extra={"MAKEFLAGS": mf},
+              rcs=(1,) if mf == "--que" else (0,))
+    # A command-line MAKEFLAGS is obeyed by 3.81. TOUCH_ABBREV for the same
+    # reason as above: on the command-line route 4.x does not refuse `--t`
+    # but silently ignores it and runs a full real build, which was the one
+    # probe in this file that ever reddened on 4.x.
+    for mf, mode in (("t", "touch"), ("-t", "touch"), (TOUCH_ABBREV, "touch"),
                      ("kt", "touch"), ("n", "dry"), ("", "real")):
         route("cmdline-makeflags", f"`make lib MAKEFLAGS={mf}`",
               ["make", "lib", f"MAKEFLAGS={mf}", "@KNOB@"], mode)
