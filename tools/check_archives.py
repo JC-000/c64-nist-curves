@@ -2346,24 +2346,49 @@ def packaging_check(failures, archives):
     # own build can see it. v0.16.0's first cut shipped `sqtab_base.inc`,
     # which c64-mlkem also ships (default $9000) and c64-https vendors both
     # (c64-lib-contract review of #183, item 2).
-    shipped = sorted(p.relative_to(LIBDIR) for p in LIBDIR.rglob("*") if p.is_file())
+    # The shipped set is what the MAKEFILE ships -- every archive it declares
+    # plus $(LIB_PACKAGING) -- not whatever build/lib happens to hold: a
+    # listing of the directory failed on a stale file a removed rule left
+    # behind (review R4, mutant N reverted without `make clean`) and could
+    # not see a rule that ships to elsewhere. A naming failure is recorded
+    # and the leg CONTINUES: returning here hid every sub-check below.
+    _j, _e, expand_checked = _makefile_text_and_expand()
+    try:
+        pkg = expand_checked("$(LIB_PACKAGING)", "LIB_PACKAGING").split()
+    except RuntimeError as e:
+        pkg = []
+        failures.append(f"packaging: {e}")
+    libdir_rel = str(LIBDIR.relative_to(REPO))
+    shipped = sorted(set(archives) | {
+        p[len(libdir_rel) + 1:] if p.startswith(libdir_rel + "/") else p for p in pkg})
     note_examined(len(shipped), "shipped file")
-    foreign = [str(p) for p in shipped if not p.name.startswith("nistcurves")]
-    if not shipped:
-        failures.append("packaging: build/lib holds no files -- the namespace "
+    foreign = [p for p in shipped if not Path(p).name.startswith("nistcurves")]
+    outside = [p for p in pkg if not p.startswith(libdir_rel + "/")]
+    naming_ok = True
+    if not pkg or not archives:
+        failures.append(f"packaging: the Makefile declares {len(archives)} "
+                        f"archives and LIB_PACKAGING {pkg!r} -- the namespace "
                         "check examined nothing")
-        ok = False
+        print("  PACKAGING FAIL: empty shipped set")
+        naming_ok = False
+    if outside:
+        failures.append(f"packaging: LIB_PACKAGING ships {outside} outside "
+                        f"{libdir_rel}/")
+        print(f"  PACKAGING FAIL: shipped outside {libdir_rel}/: {outside}")
+        naming_ok = False
     if foreign:
-        failures.append(f"packaging: build/lib ships {foreign}, outside the "
+        failures.append(f"packaging: the Makefile ships {foreign}, outside the "
                         "`nistcurves*` filename namespace -- a sibling library "
                         "shipping the same name shadows it on a shared -I path")
         print(f"  PACKAGING FAIL: unprefixed shipped file(s) {foreign}")
-        ok = False
+        naming_ok = False
+    if naming_ok:
+        print(f"  naming OK (all {len(shipped)} files the Makefile ships -- "
+              f"{len(archives)} archives + LIB_PACKAGING -- are `nistcurves*`)")
     if not ok:
         return
-    print(f"  artifacts OK (.a + .inc + nistcurves_sqtab_base.inc + example "
-          f".cfg, shipped copies match src/; all {len(shipped)} shipped files "
-          "`nistcurves*`)")
+    print("  artifacts OK (.a + .inc + nistcurves_sqtab_base.inc + example "
+          ".cfg, shipped copies match src/)")
 
     # (1b) nistcurves_sqtab_base.inc is self-contained from build/lib alone (v0.16.0).
     # With the bare sqtab_lo/sqtab_hi exports gone (SPEC §8.1), deriving them
