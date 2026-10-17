@@ -889,7 +889,7 @@ def _makefile_text_and_expand():
     `ar65 t`, parsed -D sets vs build/*.o) are what would catch it; this note
     exists so the next reader does not mistake the asymmetry for a guarantee.
     """
-    text = MAKEFILE.read_text()
+    text = _src_text(MAKEFILE)
     joined = re.sub(r"\\\n\s*", " ", text)  # fold backslash continuations
 
     # `:=`, `?=` and `+=` are matched too. Reading only `NAME =` left every
@@ -1150,7 +1150,7 @@ CFG = REPO / "src" / "c64.cfg"
 
 def cfg_bss_before_emitting():
     """Segments declared `bss` that precede a file-emitting segment."""
-    text = CFG.read_text()
+    text = _src_text(CFG)
     m = re.search(r"^SEGMENTS\s*\{(.*?)^\}", text, re.S | re.M)
     if not m:
         return None, []
@@ -2149,7 +2149,7 @@ def header_declared_imports(td, incdir, defines):
     real header's own assemble error), `text_names` is every name any arm
     could declare, `unmodelled` lists what this does not handle.
     """
-    text = (Path(incdir) / "nistcurves.inc").read_text()
+    text = _src_text(Path(incdir) / "nistcurves.inc")
     out_lines, text_names, unmodelled = [], set(), []
     macro = None
     macro_imports = []
@@ -2199,7 +2199,7 @@ def header_declared_imports(td, incdir, defines):
                           "imports nothing in the header -- shrink the table")
     idir = Path(td) / "hdr_instr"
     idir.mkdir(exist_ok=True)
-    (idir / "nistcurves.inc").write_text("\n".join(out_lines) + "\n")
+    (idir / "nistcurves.inc").write_text("\n".join(out_lines) + "\n", encoding="latin-1")
     src = idir / "enum.s"
     src.write_text('.include "nistcurves.inc"\n')
     rc, out = sh(["ca65", "--cpu", "6502", *defines, "-I", str(idir),
@@ -2399,7 +2399,7 @@ def packaging_check(failures, archives):
     # The default is not restated here: it is parsed from src/nistcurves_sqtab_base.inc,
     # which (1) has just proved byte-identical to the shipped copy.
     mdef = re.search(r"LIB_SHARED_SQTAB_BASE\s*=\s*\$([0-9a-fA-F]+)",
-                     src_sqb.read_text())
+                     _src_text(src_sqb))
     sqb_ok = mdef is not None
     if not mdef:
         failures.append("packaging: cannot parse the default out of "
@@ -2438,8 +2438,8 @@ def packaging_check(failures, archives):
     emitted = set()
     for s in sorted((REPO / "src").glob("*.s")):
         emitted |= set(re.findall(r'\.segment\s+"(LIB_NISTCURVES_[A-Z0-9_]+)"',
-                                  s.read_text()))
-    cfg_text = src_cfg.read_text()
+                                  _src_text(s)))
+    cfg_text = _src_text(src_cfg)
     m = re.search(r"^SEGMENTS\s*\{(.*?)^\}", cfg_text, re.S | re.M)
     mapped = set(re.findall(r"^\s*(LIB_NISTCURVES_[A-Z0-9_]+)\s*:",
                             m.group(1) if m else "", re.M))
@@ -3289,7 +3289,7 @@ def footprint_basis_check(failures):
     # silently measures whatever objects happen to survive is the ambient-state
     # version of the vacuity problem. Deriving the module list from the
     # Makefile also means a new src file cannot quietly escape the check.
-    mk = (REPO / "Makefile").read_text()
+    mk = _src_text(REPO / "Makefile")
     m = re.search(r"^MODULES\s*=\s*((?:.*\\\n)*.*)$", mk, re.M)
     if not m:
         failures.append("footprint basis: cannot parse MODULES from the Makefile")
@@ -3647,7 +3647,7 @@ def knob_pass_values(knobs, zp):
     computed from each slot's parsed default rather than tabled: +$60 / +$40
     for slots below $80, -$40 / -$30 above, which keeps every moved slot
     clear of every default slot and of each other."""
-    zp_text = (REPO / "src" / "zp_config.s").read_text()
+    zp_text = _src_text(REPO / "src" / "zp_config.s")
     hi, lo = dict(KNOB_PASS_HI), dict(KNOB_PASS_LO)
     for x in sorted(zp):
         m = re.search(rf"^\s*{x}\s*=\s*\$([0-9a-fA-F]+)", zp_text, re.M)
@@ -3980,7 +3980,19 @@ def _src_lines(f):
     reader: forbidden_export_check's knob/switch derivation
     (archived_source_files, derive_knobs, derive_switches) uses it too --
     its strict read crashed that leg on the same byte, a false red."""
-    return f.read_bytes().decode("latin-1").splitlines()
+    return _src_text(f).splitlines()
+
+
+def _src_text(f):
+    """A source or build-input file's whole text, decoded latin-1 (see
+    _src_lines). EVERY read of src/, cfg/, an included source, the Makefile
+    or a documented-gate file in this tool goes through here: a strict read
+    anywhere turns a legal high byte in a comment into a LEG CRASH (review
+    L4: 0xFF in src/mul_8x8.s crashed the packaging leg). Everything the
+    legs match is ASCII, so a UTF-8 `§` read as two latin-1 characters
+    changes no result. Write a derived copy back with
+    encoding="latin-1" to keep it byte-identical."""
+    return Path(f).read_bytes().decode("latin-1")
 
 
 def _resolve_include(name, including):
@@ -4396,7 +4408,7 @@ def abi_surface_check(failures, archives):
             "the counter")
         print(f"  ABI FAIL: removal without a counter move ({base_abi} -> {cur_abi})")
     if cur_abi > base_abi:
-        lv = (REPO / "src" / "lib_version.s").read_text()
+        lv = _src_text(REPO / "src" / "lib_version.s")
         missing = [f"{k} -> {k + 1}" for k in range(base_abi, cur_abi)
                    if abi_step_reason(lv, k) is None]
         if missing:
@@ -4458,7 +4470,7 @@ def abi_doc_binding_check(failures):
         return
     bad = []
     for rel in ABI_DOC_FILES:
-        text = (REPO / rel).read_text()
+        text = _src_text(REPO / rel)
         hits = [(text.count("\n", 0, m.start()) + 1, int(m.group(1)))
                 for m in _ABI_DOC_RE.finditer(text)]
         note_examined(len(hits), "documented ABI gate")
