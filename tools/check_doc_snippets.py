@@ -50,6 +50,10 @@ Markers (must sit within the two lines above the opening fence):
 
     <!-- check-docs: skip reason="why this cannot be standalone" -->
     <!-- check-docs: external="app_sym_one, app_sym_two" -->
+    <!-- check-docs: link="nistcurves.a" -->
+
+`link` additionally links the assembled block against build/lib/<archive>
+with cfg/nistcurves-example.cfg; a link error or ld65 warning fails it.
 
 `external` declares imports the CONSUMER owns (an integration example naming
 the caller's own symbols), so they are exempt from export resolution while a
@@ -80,6 +84,16 @@ FENCE_RE = re.compile(r"^(?P<fence>```+)(?P<info>[^\n]*)$")
 MARKER_RE = re.compile(r"<!--\s*check-docs:(?P<rest>.*?)-->")
 SKIP_RE = re.compile(r"^\s*skip\s+reason=\"(?P<reason>[^\"]+)\"\s*$")
 EXTERNAL_RE = re.compile(r"^\s*external=\"(?P<syms>[^\"]+)\"\s*$")
+# `link="<archive>.a"`: after assembling, LINK the block's object against
+# build/lib/<archive> with the shipped example cfg (cfg/nistcurves-example.cfg,
+# which the check-archives packaging leg pins byte-identical to the shipped
+# copy). For a snippet whose whole point is a link-time check: assembling
+# alone cannot show that it links, or that its lderror can fire. Review R5 of
+# #183: the documented sqtab_lo check was only assembled, while the example
+# cfg's two `define = yes` on SQTAB made a label-placed table fail to link
+# (`Duplicate external identifier: '__SQTAB_SIZE__'`).
+LINK_RE = re.compile(r"^\s*link=\"(?P<archive>[A-Za-z0-9_.-]+\.a)\"\s*$")
+EXAMPLE_CFG = ROOT / "cfg" / "nistcurves-example.cfg"
 
 
 class Block:
@@ -91,6 +105,7 @@ class Block:
         self.body = body
         self.skip_reason = None
         self.external = set()
+        self.link = None
         self.bad_marker = None
 
     @property
@@ -110,10 +125,13 @@ def parse_markers(block, lines, fence_idx):
             rest = m.group("rest")
             sm = SKIP_RE.match(rest)
             em = EXTERNAL_RE.match(rest)
+            lm = LINK_RE.match(rest)
             if sm:
                 block.skip_reason = sm.group("reason")
             elif em:
                 block.external = {s.strip() for s in em.group("syms").split(",") if s.strip()}
+            elif lm:
+                block.link = lm.group("archive")
             else:
                 block.bad_marker = line.strip()
             continue
@@ -246,7 +264,7 @@ def main():
             return 2
         blocks += extract(p, name)
 
-    failures, opted_out, untagged, checked = [], [], [], []
+    failures, opted_out, untagged, checked, linked = [], [], [], [], []
     bad_markers = []
     non_asm = {}
 
@@ -279,11 +297,26 @@ def main():
                      + "\n  (if these are the consumer's own symbols, declare them:"
                        "\n   <!-- check-docs: external=\"...\" -->)"))
                 continue
+            if b.link:
+                archive = BUILD / "lib" / b.link
+                if not archive.is_file():
+                    failures.append((b, f"link target {b.link} not built",
+                                     f"  {archive} does not exist -- run `make lib*`"))
+                    continue
+                lrc, lout = sh(["ld65", "-C", str(EXAMPLE_CFG), "-o",
+                                str(Path(tmp) / "link.prg"), str(obj), str(archive)])
+                warn = [l for l in lout.splitlines() if "Warning" in l]
+                if lrc != 0 or warn:
+                    failures.append((b, f"does not link against {b.link} with "
+                                        "cfg/nistcurves-example.cfg",
+                                     lout.strip().replace(str(obj), b.where)))
+                    continue
+                linked.append(b)
             checked.append(b)
 
     print(f"check_doc_snippets: {len(blocks)} fenced blocks across "
           f"{', '.join(docs)}")
-    print(f"  assembled OK    : {len(checked)}")
+    print(f"  assembled OK    : {len(checked)}  (of which linked: {len(linked)})")
     print(f"  FAILED          : {len(failures)}")
     print(f"  untagged (FAIL) : {len(untagged)}")
     print(f"  bad marker(FAIL): {len(bad_markers)}")

@@ -809,7 +809,7 @@ check-archives: lib lib-app-owned lib-p256-verify lib-p384-verify lib-p384-sha38
 # snippet catches it. Opt-in like check-archives; deliberately NOT a
 # prerequisite of `all`, so a doc edit can never change the PRG build.
 # Needs build/*.o for import resolution, hence the $(PRG) prerequisite.
-check-docs: $(PRG)
+check-docs: $(PRG) lib
 	python3 tools/check_doc_snippets.py
 	python3 tools/check_release_notes.py
 

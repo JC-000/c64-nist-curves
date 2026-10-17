@@ -1353,6 +1353,7 @@ order. Add it in the TU that defines `sqtab_lo`, for an archive that exports
 the base (it is an unresolved external against one that does not, and
 there is nothing to compare there):
 
+<!-- check-docs: link="nistcurves.a" -->
 ```asm
 .include "nistcurves_sqtab_base.inc"
 sqtab_lo = LIB_SHARED_SQTAB_BASE         ; or wherever your table really is
@@ -1360,6 +1361,22 @@ sqtab_hi = sqtab_lo + $0200
 .import LIB_NISTCURVES_SHARED_SQTAB_BASE
 .assert sqtab_lo = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "sqtab_lo is not where c64-nist-curves reads the table"
 ```
+
+If you place the table with labels instead, in the `SQTAB` segment of
+`cfg/nistcurves-example.cfg` (shipped as `build/lib/cfg/`), the same assert
+checks where the linker actually put it:
+
+<!-- check-docs: link="nistcurves.a" -->
+```asm
+.segment "SQTAB"
+sqtab_lo:       .res $0200
+sqtab_hi:       .res $0200
+.import LIB_NISTCURVES_SHARED_SQTAB_BASE
+.assert sqtab_lo = LIB_NISTCURVES_SHARED_SQTAB_BASE, lderror, "sqtab_lo is not where c64-nist-curves reads the table"
+```
+
+`make check-docs` links both snippets against `nistcurves.a` with the
+example cfg.
 
 **§8.2 shared `reu_mul` placement** (contract v0.8.5 export discipline). The
 consumer-*input* equates `LIB_SHARED_REU_MUL_BANK` / `_OFFSET` /
