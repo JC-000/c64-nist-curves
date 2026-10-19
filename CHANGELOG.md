@@ -22,8 +22,12 @@ contract).
   `INC $0185,X`, resynchronised at the following `jsr clrscr`, and never
   stored to `$01`. LORAM stayed set and BASIC ROM stayed mapped over
   `$A000-$BFFF`, although `src/c64.cfg`'s MAIN area runs to `$CFFF` — any
-  image or table placed there would have been read back as ROM bytes (the
-  recorded root cause of a parked w-NAF reland). The SYS literal is now
+  image or table placed there would have been read back as ROM bytes. (A
+  parked w-NAF reland that grew the image past `$A000` hit exactly this; on
+  that layout the same 2061 fix then exposed a second, unexplained
+  `ec_precompute_256` hang, so this fix is not by itself a w-NAF unblock.
+  At the current layout, which ends below `$9C00`, every VICE suite passes
+  with BASIC banked out; Ultimate hardware has not yet booted it.) The SYS literal is now
   generated from one `SYS_ADDR` constant and pinned by a link-time
   `.assert start = SYS_ADDR, lderror`. `main.o` is in no consumer archive;
   the PRG changes by that one digit byte (size unchanged, 37743 B) and no

@@ -4,8 +4,8 @@
 ; main.s - NIST P-256/P-384 elliptic curve optimization harness
 ;
 ; Memory layout:
-;   $0801-$08FF: BASIC stub + boot
-;   $0900+:      code (mul_8x8, fp256, mod256, curve256, points256)
+;   $0801-$080C: BASIC stub (10 SYS 2061)
+;   $080D+:      start, then code in Makefile link order
 ;   $9C00-$9FFF: sqtab (quarter-square multiply tables; SPEC §8.1 equate,
 ;                LIB_SHARED_SQTAB_BASE -- not a linker segment, see the
 ;                collision guard below)
@@ -15,7 +15,7 @@
 .importzp nistcurves_zp_ptr1, fp_misc
 
 ; proc_port ($01, 6510 CPU I/O port) is hardware-fixed and used only by
-; this test/bench driver for ROM banking around REU access (never by the
+; this test/bench driver, for the one-time BASIC ROM bank-out at `start` (never by the
 ; library itself, issue #90) -- defined locally rather than imported from
 ; zp_config.s so the library no longer claims/exports it in any archive.
 ; Codegen is identical either way: `lda proc_port` / `sta proc_port`
