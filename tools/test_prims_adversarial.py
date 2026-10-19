@@ -665,7 +665,6 @@ def boot_section(S, transport):
     raw = S.timed(sec, "after init: CPU sees LORAM clear and RAM at $A000 "
                   "(BASIC banked out by start:)", probe,
                   {"loram": 0, "a000_is_ram": True}, transport=transport,
-                  expect_fixed_by="SYS-2064",
                   post=lambda r: {
                       "loram": r["port"] & 1,
                       "a000_is_ram": r["readback"] == (r["a000"] ^ 0xFF)},

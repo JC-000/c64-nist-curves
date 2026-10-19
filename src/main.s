@@ -107,15 +107,24 @@
 
 .segment "LIB_NISTCURVES_MAIN_CODE"
 
-; BASIC stub: 10 SYS 2064
+; BASIC stub: 10 SYS 2061 ($080D, the `start` label below).
+; The literal is derived from SYS_ADDR and link-checked against `start`.
+; It used to be a hand-typed "2064", 3 bytes past `start`: RUN entered at
+; $0810, mid-instruction in the bank-out below (decoded there as
+; INC $0185,X), resynced at the `jsr clrscr`, and never cleared LORAM --
+; so BASIC ROM stayed mapped over $A000-$BFFF for every test and bench.
+; SYS_ADDR must keep 4 decimal digits: the stub's length decides where
+; `start` lands, so a 5-digit value would move `start` and trip the assert.
+SYS_ADDR = 2061
 basic_stub:
         .word basic_end         ; pointer to next BASIC line
         .word 10                ; line number 10
         .byte $9e               ; SYS token
-        .byte "2064"            ; decimal address (must match start label)
+        .byte .sprintf("%d", SYS_ADDR) ; decimal entry address
         .byte 0                 ; end of line
 basic_end:
         .word 0                 ; end of BASIC program
+.assert start = SYS_ADDR, lderror, "BASIC stub SYS literal (SYS_ADDR) does not match the start label -- RUN would enter mid-instruction"
 
 ; =============================================================================
 ; Program entry point
