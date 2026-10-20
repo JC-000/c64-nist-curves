@@ -798,8 +798,12 @@ $(LIB_DIR)/nistcurves-p384-curve-onchip.a: $(LIB_CORE_P384CURVE_ONCHIP_OBJS) $(L
 # archives deliberately exclude the Lim-Lee comb, so the packaged verifiers
 # ecdsa_verify_256 / ecdsa_verify_384 are NOT linkable from those archives
 # alone. The ratchet fails if reality drifts looser OR tighter than the docs.
+# The checks drive the make that runs them. Captured at parse time because a
+# recipe line containing $(MAKE) runs even under -n/-t/-q, so
+# `make -n check-inc-deps` would run the whole check.
+CHECK_MAKE := $(MAKE)
 check-archives: lib lib-app-owned lib-p256-verify lib-p384-verify lib-p384-sha384 lib-p384-curve lib-onchip lib-p256-verify-onchip lib-p384-verify-onchip lib-p384-curve-onchip lib-p256-comb lib-p256-comb-onchip
-	python3 tools/check_archives.py
+	python3 tools/check_archives.py --make '$(CHECK_MAKE)'
 
 # Assemble the copy-pasteable snippets in the LIVE docs (API.md, README.md,
 # CLAUDE.md) and resolve their imports against the symbols the library really
@@ -833,7 +837,7 @@ check-harness-routing:
 # no device, no network. Opt-in; deliberately NOT a prerequisite of `all`.
 .PHONY: check-inc-deps
 check-inc-deps:
-	python3 tools/check_inc_deps.py
+	python3 tools/check_inc_deps.py --make '$(CHECK_MAKE)'
 
 .PHONY: check-release-notes
 check-release-notes:

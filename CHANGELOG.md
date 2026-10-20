@@ -36,6 +36,13 @@ contract).
   `boot/0` row in `tools/test_prims_adversarial.py` reads the CPU's own view
   of `$01` and of RAM-vs-ROM at `$A000` after the init sentinel, and is red
   on the old stub, green on the fix.
+- **v0.16.0's #184 claim that `make check-inc-deps` holds on GNU make 4.x
+  did not.** `gmake check-inc-deps` (and `check-archives`) drove whatever
+  `make` was first on PATH — 3.81 here — and the 4.x touch-cluster probe,
+  env `MAKEFLAGS=-nt`, was a dry run that touched nothing. Both checks now
+  take `--make`, the Makefile passes the invoking make (captured at parse
+  time, so `make -n check-*` still only prints), inner makes start without
+  the outer `MAKE*` environment, and the 4.x cluster is `-kt`.
 
 ## [0.16.0] — 2026-10-17
 

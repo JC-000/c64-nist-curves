@@ -121,6 +121,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SRC = "src"
 BUILD = "build"
+MAKE_PROG = "make"  # the make under test: --make, passed $(MAKE) by the Makefile
 
 PUBLIC_TARGETS = [
     "all", "nocomb-prg", "onchip-prg", "onchip-nocomb-prg",
@@ -157,7 +158,7 @@ def clean_env() -> dict[str, str]:
     invocation's flags (and command-line variables) into every probe.
     """
     env = dict(os.environ)
-    for k in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEFILES",
+    for k in ("MAKE", "MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEFILES",
               "CONTRACT_DEFINES", "CONTRACT_ZP_DEFINES", "CA65FLAGS",
               "GNUMAKEFLAGS"):
         env.pop(k, None)
@@ -168,12 +169,12 @@ def make(work: Path, *args: str, env_extra: dict[str, str] | None = None,
          ) -> subprocess.CompletedProcess:
     env = clean_env()
     env.update(env_extra or {})
-    return subprocess.run(["make", "--no-print-directory", *args], cwd=work,
+    return subprocess.run([MAKE_PROG, "--no-print-directory", *args], cwd=work,
                           env=env, capture_output=True, text=True)
 
 
 def make_version() -> tuple[tuple[int, int] | None, str]:
-    """((major, minor) or None, first output line) of the `make` on PATH.
+    """((major, minor) or None, first output line) of MAKE_PROG.
 
     Which flag spellings reach a recipe is version-dependent (leg 5c), so
     the probes ask this make what it accepts rather than hardcoding one
@@ -183,11 +184,13 @@ def make_version() -> tuple[tuple[int, int] | None, str]:
     a wrong guess makes every probe of that spelling examine nothing.
     """
     try:
-        r = subprocess.run(["make", "--version"], capture_output=True, text=True)
+        r = subprocess.run([MAKE_PROG, "--version"], env=clean_env(),
+                           capture_output=True, text=True)
     except OSError as e:
         return None, str(e)
-    head = next((ln for ln in (r.stdout + r.stderr).splitlines() if ln.strip()), "")
-    m = re.search(r"GNU Make (\d+)\.(\d+)", r.stdout)
+    out = r.stdout + r.stderr  # parse what the message quotes
+    head = next((ln for ln in out.splitlines() if ln.strip()), "")
+    m = re.search(r"GNU Make (\d+)\.(\d+)", out)
     if r.returncode != 0 or not m:
         return None, f"exit {r.returncode}: {head.strip()[:160]!r}"
     return (int(m.group(1)), int(m.group(2))), head.strip()
@@ -195,7 +198,7 @@ def make_version() -> tuple[tuple[int, int] | None, str]:
 
 def flag_spellings(mv: tuple[int, int]) -> tuple[str, str]:
     """(touch abbreviation, touch cluster) this make reads as `-t` (leg 5c)."""
-    return ("--t", "-ntx") if mv < (4,) else ("--tou", "-nt")
+    return ("--t", "-ntx") if mv < (4,) else ("--tou", "-kt")
 
 
 def ca65_objects(output: str) -> dict[str, str]:
@@ -252,27 +255,28 @@ def snapshot(d: Path) -> dict[str, tuple[int, int, bytes]]:
 
 
 def main() -> int:
+    global MAKE_PROG
+    # --makefile PATH substitutes a different Makefile into the copy: how the
+    # negative test runs the check against the pre-fix file without touching
+    # the working tree's own Makefile.
+    opts = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+    if len(sys.argv) % 2 == 0 or not set(opts) <= {"--make", "--makefile"}:
+        print("usage: check_inc_deps.py [--make PROG] [--makefile PATH]", file=sys.stderr)
+        return 2
+    MAKE_PROG = opts.get("--make", MAKE_PROG)
     mv, head = make_version()
     if mv is None:
-        fail("make", f"`make --version` did not identify a GNU make ({head}) -- "
+        fail("make", f"`{MAKE_PROG} --version` did not identify a GNU make ({head}) -- "
              f"cannot choose the version-dependent flag spellings (leg 5c), and "
              f"the build requires GNU make anyway")
         return report()
     spell = flag_spellings(mv)
-    print(f"[make] {head} -> touch abbrev {spell[0]!r}, touch cluster {spell[1]!r}")
+    print(f"[make] {shutil.which(MAKE_PROG) or MAKE_PROG}: {head} -> touch abbrev {spell[0]!r}, touch cluster {spell[1]!r}")
     tmp = Path(tempfile.mkdtemp(prefix="check_inc_deps_"))
     try:
         work = tmp / "tree"
         work.mkdir()
-        # --makefile PATH substitutes a different Makefile into the copy:
-        # how the negative test runs the check against the pre-fix file
-        # without touching the working tree's own Makefile.
-        mk = REPO / "Makefile"
-        if len(sys.argv) == 3 and sys.argv[1] == "--makefile":
-            mk = Path(sys.argv[2]).resolve()
-        elif len(sys.argv) != 1:
-            print("usage: check_inc_deps.py [--makefile PATH]", file=sys.stderr)
-            return 2
+        mk = Path(opts.get("--makefile", REPO / "Makefile")).resolve()
         shutil.copy2(mk, work / "Makefile")
         shutil.copytree(REPO / SRC, work / SRC)
         shutil.copytree(REPO / "cfg", work / "cfg")
@@ -577,7 +581,8 @@ def run(work: Path, spell: tuple[str, str]) -> int:
         knob = f"CONTRACT_DEFINES=-D {knob_name}=1"
         env = clean_env()
         env.update(env_extra or {})
-        argv = [a.replace("@KNOB@", knob) for a in argv]
+        # Every route argv is spelled "make ..." for its label; run MAKE_PROG.
+        argv = [MAKE_PROG, *(a.replace("@KNOB@", knob) for a in argv[1:])]
         before = snapshot(bdir)
         s0 = stamp_text()
         r = subprocess.run(argv, cwd=work, env=env, capture_output=True, text=True)
@@ -624,16 +629,12 @@ def run(work: Path, spell: tuple[str, str]) -> int:
     # env MAKEFLAGS under -e reaches parse time raw; make still obeys it.
     # Two spellings are version-dependent and are asked of this make rather
     # than hardcoded, because neither has one spelling that works on both:
-    #   --t    3.81 has no long options and reads it as `-t` (measured,
-    #          #180). 4.x parses it as a long-option prefix, where it is
-    #          ambiguous between --touch and --trace, and refuses it:
-    #          rc=2, "option '--t' is ambiguous". `--tou` is unambiguous on
-    #          4.x but must NOT be substituted unconditionally -- 3.81 would
-    #          read `--tou` as the short-option cluster -t -o -u, and -o
-    #          consumes an argument.
-    #   -ntx   the 3.81 getopt cluster measured in #180. 4.x rejects the -x
-    #          member outright ("invalid option -- x"); `-nt` is the 4.x
-    #          cluster.
+    #   --t    a real 3.81 route (#180): 3.81 has getopt_long and no --trace,
+    #          so `--t` is an unambiguous prefix of --touch. 4.x refuses it
+    #          as ambiguous with --trace (new in 4.0); `--tou` is the 4.x form.
+    #   -ntx   the 3.81 cluster measured in #180; 4.x rejects -x outright.
+    #          `-nt` is no substitute on 4.x: -n wins and nothing is touched,
+    #          so the probe would be a dry run. `-kt` touches on both makes.
     # A refused flag exits during option parsing, before any recipe runs, so
     # build/ is pristine -- which reads as a clean no-op to the tree-state
     # judges unless route() also asserts an exit status. It does.

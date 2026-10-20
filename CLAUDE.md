@@ -382,6 +382,7 @@ make check-harness-routing           # every device write in tools/ routes throu
                                      #   see "Device traffic: the harness is the only route" below
                                      #   (no VICE, no device, no network)
 make check-inc-deps                  # every object reassembles when an .include'd header or the Makefile changes; clean/dry-run side effects; knob invalidation down every flag route (issues #178/#180; no VICE, temp copy, opt-in)
+                                     #   tests the make named by $(MAKE) only: run it under both make 3.81 and gmake 4.x
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
                                      #   C64_PRG_NAME=nist-curves-nocomb.prg C64_LABELS_NAME=labels_nocomb.txt \
                                      #   C64_SKIP_BUILD=1 python3 tools/test_ecdsa_verify.py
