@@ -4,8 +4,8 @@
 ; main.s - NIST P-256/P-384 elliptic curve optimization harness
 ;
 ; Memory layout:
-;   $0801-$08FF: BASIC stub + boot
-;   $0900+:      code (mul_8x8, fp256, mod256, curve256, points256)
+;   $0801-$080C: BASIC stub (10 SYS 2061)
+;   $080D+:      start, then code in Makefile link order
 ;   $9C00-$9FFF: sqtab (quarter-square multiply tables; SPEC §8.1 equate,
 ;                LIB_SHARED_SQTAB_BASE -- not a linker segment, see the
 ;                collision guard below)
@@ -15,7 +15,7 @@
 .importzp nistcurves_zp_ptr1, fp_misc
 
 ; proc_port ($01, 6510 CPU I/O port) is hardware-fixed and used only by
-; this test/bench driver for ROM banking around REU access (never by the
+; this test/bench driver, for the one-time BASIC ROM bank-out at `start` (never by the
 ; library itself, issue #90) -- defined locally rather than imported from
 ; zp_config.s so the library no longer claims/exports it in any archive.
 ; Codegen is identical either way: `lda proc_port` / `sta proc_port`
@@ -107,15 +107,24 @@
 
 .segment "LIB_NISTCURVES_MAIN_CODE"
 
-; BASIC stub: 10 SYS 2064
+; BASIC stub: 10 SYS 2061 ($080D, the `start` label below).
+; The literal is derived from SYS_ADDR and link-checked against `start`.
+; It used to be a hand-typed "2064", 3 bytes past `start`: RUN entered at
+; $0810, mid-instruction in the bank-out below (decoded there as
+; INC $0185,X), resynced at the `jsr clrscr`, and never cleared LORAM --
+; so BASIC ROM stayed mapped over $A000-$BFFF for every test and bench.
+; SYS_ADDR must keep 4 decimal digits: the stub's length decides where
+; `start` lands, so a 5-digit value would move `start` and trip the assert.
+SYS_ADDR = 2061
 basic_stub:
         .word basic_end         ; pointer to next BASIC line
         .word 10                ; line number 10
         .byte $9e               ; SYS token
-        .byte "2064"            ; decimal address (must match start label)
+        .byte .sprintf("%d", SYS_ADDR) ; decimal entry address
         .byte 0                 ; end of line
 basic_end:
         .word 0                 ; end of BASIC program
+.assert start = SYS_ADDR, lderror, "BASIC stub SYS literal (SYS_ADDR) does not match the start label -- RUN would enter mid-instruction"
 
 ; =============================================================================
 ; Program entry point

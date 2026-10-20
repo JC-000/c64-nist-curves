@@ -32,6 +32,17 @@ Groups, both curves unless noted:
       lengths 65/119/120/191/192/239/240/241/2047/2048 and the FIPS
       block boundaries, re-init discards partial data.
 
+   0. Boot banking (runs FIRST, before any other row touches the machine):
+      after the $02A7 sentinel, the BASIC stub must have entered at
+      `start:` and banked BASIC ROM out (6510 port $01 bit 0, LORAM,
+      clear; RAM at $A000-$BFFF). Read by a CPU-executed probe, not the
+      monitor: the probe loads $01 and the byte at $A000, writes its
+      complement back and re-reads it -- RAM returns the complement, ROM
+      returns the original. The monitor's own view of $01 / $A000 is
+      recorded alongside as INFO only. Before the fix the stub said
+      `SYS 2064` while `start:` is $080D (2061), so RUN entered at $0810
+      mid-instruction and skipped the bank-out store.
+
 Also carried over (cheap, structured, found nothing but pin contracts):
 Solinas worst cases into fp_mod_reduce{256,384}; fp_mod_mul / fp_mod_sqr
 on full-width inputs (exact for ANY input -- asserted); fp_mod_mul_n
@@ -50,7 +61,7 @@ Usage:
     python3 tools/test_prims_adversarial.py [--seed N] [--full] [--verbose]
                                             [--strict] [--record out.jsonl]
                                             [--no-sha] [--no-p256] [--no-p384]
-                                            [--no-hang]
+                                            [--no-hang] [--no-boot]
 
 Exit status is non-zero on any FAIL (the former F-1 red-known rows are
 real assertions since issue #132 closed); INFO rows never fail the run.
@@ -117,6 +128,21 @@ T_DBL = 600.0
 T_ADD = 1200.0
 T_SMUL = 3600.0
 T_SMULV = 7200.0
+
+# Boot-banking probe (group 0). Cassette buffer, past SCALAR_BUF's 48 B
+# ($033C-$036B) and the $0334-$033B trampoline/guard; 18 bytes.
+BOOT_PROBE = 0x0370
+BOOT_PROBE_CODE = bytes([
+    0xA4, 0x01,              # ldy $01      Y = 6510 port as the CPU sees it
+    0xAE, 0x00, 0xA0,        # ldx $A000    X = byte the CPU reads at $A000
+    0x8A,                    # txa
+    0x49, 0xFF,              # eor #$FF
+    0x8D, 0x00, 0xA0,        # sta $A000    write the complement
+    0xAD, 0x00, 0xA0,        # lda $A000    RAM -> X^$FF, ROM -> X
+    0x8E, 0x00, 0xA0,        # stx $A000    put the read value back
+    0x60,                    # rts
+])
+BASIC_ROM_A000 = 0x94        # BASIC cold-start vector $E394, low byte
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +649,38 @@ def sha_section(S, transport, labels, rng, full):
             hashlib.sha384(m3).hexdigest(), transport=transport)
 
 
+def boot_section(S, transport):
+    """0. The BASIC stub must enter at `start:` so the bank-out runs.
+    Asserted from a CPU-executed probe (BOOT_PROBE_CODE); the monitor's
+    view is INFO only, since a monitor memory bank need not be the
+    CPU's. Runs before anything else touches the machine."""
+    sec = "boot/0"
+    write_bytes(transport, BOOT_PROBE, BOOT_PROBE_CODE)
+
+    def probe():
+        regs = jsr(transport, BOOT_PROBE, timeout=10.0)
+        a, x, y = regs.get("A"), regs.get("X"), regs.get("Y")
+        return {"port": y, "a000": x, "readback": a}
+
+    raw = S.timed(sec, "after init: CPU sees LORAM clear and RAM at $A000 "
+                  "(BASIC banked out by start:)", probe,
+                  {"loram": 0, "a000_is_ram": True}, transport=transport,
+                  post=lambda r: {
+                      "loram": r["port"] & 1,
+                      "a000_is_ram": r["readback"] == (r["a000"] ^ 0xFF)},
+                  detail={"note": "stub SYS literal vs start: ($080D)"})
+    if raw is not None:
+        S.case(sec, "probe raw: $01 / $A000 / readback (CPU view)",
+               None, {k: f"${v:02X}" for k, v in raw.items()},
+               verdict="INFO",
+               detail={"basic_rom_a000": f"${BASIC_ROM_A000:02X}"})
+    mon = read_bytes(transport, 0x0001, 1)[0], \
+        read_bytes(transport, 0xA000, 1)[0]
+    S.case(sec, "monitor view: $01 / $A000 (not the CPU view; INFO)",
+           None, {"port": f"${mon[0]:02X}", "a000": f"${mon[1]:02X}"},
+           verdict="INFO")
+
+
 def hang_section(S, D, curve):
     """10. Audit F-1 / issue #132: fp_mod_inv on the residue class 0 and
     ec_jacobian_to_affine on Z=0 used to hang. The guard's documented
@@ -709,6 +767,9 @@ def main():
     try:
         with Machine() as m:
             transport = m.transport
+            if "--no-boot" not in extra:
+                suite.note("\n--- boot banking (0; first) ---")
+                boot_section(suite, transport)
             if "--no-sha" not in extra:
                 suite.note("\n--- SHA-384 (14) ---")
                 sha_section(suite, transport, labels, rng, opts["full"])

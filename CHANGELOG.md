@@ -12,6 +12,31 @@ contract).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The test/bench PRG's BASIC stub entered 3 bytes past `start:`, so BASIC
+  ROM was never banked out.** `src/main.s` said `10 SYS 2064` while `start:`
+  is `$080D` (2061). VICE autostart and Ultimate `run_prg` both RUN the stub,
+  so every test and bench entered at `$0810`, inside the
+  `lda $01 / and #$fe / sta $01` bank-out: the CPU decoded `$FE $85 $01` as
+  `INC $0185,X`, resynchronised at the following `jsr clrscr`, and never
+  stored to `$01`. LORAM stayed set and BASIC ROM stayed mapped over
+  `$A000-$BFFF`, although `src/c64.cfg`'s MAIN area runs to `$CFFF` — any
+  image or table placed there would have been read back as ROM bytes. (A
+  parked w-NAF reland that grew the image past `$A000` hit exactly this; on
+  that layout the same 2061 fix then exposed a second, unexplained
+  `ec_precompute_256` hang, so this fix is not by itself a w-NAF unblock.
+  At the current layout, which ends below `$9C00`, every VICE suite passes
+  with BASIC banked out; Ultimate hardware has not yet booted it.) The SYS literal is now
+  generated from one `SYS_ADDR` constant and pinned by a link-time
+  `.assert start = SYS_ADDR, lderror`. `main.o` is in no consumer archive;
+  the PRG changes by that one digit byte (size unchanged, 37743 B) and no
+  library code is touched. Red/green: setting `SYS_ADDR = 2064` fails the
+  link with the new assert (not the `__MAIN_LAST__` guard); a new
+  `boot/0` row in `tools/test_prims_adversarial.py` reads the CPU's own view
+  of `$01` and of RAM-vs-ROM at `$A000` after the init sentinel, and is red
+  on the old stub, green on the fix.
+
 ## [0.16.0] — 2026-10-17
 
 `LIB_NISTCURVES_ABI_VERSION` **4 → 5** — consumers with an ABI gate must
