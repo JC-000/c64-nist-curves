@@ -49,12 +49,16 @@ target builds them, then runs this). Exit 0 = contract intact, 1 = drift.
 """
 
 import hashlib
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import functools
 from pathlib import Path
+
+MAKE_PROG = "make"  # the make under test: --make, passed $(MAKE) by the Makefile
 
 # --- Leg run log (issue #167 re-review A/B/C) --------------------------------
 # Every leg AND sub-leg carries @leg. The wrapper records entry and completion;
@@ -731,8 +735,11 @@ SEGMENTS {
 
 
 def sh(cmd):
-    """Run a command, return (returncode, stdout+stderr)."""
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    """Run a command, return (returncode, stdout+stderr). The outer make's
+    MAKE/MAKEFLAGS/MAKELEVEL are stripped so inner makes start clean."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("MAKE", "MAKEFLAGS", "MAKELEVEL")}
+    p = subprocess.run(cmd, capture_output=True, text=True, env=env)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -3799,7 +3806,7 @@ def forbidden_export_check(failures, archives):
             kb = td / f"knobs_{pname}"
             kb.mkdir()
             targets = [str(kb / "lib" / a) for a in sorted(archives)]
-            rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={kb}",
+            rc, out = sh([MAKE_PROG, "-C", str(REPO), f"BUILD_DIR={kb}",
                           f"CONTRACT_DEFINES={cdef}", f"CONTRACT_ZP_DEFINES={zdef}",
                           *targets])
             if rc:
@@ -3896,7 +3903,7 @@ def forbidden_export_check(failures, archives):
             # switches cannot take it twice (`'X' is already defined`) --
             # the app-owned arm -- and must not stop the rest of the build.
             # The scan is over the OBJECTS make produced, not a link.
-            _rc, out = sh(["make", "-k", "-C", str(REPO), f"BUILD_DIR={kb}",
+            _rc, out = sh([MAKE_PROG, "-k", "-C", str(REPO), f"BUILD_DIR={kb}",
                            f"CONTRACT_DEFINES={cdef}", *targets])
             scanned, missing = 0, []
             for obj, (src, defines, _using) in sorted(arms.items()):
@@ -4394,7 +4401,7 @@ def abi_surface_check(failures, archives):
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         nb = td / "nobare"
-        rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={nb}",
+        rc, out = sh([MAKE_PROG, "-C", str(REPO), f"BUILD_DIR={nb}",
                       "CONTRACT_DEFINES=-D LIB_NO_BARE_EXPORTS=1",
                       *[str(nb / "lib" / a) for a in sorted(archives)]])
         if rc:
@@ -4698,7 +4705,7 @@ def sqtab_pin_deferral_check(failures, archives):
             dirs = {}
             for b in (base, base + 0x0100):
                 bdir = td / f"b_{slug}_{b:04X}"
-                rc, out = sh(["make", "-C", str(REPO), f"BUILD_DIR={bdir}",
+                rc, out = sh([MAKE_PROG, "-C", str(REPO), f"BUILD_DIR={bdir}",
                               f"CONTRACT_DEFINES={cdef} -D LIB_SHARED_SQTAB_BASE=0x{b:04X}",
                               f"CONTRACT_ZP_DEFINES={zdef}",
                               *[str(bdir / "lib" / a) for a in todo]])
@@ -5268,7 +5275,7 @@ def defines_staleness_check(failures):
 
 @leg
 def _knob_staleness_legs(failures, kb):
-    mk = ["make", "-C", str(REPO), f"BUILD_DIR={kb}"]
+    mk = [MAKE_PROG, "-C", str(REPO), f"BUILD_DIR={kb}"]
     print("\n=== knob-staleness guard (defines change must rebuild; was §6.3) ===")
 
     # --- Linked-artifact leg (issue #144) ------------------------------------
@@ -5477,7 +5484,7 @@ def _zp_override_leg(failures, kb):
 
 
 def _zp_override_probe(failures, arm, alias_obj, kb):
-    mk = ["make", "-C", str(REPO), f"BUILD_DIR={kb}"]
+    mk = [MAKE_PROG, "-C", str(REPO), f"BUILD_DIR={kb}"]
     import tempfile
     for knob, want in ((["CONTRACT_ZP_DEFINES=-D nistcurves_zp_ptr2=0x60"], 0x60),
                        ([], 0xfd)):
@@ -5885,6 +5892,13 @@ def main():
     with 2 objects and no archive (issue #167 extras); a snapshot/restore
     stopped that but still wiped build/ mid-run, which item 7 of the review
     removed at the source."""
+    global MAKE_PROG
+    if len(sys.argv) == 3 and sys.argv[1] == "--make":
+        MAKE_PROG = sys.argv[2]
+    elif len(sys.argv) != 1:
+        print("usage: check_archives.py [--make PROG]", file=sys.stderr)
+        return 2
+    print(f"[make] {shutil.which(MAKE_PROG) or MAKE_PROG}")
     return _run_all_legs()
 
 
