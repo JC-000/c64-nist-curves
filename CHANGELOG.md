@@ -48,7 +48,10 @@ contract).
   that layout the same 2061 fix then exposed a second, unexplained
   `ec_precompute_256` hang, so this fix is not by itself a w-NAF unblock.
   At the current layout, which ends below `$9C00`, every VICE suite passes
-  with BASIC banked out; Ultimate hardware has not yet booted it.) The SYS literal is now
+  with BASIC banked out. A C64 Ultimate (fw 1.1.0) booted the fixed PRG on
+  2026-10-21/22 and ran the oracle-gated P-384 sweep, the ECDSA bench and the
+  REU settle probe to completion. The `boot/0` row's `$01` check is
+  VICE-only; it was not repeated on hardware.) The SYS literal is now
   generated from one `SYS_ADDR` constant and pinned by a link-time
   `.assert start = SYS_ADDR, lderror`. `main.o` is in no consumer archive;
   the PRG changes by that one digit byte (size unchanged, 37743 B) and no
@@ -64,6 +67,27 @@ contract).
   take `--make`, the Makefile passes the invoking make (captured at parse
   time, so `make -n check-*` still only prints), inner makes start without
   the outer `MAKE*` environment, and the 4.x cluster is `-kt`.
+
+### Documentation
+
+- **README: C64 Ultimate full turbo sweep.** New table of `ec_scalar_mul` at
+  every C64 Ultimate CPU speed, 1 to 64 MHz (fw 1.1.0, measured 2026-10-21).
+  At 64 MHz: **4.0 s** P-256, **8.8 s** P-384, against 48.9 s / 136.3 s at
+  1 MHz. 48 → 64 MHz gains only 6% / 7%, the REU row-fetch floor. Also new:
+  C64 Ultimate ECDSA rows at 16/48 MHz (`ecdsa_verify_256` 39.1 s / 27.1 s,
+  `ecdsa_verify_384` 100.5 s / 66.3 s).
+- **README: the U64E ECDSA table's "wall" column was the cycle column divided
+  by the CPU clock** (0.66 s for a P-256 verify at 48 MHz), and the convention
+  note called that division correct. The cycle column is jiffies × 17045,
+  already 1-MHz-equivalent wall-clock µs, so the real figure is ~31.8 s. The
+  column and the note are corrected; the cycle values are unchanged.
+  The tools printed the same divided figure; PR #191 fixes
+  `tools/bench_ecdsa_u64.py` and `tools/diag_verify384_turbo.py`.
+- **REU settle probe on the C64 Ultimate** (`tools/test_reu_mul_u64.py`,
+  fw 1.1.0, 512 KB REU, 2026-10-22): 21/21 cells clean, arbiter clean
+  (0/100 at +4 cy). The smallest clean fetch settle is 12 cy at both 16 and
+  48 MHz. The probe's cells run at 16 and 48 MHz only, so **64 MHz remains
+  unbracketed**.
 
 ## [0.16.0] — 2026-10-17
 

@@ -154,6 +154,56 @@ the harness is the only route" before pointing these at such a device.
 At 48 MHz, P-256 `ec_scalar_mul` completes in ~4.5 s wall-clock (vs ~47 s
 at stock 1 MHz). P-384 `ec_scalar_mul_384` completes in ~10.9 s (vs ~131 s).
 
+### C64 Ultimate full turbo sweep (fw 1.1.0)
+
+Every CPU speed the C64 Ultimate offers, 1 to 64 MHz, measured 2026-10-21
+with `tools/bench_p256_u64.py` / `tools/bench_p384_u64.py`, oracle-gated (no
+UNVERIFIED rows). Fixed-base comb `ec_scalar_mul`:
+
+| MHz | P-256 cyc | P-256 wall | P-384 cyc | P-384 wall |
+|----:|----------:|-----------:|----------:|-----------:|
+|   1 | 49,856,625 | 48.9 s | 139,104,245 | 136.3 s |
+|   2 | 24,766,385 | 24.5 s |  69,100,430 |  67.7 s |
+|   3 | 16,584,785 | 16.7 s |  46,226,040 |  45.3 s |
+|   4 | 12,732,615 | 12.6 s |  35,317,240 |  35.0 s |
+|   6 | 10,584,945 | 10.7 s |  28,328,790 |  28.0 s |
+|   8 |  8,198,645 |  8.1 s |  21,851,690 |  21.4 s |
+|  10 |  7,755,475 |  8.0 s |  20,215,370 |  20.2 s |
+|  12 |  6,596,415 |  6.8 s |  17,147,270 |  16.8 s |
+|  14 |  6,119,155 |  6.3 s |  15,732,535 |  15.9 s |
+|  16 |  5,829,390 |  6.0 s |  14,846,195 |  14.6 s |
+|  20 |  5,352,130 |  5.3 s |  13,482,595 |  13.4 s |
+|  24 |  4,994,185 |  5.4 s |  12,476,940 |  12.5 s |
+|  32 |  4,363,520 |  4.7 s |  10,755,395 |  10.9 s |
+|  40 |  4,124,890 |  4.5 s |  10,022,460 |  10.2 s |
+|  48 |  4,005,575 |  4.4 s |   9,681,560 |   9.6 s |
+|  64 |  3,766,945 | **4.0 s** |   9,016,805 |  **8.8 s** |
+
+"cyc" is jiffies × 17045, i.e. 1-MHz-equivalent wall-clock µs (see the
+convention note under the ECDSA table below). "wall" is the bench tool's
+host-side timing of the same step. It carries per-step host overhead and can
+invert between adjacent speeds (P-256 at 20 vs 24 MHz), so compare speeds on
+"cyc", which is always monotonic here.
+
+At 64 MHz, `ec_scalar_mul` is 13.2× faster than at 1 MHz (P-256) and
+15.4× (P-384). Most of that comes early: 16 → 64 MHz buys only 1.55× and
+1.65×, and 48 → 64 MHz only 6% and 7%. That is the speed-invariant REU
+row-fetch floor described in the next section. The field multiply shows the
+same shape: P-256 `fp_mod_mul` goes 85,225 → 8,788 → 5,113 cyc at
+1 / 16 / 64 MHz, P-384 `fp_mod_mul_384` 159,370 → 14,967 → 8,149. Squaring
+scales worse than multiplication on this device. At 1 MHz P-256
+`fp_mod_sqr` costs 0.96× `fp_mod_mul`; at 64 MHz it costs 1.70× (8,708
+cyc). The full 15-routine × 16-speed tables are in the run logs and are
+reproducible with a bare invocation of either tool, which sweeps every speed
+the connected device supports.
+
+Provenance: C64 Ultimate fw 1.1.0. P-384 ran the PRG built at master
+`d24cee0`. P-256 ran the PRG built at `dce82f0`, which differs from
+`d24cee0` only in `src/main.s`'s BASIC stub (issue #187); no library code
+differs. 1 MHz on the device reads ~7% (P-256) / ~6% (P-384) slower than the
+VICE table above. That table is from an older source state, so the gap is
+not a device-vs-emulator measurement.
+
 ### Turbo scaling and the FP_ONCHIP_MUL profile (issue #69)
 
 REU DMA transfers at the ~1 MHz bus rate regardless of CPU turbo, so the
@@ -174,7 +224,9 @@ them. Measured, oracle-gated (C64U):
 | turbo (`FP_ONCHIP_MUL`) | 46.4 s | 15.8 s | **11.8 s (2.16×)** |
 
 Crossover ~22 MHz (P-256) / ~33 MHz (P-384); at stock 1 MHz the default
-profile is ~2.5× faster.
+profile is ~2.5× faster. A 2026-10-22 re-measurement of the default profile
+at master `d24cee0` read 39.6 s (16 MHz) / 27.4 s (48 MHz), within 5% of the
+row above. The onchip row and the 64 MHz verify were not re-measured.
 
 **Measurement scope:** all floor and crossover figures in this section
 were measured on a C64 Ultimate fw 1.1.0. Cross-device data from the
@@ -224,16 +276,36 @@ parses the cycle delta between them.
 
 | Primitive                 | 16 MHz cyc   | 16 MHz wall | 48 MHz cyc   | 48 MHz wall |
 |---------------------------|-------------:|------------:|-------------:|------------:|
-| ec_scalar_mul_var         |   37,618,315 |      2.35 s |   27,766,305 |      0.58 s |
-| ec_scalar_mul_var_384     |   95,486,090 |      5.97 s |   66,884,580 |      1.39 s |
-| ecdsa_verify_256          |   43,157,940 |      2.70 s |   31,805,970 |      0.66 s |
-| ecdsa_verify_384          |  111,048,175 |      6.94 s |   77,639,975 |      1.62 s |
-| ecdsa_verify_with_msg_384 |  111,082,265 |      6.94 s |   80,605,805 |      1.68 s |
+| ec_scalar_mul_var         |   37,618,315 |      37.6 s |   27,766,305 |      27.8 s |
+| ec_scalar_mul_var_384     |   95,486,090 |      95.5 s |   66,884,580 |      66.9 s |
+| ecdsa_verify_256          |   43,157,940 |      43.2 s |   31,805,970 |      31.8 s |
+| ecdsa_verify_384          |  111,048,175 |     111.0 s |   77,639,975 |      77.6 s |
+| ecdsa_verify_with_msg_384 |  111,082,265 |     111.1 s |   80,605,805 |      80.6 s |
 
-Numbers above are the **measured-2026-05-18** values at master HEAD `788adc3`
-(post-PR-#34 cofactor approach (a)); the `ecdsa_verify_with_msg_384`
-row was added 2026-05-19 against the same source state (master HEAD
-`7d71773`, code byte-identical to `788adc3`).
+Numbers above are the **measured-2026-05-18** values on U64E fw 3.14d at
+master HEAD `788adc3` (post-PR-#34 cofactor approach (a)); the
+`ecdsa_verify_with_msg_384` row was added 2026-05-19 against the same source
+state (master HEAD `7d71773`, code byte-identical to `788adc3`). The wall
+column is the cyc column read as µs. Until 2026-10-22 it showed cyc ÷ MHz
+(e.g. 0.66 s for a P-256 verify at 48 MHz), which is not a real time. See the
+convention note below.
+
+**C64 Ultimate fw 1.1.0**, measured 2026-10-22 at master `d24cee0` with
+`tools/bench_ecdsa_u64.py` defaults. "wall" here is the tool's host-side
+`[wall]` reading of each call:
+
+| Primitive                 | 16 MHz cyc   | 16 MHz wall | 48 MHz cyc   | 48 MHz wall |
+|---------------------------|-------------:|------------:|-------------:|------------:|
+| ec_scalar_mul_var         |   34,516,125 |      34.3 s |   23,948,225 |      23.8 s |
+| ec_scalar_mul_var_384     |   88,139,695 |      86.7 s |   57,987,090 |      56.8 s |
+| ecdsa_verify_256          |   39,646,670 |      39.1 s |   27,442,450 |      27.1 s |
+| ecdsa_verify_384          |  102,610,900 |     100.5 s |   67,378,885 |      66.3 s |
+| ecdsa_verify_with_msg_384 |  102,644,990 |     100.7 s |   67,395,930 |      66.4 s |
+
+Tripling the clock from 16 to 48 MHz cuts a verify by only 31% (P-256) /
+34% (P-384) on this device. The two devices are not directly comparable: different firmware,
+different source states (`788adc3` vs `d24cee0`), and the per-row DMA stall
+differs by generation (issue #83).
 
 The `ecdsa_verify_with_msg_384` row exercises the one-shot
 `ecdsa_verify_with_message_384` wrapper (SHA-384 of the message + ECDSA
@@ -264,12 +336,15 @@ cite measured cycles before/after, not extrapolated savings.**
 wall-clock microseconds (jiffies × 17045), NOT machine cycles at turbo. The
 U64E timing source is the NTSC jiffy clock (60 Hz IRQ) which ticks at the
 wall-clock rate regardless of CPU turbo, and REU DMA runs at ~1 MHz whatever
-the CPU is doing. Reading "27.7 M cycles at 48 MHz" as "27.7 M / 48 M ≈ 0.58 s"
-is numerically correct only because the cycle column is already
-1-MHz-equivalent wall time; it is NOT a machine-cycle count that scales with
-CPU frequency. Treat the "wall" column as authoritative for scheduling
-and the "cyc" column as a first-order cost comparison against other
-primitives measured the same way.
+the CPU is doing. So "27.7 M cyc at 48 MHz" means ~27.7 s of wall time. It
+does **not** mean 27.7 M / 48 M ≈ 0.58 s: the column is not a machine-cycle
+count, so dividing it by the CPU clock gives a figure with no physical
+meaning. (This note used to call that division correct, and
+`tools/bench_ecdsa_u64.py` and `tools/diag_verify384_turbo.py` printed times
+that way until PR #191; before that fix, read their host `[wall …]` readings
+instead.) Treat the
+"wall" column as authoritative for scheduling and the "cyc" column as a
+first-order cost comparison against other primitives measured the same way.
 
 Cycle counts captured on U64E fw 3.14d (NTSC, 1 jiffy = 17045 cy). Issue #17 cites an ~85 s in-tree hand-port baseline for
 `ecdsa_verify_256` at 1 MHz; `ecdsa_verify_256 ≈ ec_scalar_mul +
@@ -287,8 +362,8 @@ wall-clock anchored: going from 16 MHz to 48 MHz reduces wall time by only
 extrapolation would predict. `tools/bench_ecdsa_u64.py` now uses
 `max(180.0, 3*base_timeout/mhz)` which gives 225 s of headroom at 48 MHz.
 No code bug in `ecdsa_verify_384` and no cumulative REU-state issue; an
-isolated run (`tools/diag_verify384_turbo.py`) completes in the same ~1.62 s
-at 48 MHz whether it runs standalone or after the other three primitives.
+isolated run (`tools/diag_verify384_turbo.py`) completes in the same time
+(77.6 M cyc, ~78 s wall) at 48 MHz whether it runs standalone or after the other three primitives.
 
 ## Wave 4 optimization round
 
