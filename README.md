@@ -339,9 +339,10 @@ wall-clock rate regardless of CPU turbo, and REU DMA runs at ~1 MHz whatever
 the CPU is doing. So "27.7 M cyc at 48 MHz" means ~27.7 s of wall time. It
 does **not** mean 27.7 M / 48 M ≈ 0.58 s: the column is not a machine-cycle
 count, so dividing it by the CPU clock gives a figure with no physical
-meaning. (This note used to call that division correct. The `Wall-clock per
-call (seconds)` summary table that `tools/bench_ecdsa_u64.py` prints still
-divides this way; read the per-call `[wall …]` lines instead.) Treat the
+meaning. (This note used to call that division correct, and
+`tools/bench_ecdsa_u64.py` and `tools/diag_verify384_turbo.py` printed times
+that way until PR #191; before that fix, read their host `[wall …]` readings
+instead.) Treat the
 "wall" column as authoritative for scheduling and the "cyc" column as a
 first-order cost comparison against other primitives measured the same way.
 

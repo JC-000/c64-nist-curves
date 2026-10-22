@@ -60,9 +60,8 @@ contract).
   note called that division correct. The cycle column is jiffies × 17045,
   already 1-MHz-equivalent wall-clock µs, so the real figure is ~31.8 s. The
   column and the note are corrected; the cycle values are unchanged.
-  `tools/bench_ecdsa_u64.py`'s "Wall-clock per call" summary table still
-  prints the divided figure. This entry does not change the tool. Read its
-  per-call `[wall …]` lines instead.
+  The tools printed the same divided figure; PR #191 fixes
+  `tools/bench_ecdsa_u64.py` and `tools/diag_verify384_turbo.py`.
 - **REU settle probe on the C64 Ultimate** (`tools/test_reu_mul_u64.py`,
   fw 1.1.0, 512 KB REU, 2026-10-22): 21/21 cells clean, arbiter clean
   (0/100 at +4 cy). The smallest clean fetch settle is 12 cy at both 16 and
