@@ -19,7 +19,7 @@ from tools.vectors import (  # noqa: E402
 )
 
 from bench_u64_common import (  # noqa: E402
-    ALL_SPEEDS, NTSC_CYCLES_PER_JIFFY, NTSC_CPU_HZ,
+    NTSC_CYCLES_PER_JIFFY, NTSC_CPU_HZ, resolve_sweep_speeds,
     Ultimate64Client, Ultimate64Transport, DeviceLock, probe_u64,
     get_turbo_mhz, set_turbo_mhz, set_reu, snapshot_state, restore_state,
     Labels,
@@ -326,8 +326,10 @@ def main():
         sys.exit(2)
     password = os.environ.get("U64_PASSWORD")
 
+    # None -> resolved against the connected device after connect, before
+    # any reboot (resolve_sweep_speeds).
     speeds = ([int(s.strip()) for s in args.speeds.split(",")]
-              if args.speeds else list(ALL_SPEEDS))
+              if args.speeds else None)
 
     print(f"Loading PRG: {args.prg}")
     with open(args.prg, "rb") as f:
@@ -371,6 +373,16 @@ def main():
         transport = Ultimate64Transport(host=host, password=password, client=client)
         info = client.get_info()
         print(f"  Connected: {info.get('product','?')} fw={info.get('firmware_version','?')}")
+        try:
+            speeds = resolve_sweep_speeds(client, speeds)
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            try:
+                transport.close()
+            except Exception:
+                pass
+            sys.exit(2)
+        print(f"  Speeds: {speeds}")
 
         orig_state = snapshot_state(client)
 

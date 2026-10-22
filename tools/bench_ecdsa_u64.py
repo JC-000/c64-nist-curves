@@ -54,7 +54,7 @@ from tools.vectors import (  # noqa: E402
 )
 
 from bench_u64_common import (  # noqa: E402
-    ALL_SPEEDS, NTSC_CYCLES_PER_JIFFY, NTSC_CPU_HZ,
+    ALL_SPEEDS, NTSC_CYCLES_PER_JIFFY, NTSC_CPU_HZ, resolve_sweep_speeds,
     Ultimate64Client, Ultimate64Transport, DeviceLock, probe_u64,
     get_turbo_mhz, set_turbo_mhz, set_reu, snapshot_state, restore_state,
     Labels,
@@ -606,6 +606,15 @@ def main():
         info = client.get_info()
         print(f"  Connected: {info.get('product','?')} "
               f"fw={info.get('firmware_version','?')}")
+        try:
+            speeds = resolve_sweep_speeds(client, speeds)
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            try:
+                transport.close()
+            except Exception:
+                pass
+            sys.exit(2)
 
         orig_state = snapshot_state(client)
 

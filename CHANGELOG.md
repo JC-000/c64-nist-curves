@@ -14,6 +14,27 @@ contract).
 
 ### Fixed
 
+- **The Ultimate bench tools' default speed sweep crashed mid-run on every
+  device.** `ALL_SPEEDS` in `tools/bench_u64_common.py` was the harness
+  schema's cross-generation superset, and the harness now validates speeds
+  per device generation. On a C64 Ultimate (fw 1.1.0) a bare
+  `bench_p256_u64.py` raised `ValueError: speed 5 not supported by this
+  device generation` at the fifth speed (observed 2026-10-21), after five
+  reboots and five uploads. A U64E (fw 3.14 per the harness docstring) is
+  predicted to fail at 64 only after the full sweep. Validation also ran too
+  late: `reboot_and_prepare` reboots and uploads before `set_turbo_mhz`
+  rejects the speed. A new `resolve_sweep_speeds()` takes the default sweep
+  from the connected device's CPU Speed presets, using the probe that
+  `set_turbo_mhz` itself validates with. It rejects an unsupported explicit
+  `--speeds` before any reboot or upload, and retries an inconclusive probe 3
+  times before refusing. It is used by `bench_p256_u64.py`,
+  `bench_p384_u64.py`, `bench_ecdsa_u64.py` and `test_reu_mul_u64.py`.
+  New opt-in `make check-bench-tools` runs an offline self-test that drives
+  each tool's real `main()` against fake C64U/U64E clients. It was red on the
+  pre-fix logic (7 of 12 rows, one of them reproducing the hardware error
+  text verbatim) and is 28/28 green after the fix. It goes red again if the
+  call is deleted from a tool or moved after the first reboot.
+
 - **The test/bench PRG's BASIC stub entered 3 bytes past `start:`, so BASIC
   ROM was never banked out.** `src/main.s` said `10 SYS 2064` while `start:`
   is `$080D` (2061). VICE autostart and Ultimate `run_prg` both RUN the stub,

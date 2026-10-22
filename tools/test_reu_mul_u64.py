@@ -3432,6 +3432,17 @@ def main(argv=None):
             print(f"FATAL: {refusal}")
             rc = EXIT_REFUSED
             return rc
+        # Every clock this run will ask set_turbo_mhz for, checked against
+        # the device's presets now, before the snapshot or any reboot (the
+        # harness would otherwise reject a generation-foreign one mid-run).
+        # The stages also set 1 MHz, which both known generations have.
+        from bench_u64_common import resolve_sweep_speeds
+        try:
+            resolve_sweep_speeds(client, list(opts.speeds) + [opts.boot_mhz])
+        except ValueError as e:
+            print(f"FATAL: {e}")
+            rc = EXIT_REFUSED
+            return rc
         devstr = device_string(info, fw_note)
         print(f"        fw {fw} (reported) -> recorded as "
               f"{fw_note}; fpga {fpga}, core {core}")

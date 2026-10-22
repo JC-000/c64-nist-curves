@@ -57,6 +57,28 @@ from c64_test_harness.backends.ultimate64_helpers import (  # noqa: E402
     snapshot_state,
     restore_state,
 )
+# Not guarded: public schema names that set_turbo_mhz (imported
+# unconditionally above) depends on -- ultimate64_helpers imports
+# CPU_SPEED_VALUES and cpu_speed_mhz from this module itself, and its
+# cpu_speed_enum reads CPU_SPEED_BY_MHZ -- so a harness without them could
+# not run set_turbo_mhz either; a guard would only defer the failure.
+from c64_test_harness.backends.ultimate64_schema import (  # noqa: E402
+    CPU_SPEED_BY_MHZ,
+    CPU_SPEED_VALUES,
+    cpu_speed_mhz,
+)
+try:
+    # Private, but it is the probe set_turbo_mhz itself validates with.
+    from c64_test_harness.backends.ultimate64_helpers import (  # noqa: E402
+        _cpu_speed_presets,
+    )
+except ImportError:  # harness without it: every probe is inconclusive
+    print("WARN: c64_test_harness has no _cpu_speed_presets; every probe is "
+          "inconclusive, so resolve_sweep_speeds refuses every sweep until "
+          "this tool is ported to the harness's replacement", file=sys.stderr)
+
+    def _cpu_speed_presets(client):
+        return None
 from c64_test_harness.backends.device_lock import (  # noqa: E402
     DeviceLock,
     DeviceLockTimeout,
@@ -68,10 +90,11 @@ from c64_test_harness.backends.ultimate64_probe import (  # noqa: E402
 from c64_test_harness.labels import Labels  # noqa: E402
 
 
-ALL_SPEEDS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32, 40, 48, 64]
-# 64 MHz is C64 Ultimate only (fw 1.1.0+); U64E firmware rejects it at set
-# time. The harness schema (CPU_SPEED_VALUES) is a superset across device
-# generations, so validation here mirrors that superset.
+ALL_SPEEDS = sorted(CPU_SPEED_BY_MHZ)
+# The harness schema's cross-generation SUPERSET -- no single device has
+# all of these (C64U lacks 5, U64E lacks 64).  Only an offline typo check;
+# the sweep itself comes from resolve_sweep_speeds(), which asks the
+# connected device.
 
 NTSC_CYCLES_PER_JIFFY = 17045
 NTSC_CPU_HZ = NTSC_CYCLES_PER_JIFFY * 60
@@ -236,6 +259,63 @@ def reboot_and_prepare(client, transport, prg_data, mhz,
         time.sleep(0.5)
         print(" ok")
     return True
+
+
+PROBE_ATTEMPTS = 3
+REFUSAL_PREFIX = "refusing before any reboot or upload: "
+
+
+def resolve_sweep_speeds(client, requested):
+    """Return the speeds to sweep, validated BEFORE any reboot or upload.
+
+    The CPU Speed presets differ per device generation (C64U fw 1.1.0 has
+    64 and no 5, U64E the reverse) and the harness owns that knowledge:
+    `set_turbo_mhz` validates against the device's own preset list, read by
+    the harness's `_cpu_speed_presets` (one bodyless GET, cached per
+    client; no public accessor exists).  We ask the same probe, so the
+    up-front verdict here is exactly the one set_turbo_mhz would reach
+    mid-sweep after a reboot and a run_prg had already been spent.
+
+    requested=None (no --speeds) -> every speed the device reports.
+    An explicit list containing a speed the device rejects -> ValueError.
+
+    Inconclusive probe (GET failed / unexpected shape / no schema speed in
+    it / harness without the helper): retried PROBE_ATTEMPTS times, then
+    REFUSED -- for an explicit --speeds as well as a bare run.  Fail-closed
+    on purpose: the harness does not cache an inconclusive answer, so a
+    transient failure here followed by a good GET inside set_turbo_mhz
+    would reject a foreign speed mid-sweep, after reboots and uploads --
+    the crash-late behaviour this function exists to prevent.  The only
+    list we could fall back to is the schema superset, which is known to
+    contain a speed each generation rejects.  The operator re-runs once
+    the device answers.
+    """
+    supported = None
+    for attempt in range(PROBE_ATTEMPTS):
+        if attempt:
+            time.sleep(1.0)
+        try:
+            presets = _cpu_speed_presets(client)
+        except Exception:
+            presets = None
+        if presets is not None:
+            supported = sorted(cpu_speed_mhz(p) for p in presets
+                               if p in CPU_SPEED_VALUES) or None
+        if supported is not None:
+            break
+    bad = [m for m in (requested or []) if m not in ALL_SPEEDS
+           or (supported is not None and m not in supported)]
+    if bad:
+        raise ValueError(
+            f"{REFUSAL_PREFIX}speed(s) {bad} not supported by this device; "
+            f"supported: "
+            f"{supported if supported is not None else ALL_SPEEDS}")
+    if supported is None:
+        raise ValueError(
+            f"{REFUSAL_PREFIX}could not read this device's CPU Speed presets "
+            f"after {PROBE_ATTEMPTS} attempts, so the speeds cannot be checked "
+            f"before the sweep reboots it; re-run once the device answers")
+    return list(requested) if requested else supported
 
 
 def park_main_loop(transport, main_loop_addr):
@@ -530,3 +610,372 @@ def run_one_routine(transport, labels, main_loop_addr,
                 res["reason"] = f"OK(retry{attempt})"
             return res
     return last
+
+
+# --------------------------------------------------------------------------
+# Offline self-test (no device, no VICE):
+#   make check-bench-tools   (= python3 tools/bench_u64_common.py --self-test)
+# Drives resolve_sweep_speeds + reboot_and_prepare, then the REAL main() of
+# bench_p256/p384/ecdsa_u64 and test_reu_mul_u64, against fake clients that
+# answer the harness's CPU Speed probe the way each device generation does
+# (or fail it), so the harness's own set_turbo_mhz validation runs for real.
+# --------------------------------------------------------------------------
+
+# Preset strings as the devices report them (harness docstring,
+# _cpu_speed_presets: C64U fw 1.1.0 has "64" and no " 5"; U64E fw 3.14
+# the reverse).  Test fixtures only -- the tools never read these.
+_FAKE_C64U_PRESETS = [" 1", " 2", " 3", " 4", " 6", " 8", "10", "12", "14",
+                      "16", "20", "24", "32", "40", "48", "64"]
+_FAKE_U64E_PRESETS = [" 1", " 2", " 3", " 4", " 5", " 6", " 8", "10", "12",
+                      "14", "16", "20", "24", "32", "40", "48"]
+
+
+class _FakeClient:
+    """Records every device-mutating call; answers config GETs."""
+
+    def __init__(self, cpu_presets, fail_first=0):
+        self.cpu_presets = cpu_presets    # None -> probe always fails
+        self.fail_first = fail_first      # first N CPU Speed GETs fail
+        self.probe_calls = 0
+        self.events = []
+
+    def get_info(self):
+        return {"product": "fake", "firmware_version": "1.1.0",
+                "unique_id": "fake0"}
+
+    def get_config_item(self, category, item):
+        if item == "CPU Speed":
+            self.probe_calls += 1
+            if (self.cpu_presets is None
+                    or self.probe_calls <= self.fail_first):
+                from c64_test_harness.backends.ultimate64_client import (
+                    Ultimate64Error)
+                raise Ultimate64Error("simulated probe failure")
+            return {"current": "48", "values": list(self.cpu_presets),
+                    "default": " 1"}
+        return {"current": "", "presets": [""], "default": ""}
+
+    def set_config_items(self, category, updates):
+        self.events.append(("set", category, dict(updates)))
+
+    def reboot(self):
+        self.events.append(("reboot",))
+
+    def run_prg(self, data):
+        self.events.append(("run_prg", len(data)))
+
+
+class _FakeTransport:
+    def __init__(self, client=None):
+        self.client = client
+
+    def close(self):
+        if self.client is not None:
+            self.client.events.append(("close",))
+
+    def read_memory(self, addr, length):
+        return bytes([INIT_SENTINEL_VAL]) * length
+
+    def write_memory(self, addr, data):
+        pass
+
+    def resume(self):
+        pass
+
+
+def _simulate_main(client, requested):
+    """resolve, then sweep -- what bench_p256/p384/ecdsa_u64 main() does.
+
+    Returns (speeds or None, exception or None, events before it).
+    """
+    import contextlib
+    import io
+    speeds = None
+    try:
+        speeds = resolve_sweep_speeds(client, requested)
+        with contextlib.redirect_stdout(io.StringIO()):
+            for mhz in speeds:
+                reboot_and_prepare(client, _FakeTransport(), b"\x01\x08", mhz)
+    except (ValueError, SystemExit) as e:
+        return speeds, e, list(client.events)
+    return speeds, None, list(client.events)
+
+
+class _Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _FakeLabels:
+    @classmethod
+    def from_file(cls, path):
+        return cls()
+
+    def address(self, name):
+        return 0x1000
+
+    def __getitem__(self, name):
+        return 0x1000
+
+
+def _drive_bench_main(modname, argv, client, prg_path):
+    """Run a bench tool's REAL main() against `client`.
+
+    Only the device seams are replaced (probe, lock, liveness, client and
+    transport constructors, snapshot/restore, labels, summary).  The
+    per-speed body is replaced by a stub that records the speed and then
+    calls the tool's real reboot_and_prepare, so the harness's
+    set_turbo_mhz validation runs where the sweep would run it.  Whatever
+    order main() puts resolve_sweep_speeds in is what gets tested.
+
+    Returns (exit code or exception, client.events).
+    """
+    import contextlib
+    import importlib
+    import io
+    m = importlib.import_module(modname)
+    transport = _FakeTransport(client)
+
+    def sweep(client_, transport_, prg_data, labels, mhz, args):
+        client_.events.append(("sweep", mhz))
+        m.reboot_and_prepare(client_, transport_, prg_data, mhz)
+        return {}
+
+    patches = {
+        "probe_u64": lambda host, **kw: _Obj(reachable=True),
+        "acquire_device_lock_or_exit":
+            lambda host, **kw: _Obj(release=lambda: None),
+        "liveness_probe": lambda host, **kw: _Obj(
+            healthy=True, summary="fake", recommendation=None),
+        "Ultimate64Client": lambda **kw: client,
+        "Ultimate64Transport": lambda **kw: transport,
+        "snapshot_state": lambda c: None,
+        "restore_state": lambda c, s: None,
+        "get_turbo_mhz": lambda c: None,
+        "Labels": _FakeLabels,
+        "run_sweep_for_speed": sweep,
+        "print_summary": lambda *a, **k: None,
+    }
+    saved = {k: getattr(m, k) for k in patches if hasattr(m, k)}
+    saved_argv = sys.argv
+    saved_host = os.environ.get("U64_HOST")
+    for k, v in patches.items():
+        setattr(m, k, v)
+    sys.argv = [modname + ".py", "--prg", prg_path,
+                "--labels", prg_path] + list(argv)
+    os.environ["U64_HOST"] = "fake.invalid"
+    result = 0
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            m.main()
+    except SystemExit as e:
+        result = e.code
+    except Exception as e:
+        result = e
+    finally:
+        for k, v in saved.items():
+            setattr(m, k, v)
+        sys.argv = saved_argv
+        if saved_host is None:
+            os.environ.pop("U64_HOST", None)
+        else:
+            os.environ["U64_HOST"] = saved_host
+    return result, list(client.events)
+
+
+class _ReachedSnapshot(Exception):
+    pass
+
+
+def _drive_reu_probe_main(argv, client, prg_path):
+    """Run test_reu_mul_u64.main(argv) up to its snapshot_state call.
+
+    Its harness imports are function-local, so the seams are patched on
+    the harness modules themselves.  snapshot_state raises
+    _ReachedSnapshot: reaching it means the speed check let the run on.
+    Returns (rc or exception, client.events).
+    """
+    import contextlib
+    import importlib
+    import io
+    from c64_test_harness.backends import device_lock as dl_mod
+    from c64_test_harness.backends import ultimate64 as u64_mod
+    from c64_test_harness.backends import ultimate64_helpers as hl_mod
+    from c64_test_harness.backends import ultimate64_probe as pr_mod
+    m = importlib.import_module("test_reu_mul_u64")
+
+    class _Lock:
+        def __init__(self, host):
+            pass
+
+        @staticmethod
+        def cleanup_stale():
+            pass
+
+        def release(self):
+            pass
+
+    def snap(c):
+        raise _ReachedSnapshot()
+
+    transport = _FakeTransport(client)
+    seams = [(dl_mod, "DeviceLock", _Lock),
+             (u64_mod, "Ultimate64Transport", lambda **kw: transport),
+             (pr_mod, "probe_u64", lambda host, **kw: _Obj(reachable=True)),
+             (hl_mod, "snapshot_state", snap),
+             (m, "acquire_device_lock", lambda lock, wait, t: 0)]
+    saved = [(mod, name, getattr(mod, name)) for mod, name, _ in seams]
+    saved_host = os.environ.get("U64_HOST")
+    for mod, name, val in seams:
+        setattr(mod, name, val)
+    os.environ["U64_HOST"] = "fake.invalid"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = m.main(["--prg", prg_path, "--labels", prg_path]
+                            + list(argv))
+    except Exception as e:
+        result = e
+    finally:
+        for mod, name, val in saved:
+            setattr(mod, name, val)
+        if saved_host is None:
+            os.environ.pop("U64_HOST", None)
+        else:
+            os.environ["U64_HOST"] = saved_host
+    return result, list(client.events)
+
+
+def self_test() -> int:
+    fails = []
+
+    def check(name, cond, detail=""):
+        print(f"  {'PASS' if cond else 'FAIL'}  {name}"
+              + (f"  {detail}" if detail and not cond else ""))
+        if not cond:
+            fails.append(name)
+
+    def mutations(events):
+        return sum(1 for e in events if e[0] in ("reboot", "run_prg"))
+
+    real_sleep = time.sleep
+    time.sleep = lambda s: None
+    try:
+        for dev, presets, foreign in (("C64U", _FAKE_C64U_PRESETS, 5),
+                                      ("U64E", _FAKE_U64E_PRESETS, 64)):
+            want = [int(p) for p in presets]
+            speeds, exc, ev = _simulate_main(_FakeClient(presets), None)
+            check(f"{dev}: default sweep == device presets", speeds == want,
+                  f"got {speeds}")
+            check(f"{dev}: default sweep completes", exc is None,
+                  f"{type(exc).__name__}: {exc} after "
+                  f"{mutations(ev)} reboot/run_prg calls")
+            speeds, exc, ev = _simulate_main(_FakeClient(presets),
+                                             [16, foreign])
+            check(f"{dev}: --speeds 16,{foreign} rejected before any "
+                  f"reboot/upload", exc is not None and mutations(ev) == 0,
+                  f"exc={exc!r} after {mutations(ev)} reboot/run_prg calls")
+            check(f"{dev}: rejection is the up-front one and names the "
+                  f"speed",
+                  exc is not None and mutations(ev) == 0
+                  and str(exc).startswith(REFUSAL_PREFIX)
+                  and str(foreign) in str(exc),
+                  f"exc={exc!r} after {mutations(ev)} reboot/run_prg calls")
+            speeds, exc, ev = _simulate_main(_FakeClient(presets), [48, 16])
+            check(f"{dev}: supported --speeds 48,16 kept in order",
+                  exc is None and speeds == [48, 16],
+                  f"speeds={speeds} exc={exc!r}")
+
+        speeds, exc, ev = _simulate_main(_FakeClient(None), None)
+        check("inconclusive probe: default sweep refused up front",
+              exc is not None and mutations(ev) == 0,
+              f"speeds={speeds} exc={exc!r} after {mutations(ev)} "
+              f"reboot/run_prg calls")
+        c = _FakeClient(None)
+        speeds, exc, ev = _simulate_main(c, [16, 48])
+        check("inconclusive probe: explicit --speeds refused up front too",
+              exc is not None and mutations(ev) == 0
+              and str(exc).startswith(REFUSAL_PREFIX),
+              f"speeds={speeds} exc={exc!r} after {mutations(ev)} "
+              f"reboot/run_prg calls")
+        check(f"inconclusive probe: retried {PROBE_ATTEMPTS} times before "
+              f"refusing", c.probe_calls == PROBE_ATTEMPTS,
+              f"probe_calls={c.probe_calls}")
+        speeds, exc, ev = _simulate_main(_FakeClient(None), [16, 7])
+        check("inconclusive probe: non-schema speed 7 still rejected",
+              exc is not None and mutations(ev) == 0,
+              f"speeds={speeds} exc={exc!r}")
+
+        # Flaky probe: the harness does not cache an inconclusive answer,
+        # so a first GET that fails and a later one that succeeds would
+        # let a foreign speed through resolve and crash in set_turbo_mhz.
+        speeds, exc, ev = _simulate_main(
+            _FakeClient(_FAKE_U64E_PRESETS, fail_first=1), [16, 64])
+        check("flaky probe (1st GET fails): U64E --speeds 16,64 rejected "
+              "before any reboot/upload",
+              exc is not None and mutations(ev) == 0,
+              f"speeds={speeds} exc={exc!r} after {mutations(ev)} "
+              f"reboot/run_prg calls")
+        speeds, exc, ev = _simulate_main(
+            _FakeClient(_FAKE_C64U_PRESETS, fail_first=2), None)
+        check("flaky probe (2 GETs fail): C64U default sweep recovers",
+              exc is None and speeds == [int(p) for p in _FAKE_C64U_PRESETS],
+              f"speeds={speeds} exc={exc!r}")
+
+        # The real tools' main(): resolve must run before the first
+        # reboot, and a refusal must close the transport.
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".prg", delete=False) as f:
+            f.write(b"\x01\x08\x00\x00")
+            prg_path = f.name
+        try:
+            c64u = [int(p) for p in _FAKE_C64U_PRESETS]
+            for tool, bare in (("bench_p256_u64", c64u),
+                               ("bench_p384_u64", c64u),
+                               ("bench_ecdsa_u64", [16, 48])):
+                rc, ev = _drive_bench_main(
+                    tool, ["--speeds", "16,5"],
+                    _FakeClient(_FAKE_C64U_PRESETS), prg_path)
+                check(f"{tool}.main(): C64U --speeds 16,5 exits 2 before "
+                      f"any reboot/upload",
+                      rc == 2 and mutations(ev) == 0,
+                      f"rc={rc!r} after {mutations(ev)} reboot/run_prg "
+                      f"calls")
+                check(f"{tool}.main(): refusal closes the transport",
+                      rc == 2 and ("close",) in ev,
+                      f"rc={rc!r} close={('close',) in ev}")
+                rc, ev = _drive_bench_main(
+                    tool, [], _FakeClient(_FAKE_C64U_PRESETS), prg_path)
+                swept = [e[1] for e in ev if e[0] == "sweep"]
+                check(f"{tool}.main(): C64U bare run sweeps {bare}",
+                      rc in (0, None) and swept == bare,
+                      f"rc={rc!r} swept={swept}")
+
+            reu = "test_reu_mul_u64"
+            for argv, what in ((["--speeds", "48,5"], "--speeds 48,5"),
+                               (["--boot-mhz", "5"], "--boot-mhz 5")):
+                rc, ev = _drive_reu_probe_main(
+                    argv, _FakeClient(_FAKE_C64U_PRESETS), prg_path)
+                check(f"{reu}.main(): C64U {what} refused (rc 2) before "
+                      f"snapshot/reboot/upload",
+                      rc == 2 and mutations(ev) == 0,
+                      f"rc={rc!r} after {mutations(ev)} reboot/run_prg "
+                      f"calls")
+            rc, ev = _drive_reu_probe_main(
+                ["--speeds", "48,16"], _FakeClient(_FAKE_C64U_PRESETS),
+                prg_path)
+            check(f"{reu}.main(): C64U --speeds 48,16 gets past the check",
+                  isinstance(rc, _ReachedSnapshot), f"rc={rc!r}")
+        finally:
+            os.unlink(prg_path)
+    finally:
+        time.sleep = real_sleep
+
+    print(f"\nself-test: {'ALL PASS' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        sys.exit(self_test())
+    print("usage: bench_u64_common.py --self-test")
+    sys.exit(2)
