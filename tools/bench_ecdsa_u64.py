@@ -532,23 +532,31 @@ def print_summary(all_results, speeds):
 # Offline self-test (no device, no VICE)
 # ---------------------------------------------------------------------------
 
-# Real measurements, C64 Ultimate, 2026-10-22 (loops=1):
-#   (name, mhz, jiffies, host wall seconds)
-# The host wall is time.monotonic() around the done-sentinel poll, an
+# (name, mhz, loops, total jiffies, total host wall seconds)
+# The loops=1 rows are real measurements, C64 Ultimate, 2026-10-22.  The
+# host wall is time.monotonic() around the done-sentinel poll, an
 # independent clock from the C64 jiffy counter.  The reported per-call time
-# must land near it; a figure divided by the turbo MHz lands 16-48x low.
+# must land near host wall / loops; a figure divided by the turbo MHz lands
+# mhz / 1.0227 times low (~15x at 16, ~47x at 48 MHz).
+# The loops=2 rows are SYNTHETIC: the measured ec_scalar_mul_var runs
+# (2025j / 34.3 s @ 16, 1405j / 23.8 s @ 48) doubled, to exercise the
+# per-call division that BENCH_PLAN's loops=1 never does.
 _SELF_TEST_MEASURED = [
-    ("ecdsa_verify_256", 16, 2326, 39.1),
-    ("ecdsa_verify_256", 48, 1610, 27.1),
-    ("ecdsa_verify_384", 16, 6020, 100.5),
-    ("ecdsa_verify_384", 48, 3953, 66.3),
+    ("ecdsa_verify_256",  16, 1, 2326, 39.1),
+    ("ecdsa_verify_256",  48, 1, 1610, 27.1),
+    ("ecdsa_verify_384",  16, 1, 6020, 100.5),
+    ("ecdsa_verify_384",  48, 1, 3953, 66.3),
+    ("ec_scalar_mul_var", 16, 2, 4050, 68.6),
+    ("ec_scalar_mul_var", 48, 2, 2810, 47.6),
 ]
-_SELF_TEST_BAND = 0.05   # +-5 % of host wall
+_SELF_TEST_BAND = 0.05   # +-5 % of host wall / loops
+_SELF_TEST_EXACT = 0.005  # reported value == jiffies / 60 / loops to 2 dp
 
 
-def _self_test_res(jiffies, wall):
-    """A result dict shaped exactly as run_one_routine returns it (loops=1)."""
-    cycles = jiffies * NTSC_CYCLES_PER_JIFFY
+def _self_test_res(jiffies, loops, wall):
+    """A result dict shaped as run_one_routine builds it: cycles is the
+    total jiffy-derived cycles floor-divided by loops."""
+    cycles = (jiffies * NTSC_CYCLES_PER_JIFFY) // loops
     return {"ok": True, "jiffies": jiffies, "cycles": cycles,
             "ms": (cycles / NTSC_CPU_HZ) * 1000.0, "wall": wall,
             "reason": "OK", "dbg_cycles": None}
@@ -558,6 +566,16 @@ def _parse_call_line_seconds(line):
     """Per-call time the line reports: the figure just before '[wall'."""
     import re
     m = re.search(r"(\d+(?:\.\d+)?)\s*(ms|s)\b[^\[]*\[wall", line)
+    if not m:
+        return None
+    v = float(m.group(1))
+    return v / 1000.0 if m.group(2) == "ms" else v
+
+
+def _parse_diag_time_seconds(line):
+    """The `time=` figure of diag_verify384_turbo's RESULT line."""
+    import re
+    m = re.search(r"time=(\d+(?:\.\d+)?)\s*(ms|s)\b", line)
     if not m:
         return None
     v = float(m.group(1))
@@ -598,9 +616,23 @@ def self_test():
     def _r3(v):
         return v if v is None else round(v, 3)
 
+    def exact(v, jiffies, loops):
+        # Separates jiffies / 60 from cycles / 1e6 (2.3 % apart, inside
+        # the band) and from a figure that ignores loops.
+        return v is not None and \
+            abs(v - jiffies / 60.0 / loops) <= _SELF_TEST_EXACT
+
+    def both(label, got, jiffies, loops, wall, detail=""):
+        ref = wall / loops
+        check(f"{label}: {_r3(got)} s vs host wall/loops {ref:.2f} s",
+              near(got, ref), detail)
+        check(f"{label}: {_r3(got)} s == jiffies/60/loops "
+              f"{jiffies / 60.0 / loops:.2f} s", exact(got, jiffies, loops),
+              detail)
+
     print("bench_ecdsa_u64 self-test: per-call time vs host wall "
-          f"(band +-{_SELF_TEST_BAND:.0%})")
-    speeds = sorted({m for (_n, m, _j, _w) in _SELF_TEST_MEASURED})
+          f"(band +-{_SELF_TEST_BAND:.0%}) and == jiffies/60/loops (2 dp)")
+    speeds = sorted({m for (_n, m, *_r) in _SELF_TEST_MEASURED})
     # Two fixtures: the real host wall, and a decoy host wall of 999 s.
     # The decoy proves the reported time comes from the jiffy counter and
     # is not the host wall echoed back (which would pass the band test
@@ -608,21 +640,35 @@ def self_test():
     for decoy in (False, True):
         tag = " [decoy wall=999s]" if decoy else ""
         results = {}
-        for name, mhz, jiffies, wall in _SELF_TEST_MEASURED:
-            res = _self_test_res(jiffies, 999.0 if decoy else wall)
+        for name, mhz, loops, jiffies, wall in _SELF_TEST_MEASURED:
+            res = _self_test_res(jiffies, loops, 999.0 if decoy else wall)
             results.setdefault(mhz, {})[name] = res
             line = format_call_line(res, mhz)
-            got = _parse_call_line_seconds(line)
-            check(f"per-call line {name} @ {mhz} MHz{tag}: {_r3(got)} s "
-                  f"vs host wall {wall} s", near(got, wall), line.strip())
+            both(f"per-call line {name} @ {mhz} MHz loops={loops}{tag}",
+                 _parse_call_line_seconds(line), jiffies, loops, wall,
+                 line.strip())
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             print_summary(results, speeds)
-        for name, mhz, _jiffies, wall in _SELF_TEST_MEASURED:
+        for name, mhz, loops, jiffies, wall in _SELF_TEST_MEASURED:
             got = (_parse_summary_seconds(buf.getvalue(), name, speeds)
                    or {}).get(mhz)
-            check(f"summary {name} @ {mhz} MHz{tag}: {_r3(got)} s "
-                  f"vs host wall {wall} s", near(got, wall))
+            both(f"summary {name} @ {mhz} MHz loops={loops}{tag}",
+                 got, jiffies, loops, wall)
+
+    # tools/diag_verify384_turbo.py prints the same jiffy-derived time on
+    # its RESULT line (single call, loops=1).
+    import diag_verify384_turbo as diag
+    for name, mhz, loops, jiffies, wall in _SELF_TEST_MEASURED:
+        if name != "ecdsa_verify_384":
+            continue
+        cycles = jiffies * NTSC_CYCLES_PER_JIFFY
+        line = diag.format_result_line(
+            {"ok": True, "wall": wall, "jiffies": jiffies, "cycles": cycles,
+             "verify_ok": True, "target_mhz": mhz, "debug_result": None})
+        got = _parse_diag_time_seconds(line)
+        both(f"diag_verify384_turbo RESULT @ {mhz} MHz", got, jiffies, 1,
+             wall, line.strip())
     print(f"\nself-test: {'ALL PASS' if not fails else f'{len(fails)} FAILED'}")
     return 1 if fails else 0
 
