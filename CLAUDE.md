@@ -381,6 +381,11 @@ make check-harness-routing           # every device write in tools/ routes throu
                                      #   managed layer (`transport.write_memory`) and never below it —
                                      #   see "Device traffic: the harness is the only route" below
                                      #   (no VICE, no device, no network)
+make check-bench-tools               # drives the real main() of bench_p256/p384/ecdsa_u64 and
+                                     #   test_reu_mul_u64 against fake C64U / U64E / flaky-probe
+                                     #   clients; fails if a device-foreign speed can reach a reboot
+                                     #   or upload (no VICE, no device; opt-in; pass
+                                     #   PYTHON=<harness venv python> if python3 lacks the harness)
 make check-inc-deps                  # every object reassembles when an .include'd header or the Makefile changes; clean/dry-run side effects; knob invalidation down every flag route (issues #178/#180; no VICE, temp copy, opt-in)
                                      #   tests the make named by $(MAKE) only: run it under both make 3.81 and gmake 4.x
 make nocomb-prg                      # ECDSA_NO_COMB variant test PRG (issue #61); test with:
@@ -522,12 +527,29 @@ release at all; the Ultimate line is fixed from 3.15. So:
   capability table decides PUT vs POST. `print_harness_provenance()`
   prints the resolved path and the hygiene switches at lock-acquire, so
   it is in the run log rather than assumed.
-- **`--speeds` defaults to all 17 speeds** on `bench_p256_u64.py` /
-  `bench_p384_u64.py` (`ALL_SPEEDS`, `bench_u64_common.py`), i.e. 17
-  reboot + `run_prg` cycles of a ~37.7 KB PRG per bare invocation. Pass
-  an explicit `--speeds` when pointing at unfixed firmware.
+- **`--speeds` defaults to every speed the connected device reports** on
+  `bench_p256_u64.py` / `bench_p384_u64.py`, i.e. one reboot + `run_prg`
+  cycle of a ~37.7 KB PRG per reported speed per bare invocation — 16 on
+  the C64U fw 1.1.0 (no 5, observed 2026-10-21), and 16 on the U64E
+  fw 3.14 per the harness docstring (no 64, not measured here). Pass an
+  explicit `--speeds` when pointing at unfixed firmware.
+  `resolve_sweep_speeds` (`bench_u64_common.py`) asks the harness's own
+  CPU Speed probe — the private `_cpu_speed_presets`, the one
+  `set_turbo_mhz` validates with — after connect and **before any
+  reboot**, and all three bench tools (`bench_ecdsa_u64.py` too, whose
+  default is `16,48`) plus `test_reu_mul_u64.py` (its `--speeds` and
+  `--boot-mhz`) route their speeds through it, so a generation-foreign
+  entry fails up front, not mid-sweep. Before this, the 17-entry schema
+  superset `ALL_SPEEDS` was the default: on the C64U it crashed at 5
+  after five reboots and five uploads (observed); on the U64E it would
+  crash at 64 only after the full 16-speed sweep (predicted). An
+  inconclusive probe is retried 3 times and then **refused**, bare run
+  or explicit list alike: the harness does not cache an inconclusive
+  answer, so a pass-through could still crash late once a later GET
+  succeeds. Re-run once the device answers. Offline test:
+  `make check-bench-tools`.
 
-  **Those 17 accumulate. This is measured, not inferred.** `/Temp` is a
+  **Those 16 accumulate. This is measured, not inferred.** `/Temp` is a
   firmware RAM disk (`software/filesystem/ramdisk.cc`) that only a
   firmware **power-on** clears. `machine:reboot` is a C64-level reset:
   config in firmware RAM survives it, and so do the attachments.

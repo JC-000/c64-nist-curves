@@ -125,7 +125,7 @@ LIB_DIR = $(BUILD_DIR)/lib
 #   -t   touches the outputs but never runs the recipe, so the stamp keeps
 #        the OLD knobs and the next real build still rebuilds everything;
 #   goals that do not depend on an output (clean, dist, check-release-*,
-#   check-harness-routing, check-inc-deps) never run it.
+#   check-harness-routing, check-inc-deps, check-bench-tools) never run it.
 # Every object depends on `knobs-changed` directly, so even under -j its
 # rm finishes before any recipe that writes an object.
 # The delete precedes the stamp write, so a build that fails part-way can
@@ -144,7 +144,7 @@ endif
 # Goals that build nothing. Used ONLY to skip the `.d` include below, so that
 # `make clean` still parses (and so recovers) when a .d file is corrupt.
 NON_BUILD_GOALS := clean dist check-harness-routing check-release-notes \
-                   check-release-state check-inc-deps
+                   check-release-state check-inc-deps check-bench-tools
 NON_BUILD_ONLY := $(if $(MAKECMDGOALS),$(if $(filter-out $(NON_BUILD_GOALS),$(MAKECMDGOALS)),,yes))
 
 .PHONY: all clean bench-u64 dist knobs-changed \
@@ -826,6 +826,17 @@ check-docs: $(PRG) lib
 .PHONY: check-harness-routing
 check-harness-routing:
 	python3 tools/check_harness_routing.py
+
+# Offline self-test of the Ultimate bench tools' speed handling: drives the
+# real main() of bench_p256/p384/ecdsa_u64 and test_reu_mul_u64 against
+# fake C64U / U64E / flaky-probe clients and fails if a generation-foreign
+# speed reaches a reboot or upload. No device, no VICE; needs the harness
+# importable by $(PYTHON) -- pass PYTHON=<harness venv python> when the
+# default python3 lacks it. Opt-in, like the other check-* targets.
+PYTHON ?= python3
+.PHONY: check-bench-tools
+check-bench-tools:
+	$(PYTHON) tools/bench_u64_common.py --self-test
 
 # Issue #147: the release notes ship inside the tarball, so any hash they
 # claim about it is self-referential. Kept out by check-release-notes; the
