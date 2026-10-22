@@ -33,6 +33,7 @@ Usage:
     U64_HOST=192.168.1.81 python3 tools/bench_ecdsa_u64.py
     U64_HOST=192.168.1.81 BENCH_DEBUG_STREAM=1 python3 tools/bench_ecdsa_u64.py
     U64_HOST=192.168.1.81 python3 tools/bench_ecdsa_u64.py --speeds 16,48
+    python3 tools/bench_ecdsa_u64.py --self-test   # offline, no device
 
 If U64_HOST is unset or the device is not reachable the tool exits with a
 clear message and leaves no artifacts on the network.
@@ -247,8 +248,8 @@ def verify_ecdsa_verify_with_msg_384(t, l):
 #  setup_fn,                    verify_fn,                 timeout_at_1MHz,
 #  marker_start, marker_stop)
 #
-# loops=1 for all four: each call is multi-second at 1 MHz and multi-hundred-
-# millisecond even at 48 MHz. Jiffy precision (17045 cy/jiffy) is fine.
+# loops=1 for all five: each call takes tens of seconds of wall time at every
+# turbo speed (wall-anchored REU DMA). Jiffy precision (1/60 s) is fine.
 BENCH_PLAN = [
     ("bench_ec_scalar_mul_var_256_tramp", "ec_scalar_mul_var",       1,
      setup_scalar_mul_var_256,   verify_scalar_mul_var_256,  3600.0,
@@ -399,23 +400,46 @@ def run_sweep_for_speed(client, transport, prg_data, labels, mhz, args):
         res["dbg_stop_count"] = dbg_stop_count
         speed_results[disp_name] = res
 
-        if res["ok"]:
-            # Primary: jiffies × NTSC_CYCLES_PER_JIFFY = measured cycles
-            # (bench_start / bench_stop measures jiffy elapsed inside the
-            # trampoline body).
-            cyc = res["cycles"]
-            ms = cyc / (mhz * 1_000_000.0) * 1000.0
-            extra = ""
-            if dbg_cycles is not None:
-                diff = dbg_cycles - cyc
-                pct = (100.0 * diff / cyc) if cyc else 0.0
-                extra = (f"  [dbg={dbg_cycles} Δ={diff:+d} ({pct:+.2f}%)]")
-            print(f"{res['jiffies']:>6d}j  {cyc:>12d}cy  "
-                  f"{ms:>8.2f}ms  [wall {res['wall']:.1f}s]{extra}")
-        else:
-            print(f"{res['reason']:<22}  [wall {res['wall']:.1f}s]")
+        print(format_call_line(res, mhz))
 
     return speed_results
+
+
+def jiffy_seconds_per_call(res):
+    """Per-call wall time from the C64 jiffy clock: jiffies / 60 / loops.
+
+    `res["cycles"]` is jiffies x NTSC_CYCLES_PER_JIFFY / loops -- a
+    1-MHz-EQUIVALENT figure, not machine cycles at turbo.  The NTSC jiffy
+    IRQ ticks at 60 Hz of wall time whatever the CPU turbo is, so the
+    elapsed wall time is cycles / NTSC_CPU_HZ (= jiffies / 60) at every
+    speed.  Dividing by the turbo MHz instead (as this tool did through
+    2026-10-22) reported 0.572 s for a 27 s ecdsa_verify_256 @ 48 MHz.
+    jiffies / 60 is chosen over cycles / 1e6 because the jiffy IS 1/60 s;
+    cycles / 1e6 reads 2.3 % high (NTSC_CPU_HZ is 1 022 700, not 1e6).
+    """
+    return res["cycles"] / NTSC_CPU_HZ
+
+
+def format_call_line(res, mhz):
+    """The per-call result line printed after each bench step.
+
+    `mhz` is not used for the time: see jiffy_seconds_per_call.
+    """
+    if not res["ok"]:
+        return f"{res['reason']:<22}  [wall {res['wall']:.1f}s]"
+    # Primary: jiffies × NTSC_CYCLES_PER_JIFFY = 1-MHz-equivalent cycles
+    # (bench_start / bench_stop measures jiffy elapsed inside the
+    # trampoline body).
+    cyc = res["cycles"]
+    jsec = jiffy_seconds_per_call(res)
+    extra = ""
+    dbg_cycles = res.get("dbg_cycles")
+    if dbg_cycles is not None:
+        diff = dbg_cycles - cyc
+        pct = (100.0 * diff / cyc) if cyc else 0.0
+        extra = (f"  [dbg={dbg_cycles} Δ={diff:+d} ({pct:+.2f}%)]")
+    return (f"{res['jiffies']:>6d}j  {cyc:>12d}cy@1MHz-eq  "
+            f"jiffy {jsec:>7.2f}s  [wall {res['wall']:.1f}s]{extra}")
 
 
 # ---------------------------------------------------------------------------
@@ -432,8 +456,8 @@ def _fmt_cy(c):
 def print_summary(all_results, speeds):
     print()
     print("=" * 96)
-    print("  ECDSA / scalar_mul_var U64E bench -- cycles/call (NTSC 1 jiffy = "
-          f"{NTSC_CYCLES_PER_JIFFY} cy)")
+    print("  ECDSA / scalar_mul_var U64E bench -- 1-MHz-equivalent cycles/call"
+          f" (jiffies x {NTSC_CYCLES_PER_JIFFY}; not machine cycles at turbo)")
     print("=" * 96)
     names = [disp for (_t, disp, *_r) in BENCH_PLAN]
     hdr = f"  {'Primitive':<24}"
@@ -457,7 +481,8 @@ def print_summary(all_results, speeds):
 
     print()
     print("=" * 96)
-    print("  Wall-clock per call (seconds)")
+    print("  Wall-clock per call, seconds, from the C64 jiffy clock "
+          "(jiffies / 60, turbo-independent)")
     print("=" * 96)
     hdr = f"  {'Primitive':<24}"
     for mhz in speeds:
@@ -471,7 +496,7 @@ def print_summary(all_results, speeds):
             if res is None or not res.get("ok"):
                 row += f" {'-':>16}"
             else:
-                s = res["cycles"] / (mhz * 1_000_000.0)
+                s = jiffy_seconds_per_call(res)
                 row += f" {s:>13.3f} s"
         print(row)
     print("=" * 96)
@@ -504,6 +529,105 @@ def print_summary(all_results, speeds):
 
 
 # ---------------------------------------------------------------------------
+# Offline self-test (no device, no VICE)
+# ---------------------------------------------------------------------------
+
+# Real measurements, C64 Ultimate, 2026-10-22 (loops=1):
+#   (name, mhz, jiffies, host wall seconds)
+# The host wall is time.monotonic() around the done-sentinel poll, an
+# independent clock from the C64 jiffy counter.  The reported per-call time
+# must land near it; a figure divided by the turbo MHz lands 16-48x low.
+_SELF_TEST_MEASURED = [
+    ("ecdsa_verify_256", 16, 2326, 39.1),
+    ("ecdsa_verify_256", 48, 1610, 27.1),
+    ("ecdsa_verify_384", 16, 6020, 100.5),
+    ("ecdsa_verify_384", 48, 3953, 66.3),
+]
+_SELF_TEST_BAND = 0.05   # +-5 % of host wall
+
+
+def _self_test_res(jiffies, wall):
+    """A result dict shaped exactly as run_one_routine returns it (loops=1)."""
+    cycles = jiffies * NTSC_CYCLES_PER_JIFFY
+    return {"ok": True, "jiffies": jiffies, "cycles": cycles,
+            "ms": (cycles / NTSC_CPU_HZ) * 1000.0, "wall": wall,
+            "reason": "OK", "dbg_cycles": None}
+
+
+def _parse_call_line_seconds(line):
+    """Per-call time the line reports: the figure just before '[wall'."""
+    import re
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(ms|s)\b[^\[]*\[wall", line)
+    if not m:
+        return None
+    v = float(m.group(1))
+    return v / 1000.0 if m.group(2) == "ms" else v
+
+
+def _parse_summary_seconds(text, name, speeds):
+    """{mhz: seconds} from the summary's per-call wall-clock table."""
+    import re
+    lines = text.splitlines()
+    try:
+        start = next(i for i, ln in enumerate(lines)
+                     if "Wall-clock per call" in ln)
+    except StopIteration:
+        return None
+    for ln in lines[start:]:
+        if ln.strip().startswith(name + " "):
+            vals = [float(v) for v in re.findall(r"(\d+\.\d+)\s*s\b", ln)]
+            return dict(zip(speeds, vals)) if len(vals) == len(speeds) \
+                else None
+    return None
+
+
+def self_test():
+    import contextlib
+    import io
+    fails = []
+
+    def check(label, cond, detail=""):
+        print(f"  {'PASS' if cond else 'FAIL'}  {label}"
+              + (f"  ({detail})" if detail and not cond else ""))
+        if not cond:
+            fails.append(label)
+
+    def near(v, ref):
+        return v is not None and abs(v - ref) <= _SELF_TEST_BAND * ref
+
+    def _r3(v):
+        return v if v is None else round(v, 3)
+
+    print("bench_ecdsa_u64 self-test: per-call time vs host wall "
+          f"(band +-{_SELF_TEST_BAND:.0%})")
+    speeds = sorted({m for (_n, m, _j, _w) in _SELF_TEST_MEASURED})
+    # Two fixtures: the real host wall, and a decoy host wall of 999 s.
+    # The decoy proves the reported time comes from the jiffy counter and
+    # is not the host wall echoed back (which would pass the band test
+    # against itself while examining nothing).
+    for decoy in (False, True):
+        tag = " [decoy wall=999s]" if decoy else ""
+        results = {}
+        for name, mhz, jiffies, wall in _SELF_TEST_MEASURED:
+            res = _self_test_res(jiffies, 999.0 if decoy else wall)
+            results.setdefault(mhz, {})[name] = res
+            line = format_call_line(res, mhz)
+            got = _parse_call_line_seconds(line)
+            check(f"per-call line {name} @ {mhz} MHz{tag}: {_r3(got)} s "
+                  f"vs host wall {wall} s", near(got, wall), line.strip())
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            print_summary(results, speeds)
+        for name, mhz, _jiffies, wall in _SELF_TEST_MEASURED:
+            got = (_parse_summary_seconds(buf.getvalue(), name, speeds)
+                   or {}).get(mhz)
+            check(f"summary {name} @ {mhz} MHz{tag}: {_r3(got)} s "
+                  f"vs host wall {wall} s", near(got, wall))
+    print(f"\nself-test: {'ALL PASS' if not fails else f'{len(fails)} FAILED'}")
+    return 1 if fails else 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -522,11 +646,16 @@ def parse_args():
                    default=os.environ.get("BENCH_DEBUG_DEST", ""),
                    help="IP:port destination for the debug stream. If empty, "
                         "uses the U64E's pre-configured destination.")
+    p.add_argument("--self-test", action="store_true",
+                   help="Run the offline result-formatting self-test "
+                        "(no device) and exit.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.self_test:
+        sys.exit(self_test())
 
     host = os.environ.get("U64_HOST")
     if not host:

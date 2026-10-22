@@ -36,6 +36,22 @@ contract).
   `boot/0` row in `tools/test_prims_adversarial.py` reads the CPU's own view
   of `$01` and of RAM-vs-ROM at `$A000` after the init sentinel, and is red
   on the old stub, green on the fix.
+- **`tools/bench_ecdsa_u64.py` reported per-call times 16-48x too short.**
+  Its "Wall-clock per call (seconds)" summary table and the "ms" field of
+  each per-call line divided the cycle column by the CPU MHz. That column is
+  jiffies × 17045, already 1-MHz-equivalent wall-clock µs, because the NTSC
+  jiffy clock ticks at 60 Hz of wall time whatever the turbo. On a C64
+  Ultimate on 2026-10-22, `ecdsa_verify_256` at 48 MHz (1610 jiffies, host
+  wall 27.1 s) printed 571.72 ms and 0.572 s. Both now print
+  jiffies / 60 per call (26.83 s), the convention `bench_u64_common`'s
+  `ms` field and the P-256/P-384 tools already used; cycles / 1e6 would read
+  2.3 % high, since the jiffy is 17045 cycles of a 1.0227 MHz clock. The
+  labels now say "jiffy" and "1-MHz-equivalent" so the figure cannot be read
+  as turbo machine cycles. The host `[wall …]` reading is unchanged. A new
+  offline `--self-test` feeds the measured jiffy counts and checks the
+  reported time against the independently measured host wall (±5 %), plus a
+  decoy host wall of 999 s so that echoing the host reading back cannot pass.
+  It was 16/16 red on the old code and is 16/16 green.
 - **v0.16.0's #184 claim that `make check-inc-deps` holds on GNU make 4.x
   did not.** `gmake check-inc-deps` (and `check-archives`) drove whatever
   `make` was first on PATH — 3.81 here — and the 4.x touch-cluster probe,
