@@ -40,7 +40,7 @@ from bench_u64_common import (  # noqa: E402
     INIT_SENTINEL_ADDR,
     set_ptr, write_le, read_le,
     poll_done_sentinel,
-    NTSC_CYCLES_PER_JIFFY,
+    NTSC_CYCLES_PER_JIFFY, NTSC_CPU_HZ,
 )
 
 try:
@@ -222,6 +222,25 @@ def summarize_debug_trace(result, log=print):
         log(f"    idx={i:>10d}  val=${d:02x}")
 
 
+def format_result_line(res):
+    """The RESULT line for one isolated run (tested offline by
+    `tools/bench_ecdsa_u64.py --self-test`)."""
+    if not res["ok"]:
+        return f"  RESULT: TIMEOUT after wall {res['wall']:.1f}s"
+    mhz = res["target_mhz"]
+    cyc = res["cycles"]
+    # cycles is jiffies x NTSC_CYCLES_PER_JIFFY: 1-MHz-equivalent, not
+    # machine cycles at turbo.  The jiffy clock is wall-anchored (60 Hz at
+    # any turbo), so the time is cycles / NTSC_CPU_HZ = jiffies / 60, the
+    # bench_u64_common `ms` convention.  Dividing by the turbo MHz, as this
+    # line did until 2026-10-22, read ~47x short at 48 MHz.
+    jsec = cyc / NTSC_CPU_HZ
+    return (f"  RESULT: COMPLETED in wall {res['wall']:.1f}s  "
+            f"jiffies={res['jiffies']}  cycles@1MHz-eq={cyc}  "
+            f"jiffy_time={jsec:.2f}s @ {mhz}MHz  "
+            f"verify_ok={res['verify_ok']}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--timeout", type=float, default=300.0,
@@ -297,16 +316,7 @@ def main():
                 target_mhz=args.target_mhz,
             )
 
-            if res["ok"]:
-                mhz = res["target_mhz"]
-                cyc = res["cycles"]
-                ms = cyc / (mhz * 1_000_000.0) * 1000.0
-                print(f"  RESULT: COMPLETED in wall {res['wall']:.1f}s  "
-                      f"jiffies={res['jiffies']}  cycles={cyc}  "
-                      f"time={ms:.1f}ms @ {mhz}MHz  "
-                      f"verify_ok={res['verify_ok']}")
-            else:
-                print(f"  RESULT: TIMEOUT after wall {res['wall']:.1f}s")
+            print(format_result_line(res))
 
             if args.debug_stream:
                 summarize_debug_trace(res["debug_result"])
